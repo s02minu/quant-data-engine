@@ -28,9 +28,9 @@ date_close = df["Close"].idxmax()
 y = df['Close']
 
 
-plt.figure(figure = (14,5))
+plt.figure(figsize = (14,5))
 plt.plot(df.index, y)
-plt.savefig("btc_close.png", dpi=300, bbox_inches='tight', transparent=True)
+plt.savefig("assets/btc_close.png", dpi=300, bbox_inches='tight', transparent=True)
 
 plt.xlabel('Date')
 plt.ylabel('Close Price')
