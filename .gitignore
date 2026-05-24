@@ -1,8 +1,12 @@
+#experimental scribbles
+scratch.py
+scratch_*.py
+
+#pycharm amchine specific setting folder
 .idea/
 
-
+#Leraning journal
 learnings.md
-
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
