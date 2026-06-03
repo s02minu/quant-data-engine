@@ -10,6 +10,12 @@ def load_ohlcv(symbol, start, end=None, interval='1d'):
         auto_adjust=True,
     )
 
+    # Guard against empty DataFrames
+    if data.empty:
+        raise ValueError(
+            f"No data returned for symbol={symbol!r}, start={start!r}, end={end!r}, interval={interval!r}"
+        )
+
     # Guard against multiindex update
     if isinstance(data.columns, pd.MultiIndex):
         data = data.droplevel(1, axis='columns')
