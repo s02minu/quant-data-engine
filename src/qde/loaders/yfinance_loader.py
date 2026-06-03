@@ -2,16 +2,24 @@ import pandas as pd
 import yfinance as yf
 
 def load_ohlcv(symbol, start, end=None, interval='1d'):
-        data  = yf.download(
-                tickers=symbol,
-                start=start,
-                end=end,
-                interval=interval,
-                auto_adjust=True,
-        )
+    data  = yf.download(
+        tickers=symbol,
+        start=start,
+        end=end,
+        interval=interval,
+        auto_adjust=True,
+    )
 
-        if isinstance(data.columns, pd.MultiIndex):
-                data = data.droplevel(1, axis=1)
+    # Guard against multiindex update
+    if isinstance(data.columns, pd.MultiIndex):
+        data = data.droplevel(1, axis='columns')
 
-        return data
+    # Timezone handling
+    if data.index.tz is None:
+        data.index = data.index.tz_localize('UTC')
+    else:
+        data.index = data.index.tz_convert('UTC')
+    data.index.name = 'date'
+
+    return data
 
