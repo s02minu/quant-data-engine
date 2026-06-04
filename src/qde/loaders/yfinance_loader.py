@@ -19,7 +19,6 @@ def load_ohlcv(symbol, start, end=None, interval='1d'):
         ValueError: If empty DataFrame.
         """
 
-
     data  = yf.download(
         tickers=symbol,
         start=start,
@@ -40,6 +39,9 @@ def load_ohlcv(symbol, start, end=None, interval='1d'):
 
     # LowerCasing for standardization
     data.columns = data.columns.str.lower()
+
+    # Reordering the columns
+    data = data[["open", "high", "low", "close", "volume"]]
 
     # Timezone handling
     if data.index.tz is None:
