@@ -15,6 +15,7 @@ def test_columns_are_lowercase_ohlcv():
     df = load_ohlcv("BTC-USD", "2024-01-01", "2024-02-01")
     # asserts the column are exactly the lowercase names you expect
     assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+    assert df.index.name == "date"
 
 
 def test_invalid_symbol_raises():
