@@ -42,7 +42,7 @@ def load_ohlcv(symbol, start, end=None, interval='1d'):
 
     # Reordering the columns
     data = data[["open", "high", "low", "close", "volume"]]
-
+    data.columns.name = None
     # Timezone handling
     if data.index.tz is None:
         data.index = data.index.tz_localize('UTC')

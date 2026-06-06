@@ -2,21 +2,20 @@ import pandas as pd
 import requests
 
 def load_binance_ohlcv(symbol: str, interval: str="1d", limit: int=1000) -> pd.DataFrame:
-    """ Load OHLCV data for a single symbol from binance through
-    an API request. Returning a cleaned utc aware index.
-
+    """ Load OHLCV data for a single symbol from Binance, returning a
+        cleaned DataFrame with flat lowercase columns and a UTC-aware index.
 
         Args:
             symbol (str): a ticker symbol.
             interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
-            limit (int, optional): the number of rows to return. Defaults to 1000.
+            limit (int, optional): maximum number of candles to return. Defaults to 1000.
 
         Returns:
             DataFrame with columns: date, open, high, low, close, volume.
             Index by a UTC-aware DatetimeIndex named 'date'.
 
         Raises:
-            ValueError: If no response and if empty DataFrame.
+            ValueError: If the API returns a non-200 status or an empty response.
             """
 
     url = "https://api.binance.com/api/v3/klines"
