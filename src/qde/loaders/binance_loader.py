@@ -1,12 +1,20 @@
 import pandas as pd
 import requests
 
-def load_binance_ohlcv(symbol: str, interval: str="1d", limit: int=1000) -> pd.DataFrame:
+def load_binance_ohlcv(
+        symbol,
+        start,
+        end=None,
+        interval="1d",
+        limit=1000
+) -> pd.DataFrame:
     """ Load OHLCV data for a single symbol from Binance, returning a
         cleaned DataFrame with flat lowercase columns and a UTC-aware index.
 
         Args:
             symbol (str): a ticker symbol.
+            start (str): the time period to begin.
+            end (str): the time period to end.
             interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
             limit (int, optional): maximum number of candles to return. Defaults to 1000.
 
@@ -18,25 +26,59 @@ def load_binance_ohlcv(symbol: str, interval: str="1d", limit: int=1000) -> pd.D
             ValueError: If the API returns a non-200 status or an empty response.
             """
 
+    # Convert start to epoch ms
+    start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
+
+    # If end is None use now
+    if end is None:
+        end = pd.Timestamp.now(tz="UTC")
+
+    # Convert end to epoch ms
+    end_ms= int(pd.Timestamp(end, tz="UTC").timestamp() * 1000)
+
     url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    all_data = []
+    current_start = start_ms
 
-    response = requests.get(url, params=params)
+    while True:
+        params = {"symbol": symbol,
+                  "interval": interval,
+                  "startTime": current_start,
+                  "endTime": end_ms,
+                  "limit": limit
+                  }
 
-    # Fail test Guard for no response from binance
-    if response.status_code != 200:
-        raise ValueError(
-            f"Binance API error {response.status_code}: {response.text}"
-        )
+        response = requests.get(url, params=params)
+
+        # Fail test Guard for no response from binance
+        if response.status_code != 200:
+            raise ValueError(
+                f"Binance API error {response.status_code}: {response.text}"
+            )
+
+        batch = response.json()
+
+        #
+        if not batch:
+            break
+
+        # Add batch to all_data
+        all_data.extend(batch)
+
+        if len(batch) < limit:
+            break
+
+        print(f"Fetched {len(batch)} candles, latest: {batch[-1][0]}")
+        current_start = batch[-1][0] + 1
+
 
     # Fail test Guard for no data returned but request successful
-    data = response.json()
-    if not data:
+    if not all_data:
         raise ValueError(
-        f"No data returned for symbol={symbol!r}, interval={interval!r}, limit={limit!r}"
+            f"No data returned for symbol={symbol!r}, start={start!r}, end={end!r}, interval={interval!r}"
         )
 
-    df = pd.DataFrame(data,
+    df = pd.DataFrame(all_data,
                       columns=["kline_open", "open", "high", "low", "close", "volume",
                                "kline_close", "quote_volume", "num_trades",
                                "taker_buy_volume", "taker_buy_quote_volume", "unused"])
@@ -55,3 +97,6 @@ def load_binance_ohlcv(symbol: str, interval: str="1d", limit: int=1000) -> pd.D
     df = df[["open", "high", "low", "close", "volume"]]
 
     return df
+
+
+
