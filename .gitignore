@@ -6,7 +6,7 @@ scratch_*.py
 .idea/
 
 #Leraning journal
-learnings.md
+lessons/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
