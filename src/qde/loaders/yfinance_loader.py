@@ -1,7 +1,7 @@
 import pandas as pd
 import yfinance as yf
 
-def load_ohlcv(symbol, start, end=None, interval='1d'):
+def load_yfinance_ohlcv(symbol, start, end=None, interval='1d'):
     """ Load OHLCV data for a single symbol from Yahoo Finance, returning a cleaned
     DataFrame with flat lowercase columns and a UTC-aware index.
 
