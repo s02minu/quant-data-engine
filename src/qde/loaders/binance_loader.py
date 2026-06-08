@@ -31,10 +31,10 @@ def load_binance_ohlcv(
 
     # If end is None use now
     if end is None:
-        end = pd.Timestamp.now(tz="UTC")
+        end_ms = int(pd.Timestamp("now", tz="UTC").timestamp() * 1000)
+    else:
+        end_ms = int(pd.Timestamp(end, tz="UTC").timestamp() * 1000)
 
-    # Convert end to epoch ms
-    end_ms= int(pd.Timestamp(end, tz="UTC").timestamp() * 1000)
 
     url = "https://api.binance.com/api/v3/klines"
     all_data = []
