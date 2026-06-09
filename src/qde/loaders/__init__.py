@@ -1,5 +1,6 @@
 import pandas as pd
 
+from qde.loaders.symbols import SYMBOL_MAP
 from qde.loaders.yfinance_loader import load_yfinance_ohlcv
 from qde.loaders.binance_loader import load_binance_ohlcv
 
@@ -12,11 +13,18 @@ def load_ohlcv(symbol: str,
                source: str="yfinance"
                ) -> pd.DataFrame:
 
+    # Translate symbol for this source
+    mapped = SYMBOL_MAP.get(source, {}).get(symbol)
+    if mapped is None:
+        raise ValueError(
+            f"Unknown symbol {symbol!r} for source {source!r}"
+        )
+
     if source == "yfinance":
-        return load_yfinance_ohlcv(symbol, start, end, interval)
+        return load_yfinance_ohlcv(mapped, start, end, interval)
 
     elif source == "binance":
-        return load_binance_ohlcv(symbol, start, end, interval)
+        return load_binance_ohlcv(mapped, start, end, interval)
 
     else:
         raise ValueError(f"The source {source} is not supported."
