@@ -1,3 +1,4 @@
+
 import pandas as pd
 
 from pathlib import Path
@@ -92,6 +93,40 @@ def load_ohlcv_local(
     df = pd.read_parquet(path, engine='pyarrow')
 
     return df
+
+
+# Update the file path on a regular basis
+def update_ohlcv(
+        symbol: str,
+        source: str,
+        interval: str = '1d',
+        base_dir: str = 'data'
+) -> None:
+
+    # Load data in file
+    df_old = load_ohlcv_local(symbol, source, interval, base_dir)
+
+    # Retrieve the last day in the file
+    latest = df_old.index.max()
+
+    # Get the next day and convert to str for the loader
+    next_day = str((latest + pd.Timedelta(days=1)).date())
+
+    # Unified to fetch form the next_day upward
+    try:
+        df_new = load_ohlcv(symbol, start=next_day, source=source)
+    except ValueError:
+        print(f'{symbol} already up to date through {latest.date()}')
+        return
+
+    # Concatenate the data
+    df = pd.concat([df_old, df_new])
+
+    # Create the directory if it doesn't exist. Build the file oath.
+    path = _ohlcv_path(symbol, source, interval, base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, engine='pyarrow')
+
 
 
 
