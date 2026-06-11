@@ -4,6 +4,28 @@ from pathlib import Path
 from qde.loaders import load_ohlcv
 
 
+# Path helper function
+def _ohlcv_path(
+        symbol: str,
+        source: str,
+        interval: str = '1d',
+        base_dir: str = 'data'
+) -> Path:
+    """
+    Path helper function. Avoid repetition.
+
+    Args:
+        symbol (str): a ticker symbol.
+        source (str): a ticker source.
+        interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
+        base_dir (str, optional): the base directory to save the file. Default: 'data'.
+
+    Returns:
+        Path: Path to the saved file.
+    """
+    return Path(base_dir) / 'ohlcv' / f'{symbol}_{source}_{interval}.parquet'
+
+
 # Function to save the OHLCV data to Parquet
 def save_ohlcv(
         symbol: str,
@@ -26,16 +48,55 @@ def save_ohlcv(
             interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
             base_dir (str, optional): the base directory to save the file. Default: 'data'.
 
+    Returns:
+        str: Path to the saved file.
+
     """
     # Call the unified loader to fetch the data
     df =  load_ohlcv(symbol, start=start, end=end, interval=interval, source=source)
 
     # Create the directory if it doesn't exist. Build the file oath.
-    path = Path(base_dir) / 'ohlcv' / f'{symbol}_{source}_{interval}.parquet'
+    path = _ohlcv_path(symbol, source, interval, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, engine='pyarrow')
 
     return str(path)
+
+
+#
+def load_ohlcv_local(
+        symbol: str,
+        source: str,
+        interval: str = '1d',
+        base_dir: str = 'data'
+) -> pd.DataFrame:
+    """
+    Read a saved Parquet file and return it as a pandas DataFrame.
+
+    Args:
+       symbol (str): a ticker symbol.
+       source (str): a ticker source.
+       interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
+       base_dir (str, optional): the base directory to retrieve the file. Default: 'data'.
+
+
+    Returns:
+          Clean DataFrame
+    """
+    # Check if path exits
+    path = _ohlcv_path(symbol, source, interval, base_dir)
+
+    if not path.exists():
+        raise FileNotFoundError(f'File not found: {path}')
+
+    df = pd.read_parquet(path, engine='pyarrow')
+
+    return df
+
+
+
+
+
 
 
 
