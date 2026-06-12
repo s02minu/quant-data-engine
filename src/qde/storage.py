@@ -1,8 +1,8 @@
-
 import pandas as pd
+import duckdb
 
 from pathlib import Path
-from qde.loaders import load_ohlcv
+from qde.loaders import load_ohlcv, symbols
 
 
 # Path helper function
@@ -127,6 +127,34 @@ def update_ohlcv(
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, engine='pyarrow')
 
+
+
+def query(
+        sql: str,
+        base_dir: str = 'data'
+) -> pd.DataFrame:
+    """
+    SQL Helper function. Helps query the tables without the need for the path.
+    Returns a pandas DataFrame.
+
+    Args:
+        sql (str): a SQL query to execute.
+        base_dir (str, optional): the base directory to save the file. Default: 'data'.
+    """
+
+    # Duckdb connection
+    con = duckdb.connect()
+
+    # Find Parquet files
+    files = list((Path(base_dir) / "ohlcv").glob('*.parquet'))
+
+    for file in files:
+        name = file.stem
+        con.sql(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM '{file}'")
+
+    result = con.sql(sql).df()
+
+    return result
 
 
 
