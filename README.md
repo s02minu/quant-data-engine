@@ -33,8 +33,8 @@ pip install -e .
 ```python
 from qde.storage import save_ohlcv
 
-save_ohlcv("BTCUSDT", source="binance", start="2020-01-01")
-save_ohlcv("SPY", source="yfinance", start="2020-01-01")
+save_ohlcv("BTCUSDT", source="binance", start="2015-01-01")
+save_ohlcv("SPY", source="yfinance", start="2015-01-01")
 ```
 
 **Load stored data (no API call, instant)**
@@ -57,3 +57,5 @@ from qde.storage import update_ohlcv
 
 update_ohlcv("BTCUSDT", source="binance")
 ```
+
+### Project structure
