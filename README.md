@@ -59,3 +59,44 @@ update_ohlcv("BTCUSDT", source="binance")
 ```
 
 ### Project structure
+```
+src/qde/
+├── __init__.py              # Package root
+├── storage.py               # Save, load, update Parquet + DuckDB query
+└── loaders/
+    ├── __init__.py           # Unified load_ohlcv() with source routing
+    ├── binance_loader.py     # Binance REST API, pagination, epoch → UTC
+    ├── yfinance_loader.py    # Yahoo Finance loader, MultiIndex handling
+    └── symbols.py            # Cross-source symbol mapping
+
+```
+
+### Tech stack 
+| Tool | Role |
+|------|------|
+| pandas | Data manipulation and DataFrame standard |
+| requests | Direct HTTP calls to Binance REST API |
+| yfinance | Yahoo Finance convenience wrapper |
+| pyarrow | Parquet read/write engine |
+| DuckDB | SQL queries directly on Parquet files |
+| pytest | Automated testing |
+
+### Tests
+```bash
+pytest
+```
+13 tests covering loader contracts, symbol mapping, storage round-trips, and error handling.
+
+### Roadmap
+- **Data quality layer** — automated checks for gaps, duplicates, and stale data.
+- **WebSocket trade collector** — live tick-level trade streaming from Binance.
+- **Order book snapshots** — periodic depth snapshots for microstructure analysis.
+
+### Limitations
+- Tests require internet access (API responses are not mocked).
+- No retry logic on rate-limited requests.
+- Single-user local storage only — no concurrent access.
+- Symbol mapping is manual — new symbols must be added to symbols.py.
+
+### License
+MIT
