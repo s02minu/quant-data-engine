@@ -1,3 +1,4 @@
+
 import pandas as pd
 import duckdb
 
@@ -25,6 +26,7 @@ def _ohlcv_path(
         Path: Path to the saved file.
     """
     return Path(base_dir) / 'ohlcv' / f'{symbol}_{source}_{interval}.parquet'
+
 
 
 # Function to save the OHLCV data to Parquet

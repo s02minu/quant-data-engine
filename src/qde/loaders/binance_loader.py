@@ -68,7 +68,6 @@ def load_binance_ohlcv(
         if len(batch) < limit:
             break
 
-        print(f"Fetched {len(batch)} candles, latest: {batch[-1][0]}")
         current_start = batch[-1][0] + 1
 
 
