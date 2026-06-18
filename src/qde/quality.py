@@ -1,4 +1,5 @@
 import pandas as pd
+import pandas_market_calendars as mcal
 
 
 # Gap detection
@@ -15,14 +16,16 @@ def check_gaps(df: pd.DataFrame, calendar: str = 'crypto') -> pd.DataFrame:
         pd.DataFrame of missing dates.
     """
 
-    # Build Daily Range
-    full_range = pd.date_range(df.index.min(), df.index.max(), freq='D', tz='UTC')
-
-    # Find Missing Dates
-    missing = full_range.difference(df.index)
-
     if calendar == 'equity':
-        missing = missing[missing.dayofweek < 5]
+        nyse = mcal.get_calendar('NYSE')
+        schedule = nyse.schedule(start_date=df.index.min(), end_date=df.index.max())
+        expected = schedule.index.tz_localize('UTC')
+        missing = expected.difference(df.index)
+
+    else:
+        full_range = pd.date_range(df.index.min(), df.index.max(), freq='D', tz='UTC')
+        missing = full_range.difference(df.index)
+
 
     return missing
 
@@ -73,7 +76,6 @@ def check_price_sanity(df):
     :param df:
     :return:
     """
-    # Price sanity check
     bad_rows = (
         (df["close"] <= 0) |
         (df["open"] <= 0) |
@@ -83,4 +85,37 @@ def check_price_sanity(df):
     )
 
     return df[bad_rows]
+
+
+# The check runner
+def run_quality_report(df, name='dataset', calendar='crypto'):
+    """
+    Runs all quality checks functions.
+
+    Args:
+        df: pd.DataFrame.
+        name: str.
+        calendar: str.
+
+    Returns:
+        Report Status
+
+    """
+
+    gaps= check_gaps(df=df, calendar=calendar)
+    price_sanity = check_price_sanity(df)
+    nulls = check_nulls(df)
+    duplicates = check_duplicates(df)
+
+    print(f'====== Quality Report: {name} ======\n')
+    print(f'Gaps:             {len(gaps)}')
+    print(f'Duplicates:       {len(duplicates)}')
+    print(f'Nulls:            {nulls.sum()}')
+    print(f'Price issues:     {len(price_sanity)}')
+
+    all_clean = len(gaps) == 0 and len(duplicates) == 0 and nulls.sum() == 0 and len(price_sanity) == 0
+
+    print(f'Status:           {"CLEAN" if all_clean else "ISSUES FOUND"}')
+
+
 
