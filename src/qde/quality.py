@@ -74,8 +74,6 @@ def check_price_sanity(df):
 
     Returns:
         pd.Dataframe with price insanities.
-    :param df:
-    :return:
     """
     bad_rows = (
         (df["close"] <= 0) |
