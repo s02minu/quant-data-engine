@@ -1,6 +1,7 @@
 import pandas as pd
 import pandas_market_calendars as mcal
 
+from pathlib import Path
 
 # Gap detection
 def check_gaps(df: pd.DataFrame, calendar: str = 'crypto') -> pd.DataFrame:
@@ -117,5 +118,69 @@ def run_quality_report(df, name='dataset', calendar='crypto'):
 
     print(f'Status:           {"CLEAN" if all_clean else "ISSUES FOUND"}')
 
+    return all_clean
 
 
+# Build the quality summary for BI
+def build_quality_summary(base_dir="data"):
+    """
+    Scan all stored Parquet files, run quality checks on each,
+    and save a summary table to CSV.
+
+    Args:
+        base_dir (str): root data directory. Default: 'data'.
+
+    Returns:
+        DataFrame with one row per dataset, showing row counts,
+        date range, staleness, and quality check results.
+"""
+    # Find all parquet files in the base dir and split for summary
+    files = list((Path(base_dir) / "ohlcv").glob("*.parquet"))
+
+    all_rows = []
+
+    for file in files:
+        parts = file.stem.split("_")
+        symbol = parts[0]
+        source = parts[1]
+        interval = parts[2]
+
+        df = pd.read_parquet(file)
+
+        # Determine calendar type
+        calendar = "equity" if source == "yfinance" else "crypto"
+
+        gaps = check_gaps(df, calendar=calendar)
+        duplicates = check_duplicates(df)
+        nulls = check_nulls(df)
+        price_issues = check_price_sanity(df)
+
+        row = {
+            "symbol": symbol,
+            "source": source,
+            "interval": interval,
+            "total_rows": len(df),
+            "first_date": df.index.min(),
+            "last_date": df.index.max(),
+            "days_stale": (pd.Timestamp.now(tz="UTC") - df.index.max()).days,
+            "gaps": len(gaps),
+            "duplicates": len(duplicates),
+            "nulls": nulls.sum(),
+            "price_issues": len(price_issues),
+        }
+        row["status"] = "CLEAN" if (row["gaps"] == 0 and row["duplicates"] == 0 and row["nulls"] == 0 and row[
+            "price_issues"] == 0) else "ISSUES FOUND"
+
+        all_rows.append(row)
+
+    summary = pd.DataFrame(all_rows)
+
+    summary.to_csv(Path(base_dir)/ "quality_summary.csv", index=False)
+
+    return summary
+
+
+
+
+
+        

@@ -25,7 +25,8 @@ def _ohlcv_path(
     Returns:
         Path: Path to the saved file.
     """
-    return Path(base_dir) / 'ohlcv' / f'{symbol}_{source}_{interval}.parquet'
+    path = Path(base_dir) / 'ohlcv' / f'{symbol}_{source}_{interval}.parquet'
+    return path
 
 
 
@@ -66,7 +67,7 @@ def save_ohlcv(
     return str(path)
 
 
-#
+# Local retrieve of the data
 def load_ohlcv_local(
         symbol: str,
         source: str,
