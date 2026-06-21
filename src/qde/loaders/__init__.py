@@ -1,8 +1,10 @@
 import pandas as pd
 
+from qde.loaders.kraken_loader import load_kraken_ohlcv
 from qde.loaders.symbols import SYMBOL_MAP
 from qde.loaders.yfinance_loader import load_yfinance_ohlcv
 from qde.loaders.binance_loader import load_binance_ohlcv
+from qde.loaders.kraken_loader import load_kraken_ohlcv
 
 
 
@@ -25,6 +27,9 @@ def load_ohlcv(symbol: str,
 
     elif source == "binance":
         return load_binance_ohlcv(mapped, start, end, interval)
+
+    elif source == "kraken":
+        return load_kraken_ohlcv(mapped, start, end, interval)
 
     else:
         raise ValueError(f"The source {source} is not supported."

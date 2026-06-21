@@ -20,5 +20,9 @@ SYMBOL_MAP = {
         "ETHUSDT": "ETHUSDT",
         "SOLUSDT": "SOLUSDT",
     },
+    "kraken": {
+        "BTCUSDT": "XBTUSD",
+        "ETHUSDT": "ETHUSD",
+    },
 
 }
