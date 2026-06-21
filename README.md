@@ -87,8 +87,15 @@ pytest
 ```
 13 tests covering loader contracts, symbol mapping, storage round-trips, and error handling.
 
+
+### Data quality monitoring
+
+Automated daily quality checks with Power BI dashboard connected to pipeline output.
+
+<img src="assets/dashboard_quality.png" width="600" alt="Data quality dashboard">
+
+
 ### Roadmap
-- **Data quality layer** — automated checks for gaps, duplicates, and stale data.
 - **WebSocket trade collector** — live tick-level trade streaming from Binance.
 - **Order book snapshots** — periodic depth snapshots for microstructure analysis.
 

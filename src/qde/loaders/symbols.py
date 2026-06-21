@@ -18,6 +18,7 @@ SYMBOL_MAP = {
     "binance": {
         "BTCUSDT": "BTCUSDT",  # identity — no change needed
         "ETHUSDT": "ETHUSDT",
+        "SOLUSDT": "SOLUSDT",
     },
 
 }

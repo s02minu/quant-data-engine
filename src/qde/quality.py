@@ -166,12 +166,19 @@ def build_quality_summary(base_dir="data"):
             "nulls": nulls.sum(),
             "price_issues": len(price_issues),
         }
-        row["status"] = "CLEAN" if (row["gaps"] == 0 and row["duplicates"] == 0 and row["nulls"] == 0 and row[
-            "price_issues"] == 0) else "ISSUES FOUND"
+        row["status"] = "CLEAN" if (
+                row["gaps"] == 0 and
+                row["duplicates"] == 0 and
+                row["nulls"] == 0 and
+                row["price_issues"] == 0 and
+                row["days_stale"] <= 3
+        ) else "ISSUES FOUND"
 
         all_rows.append(row)
 
     summary = pd.DataFrame(all_rows)
+
+    summary["generated_at"] = pd.Timestamp.now(tz="UTC")
 
     summary.to_csv(Path(base_dir)/ "quality_summary.csv", index=False)
 
