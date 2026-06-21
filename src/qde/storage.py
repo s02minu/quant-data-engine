@@ -125,6 +125,9 @@ def update_ohlcv(
     # Concatenate the data
     df = pd.concat([df_old, df_new])
 
+    # Keep the last (most recent) timestamp
+    df = df[~df.index.duplicated(keep="last")]
+
     # Create the directory if it doesn't exist. Build the file oath.
     path = _ohlcv_path(symbol, source, interval, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
