@@ -1,6 +1,9 @@
 import pandas as pd
 import requests
 
+from qde.loaders.http import get_with_requests
+
+
 def load_binance_ohlcv(
         symbol,
         start,
@@ -48,7 +51,7 @@ def load_binance_ohlcv(
                   "limit": limit
                   }
 
-        response = requests.get(url, params=params)
+        response = get_with_requests(url, params=params)  # request retry helper
 
         # Fail test Guard for no response from binance
         if response.status_code != 200:
