@@ -7,6 +7,19 @@ name = "qde"
 version = "0.1.0"
 description = "Quant data engine - market data infrastructure."
 requires-python = ">=3.11"
+dependencies = [
+    "pandas",
+    "requests",
+    "yfinance",
+    "pyarrow",
+    "duckdb",
+    "pandas-market-calendars",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

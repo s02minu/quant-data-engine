@@ -23,9 +23,9 @@ git clone https://github.com/s02minu/quant-data-engine.git
 cd quant-data-engine
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
 pip install -e .
 ```
+To run the tests, install with the dev extras instead: `pip install -e ".[dev]"`
 
 ### Usage
 
@@ -36,16 +36,9 @@ from qde.storage import save_ohlcv
 save_ohlcv("BTCUSDT", source="binance", start="2015-01-01")
 save_ohlcv("SPY", source="yfinance", start="2015-01-01")
 ```
+  
 
-**Load stored data (no API call, instant)**
-```python
-from qde.storage import load_ohlcv_local
-
-df = load_ohlcv_local("BTCUSDT", source="binance")
-```
-
-**Query with SQL via DuckDB**
-```python
+ 
 from qde.storage import query
 
 df = query("SELECT date, close FROM BTCUSDT_binance_1d WHERE close > 60000")
