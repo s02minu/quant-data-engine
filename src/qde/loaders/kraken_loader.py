@@ -1,5 +1,4 @@
 import pandas as pd
-import requests
 
 from qde.loaders.http import get_with_requests
 
@@ -40,11 +39,10 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
     if kraken_interval is None:
         raise ValueError(f"Unsupported interval: {interval!r}")
 
-    # Convert start to epoch ms
+    # Convert start to epoch s
     since = int(pd.Timestamp(start, tz="UTC").timestamp())
 
     # Take care of pagination
-
     all_candles = []
     prev_since = None           # tracks the previous cursor, to detect "no progress"
 
@@ -74,10 +72,16 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
 
         last = result["last"] # Kraken's cursor for the next request
 
+        # Stop when the cursor stops advancing.
+        # (Could be simplified to `last == since`
+        # checked before reassignment — left as-is; pagination moot given Kraken's ~720 cap.)
         if last == prev_since:
             break
 
+        # remember the cursor used this round
         prev_since = since
+
+        # set next round's cursor to the new one (advance)
         since = last
 
     df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "vwap", "volume", "trades"])

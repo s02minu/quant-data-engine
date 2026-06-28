@@ -27,8 +27,8 @@ def check_gaps(df: pd.DataFrame, calendar: str = 'crypto') -> pd.DataFrame:
         full_range = pd.date_range(df.index.min(), df.index.max(), freq='D', tz='UTC')
         missing = full_range.difference(df.index)
 
-
     return missing
+
 
 # Check for duplicates
 def check_duplicates(df):

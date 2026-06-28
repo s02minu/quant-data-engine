@@ -19,7 +19,7 @@ def load_yfinance_ohlcv(symbol, start, end=None, interval='1d'):
         ValueError: If empty DataFrame.
         """
 
-    data  = yf.download(
+    df  = yf.download(
         tickers=symbol,
         start=start,
         end=end,
@@ -28,28 +28,31 @@ def load_yfinance_ohlcv(symbol, start, end=None, interval='1d'):
     )
 
     # Guard against empty DataFrames
-    if data.empty:
+    if df.empty:
         raise ValueError(
-            f"No data returned for symbol={symbol!r}, start={start!r}, end={end!r}, interval={interval!r}"
+            f"No df returned for symbol={symbol!r}, start={start!r}, end={end!r}, interval={interval!r}"
         )
 
     # Guard against multiindex update
-    if isinstance(data.columns, pd.MultiIndex):
-        data = data.droplevel(1, axis='columns')
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.droplevel(1, axis='columns')
 
     # LowerCasing for standardization
-    data.columns = data.columns.str.lower()
+    df.columns = df.columns.str.lower()
 
     # Reordering the columns
-    data = data[["open", "high", "low", "close", "volume"]]
-    data.columns.name = None
+    df = df[["open", "high", "low", "close", "volume"]]
+
+    # Remove the name of the index
+    df.columns.name = None
+
     # Timezone handling
-    if data.index.tz is None:
-        data.index = data.index.tz_localize('UTC')
+    if df.index.tz is None:
+        df.index = df.index.tz_localize('UTC')
     else:
-        data.index = data.index.tz_convert('UTC')
+        df.index = df.index.tz_convert('UTC')
 
-    data.index.name = 'date'
+    df.index.name = "date"
 
-    return data
+    return df
 

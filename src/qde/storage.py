@@ -1,4 +1,3 @@
-
 import pandas as pd
 import duckdb
 
@@ -14,7 +13,8 @@ def _ohlcv_path(
         base_dir: str = 'data'
 ) -> Path:
     """
-    Path helper function. Avoid repetition.
+    Builds the file path for a given symbol/source/interval.
+    The single source of truth for where files live.
 
     Args:
         symbol (str): a ticker symbol.
@@ -27,7 +27,6 @@ def _ohlcv_path(
     """
     path = Path(base_dir) / 'ohlcv' / f'{symbol}_{source}_{interval}.parquet'
     return path
-
 
 
 # Function to save the OHLCV data to Parquet
@@ -134,14 +133,14 @@ def update_ohlcv(
     df.to_parquet(path, engine='pyarrow')
 
 
-
+# Sql
 def query(
         sql: str,
         base_dir: str = 'data'
 ) -> pd.DataFrame:
     """
-    SQL Helper function. Helps query the tables without the need for the path.
-    Returns a pandas DataFrame.
+    SQL Helper function.
+    Create a temporary query engine that can read the Parquet files.
 
     Args:
         sql (str): a SQL query to execute.
@@ -156,7 +155,7 @@ def query(
 
     for file in files:
         name = file.stem
-        con.sql(f"CREATE OR REPLACE VIEW {name} AS SELECT * FROM '{file}'")
+        con.sql(f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM \'{file}\'')
 
     result = con.sql(sql).df()
 

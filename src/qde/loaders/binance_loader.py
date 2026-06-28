@@ -61,18 +61,19 @@ def load_binance_ohlcv(
 
         batch = response.json()
 
-        #
+        # If the response comes back empty
         if not batch:
             break
 
         # Add batch to all_data
         all_data.extend(batch)
 
+        # After Binance runs out of candles to send
         if len(batch) < limit:
             break
 
+        # Advance 1 ms after the last ms retrieved
         current_start = batch[-1][0] + 1
-
 
     # Fail test Guard for no data returned but request successful
     if not all_data:
@@ -80,6 +81,7 @@ def load_binance_ohlcv(
             f"No data returned for symbol={symbol!r}, start={start!r}, end={end!r}, interval={interval!r}"
         )
 
+    # Convert the returned data (list of lists) into a table
     df = pd.DataFrame(all_data,
                       columns=["kline_open", "open", "high", "low", "close", "volume",
                                "kline_close", "quote_volume", "num_trades",
@@ -91,7 +93,7 @@ def load_binance_ohlcv(
 
     df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric)
 
-    # Convert from epoch ms to utc aware datetime and se as index
+    # Convert from epoch ms to utc aware datetime and set as index
     df.index = pd.to_datetime(df["kline_open"], unit="ms", utc=True)
     df.index.name = "date"
 
