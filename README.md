@@ -90,9 +90,19 @@ Automated daily quality checks with a Power BI dashboard connected to pipeline o
 
 <img src="assets/dashboard_quality.png" width="600" alt="Data quality dashboard">
 
+
 ### Roadmap
-- **WebSocket trade collector** — live tick-level trade streaming from Binance.
-- **Order book snapshots** — periodic depth snapshots for microstructure analysis.
+
+This project evolves deliberately — every tool must solve a real problem
+before it's added. Full plan with phases and reasoning: [docs/ROADMAP.md](docs/ROADMAP.md)
+
+**Planned evolution:** local Parquet → Cloudflare R2 object storage →
+Dagster orchestration → dbt transformations on DuckDB → FastAPI serving layer
+
+**Deliberately deferred at current scale:** Spark (data fits on one machine —
+DuckDB is faster here), Kafka (one producer, one consumer, replayable sources),
+Kubernetes (a single container doesn't need an orchestrator). These get
+revisited when the constraints that justify them actually appear.
 
 ### Limitations
 - Tests require internet access (API responses are not mocked).
