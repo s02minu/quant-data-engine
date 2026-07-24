@@ -9,9 +9,10 @@ import pandas as pd
 import websockets
 from websockets.exceptions import WebSocketException
 
+from qde.loaders.http import get_with_requests
 from qde.stream.config import StreamConfig
 from qde.stream.gaps import SequenceTracker, reconnect_gap
-from qde.stream.parsers import now_ms, parse_message
+from qde.stream.parsers import now_ms, parse_depth_snapshot, parse_message
 from qde.stream.paths import bronze_path
 
 
@@ -59,6 +60,7 @@ class StreamCollector:
         # loop below keeps draining the socket. An unread socket would back up
         # and eventually be dropped by the exchange.
         flush_task = asyncio.create_task(self._flush_loop())
+        snapshot_task = asyncio.create_task(self._snapshot_loop())
 
         backoff = 1
 
@@ -70,6 +72,12 @@ class StreamCollector:
                     async with websockets.connect(url) as ws:
                         self._on_connected()
                         backoff = 1  # reset only after a connection succeeds
+
+                        # Anchor this connection before consuming its deltas.
+                        # The socket is already open and buffering, so no diffs
+                        # are lost while the snapshot is fetched; any that
+                        # predate last_update_id are discarded on replay.
+                        await self._snapshot_all()
 
                         # Yields one message per push and pauses in between without
                         # blocking the process; runs until the socket closes.
@@ -96,6 +104,7 @@ class StreamCollector:
             # flush everything buffered since the last interval would be lost,
             # and streamed data cannot be re-fetched.
             flush_task.cancel()
+            snapshot_task.cancel()
             self.flush()
 
     def _handle(self, message: dict, received_at: int) -> None:
@@ -169,6 +178,50 @@ class StreamCollector:
         while True:
             await asyncio.sleep(self.config.flush_seconds)
             self.flush()
+
+    def _fetch_snapshot(self, symbol: str) -> dict:
+        """Fetch one order-book snapshot over REST.
+
+        Blocking, and deliberately so: it reuses the retry helper the batch
+        loaders already use rather than duplicating that logic. The caller
+        runs it off the event loop.
+        """
+        response = get_with_requests(
+            f"{self.config.rest_base_url}/api/v3/depth",
+            params={"symbol": symbol, "limit": self.config.snapshot_depth},
+        )
+        return parse_depth_snapshot(response.json(), symbol, now_ms())
+
+    async def _snapshot_all(self) -> None:
+        """Buffer an order-book snapshot for every configured symbol.
+
+        A failed snapshot is logged and skipped: it costs an anchor point, but
+        it must never take down a capture that is still receiving live data.
+        """
+        if "depth" not in self.config.kinds:
+            return
+
+        for symbol in self.config.symbols:
+            try:
+                # to_thread keeps the blocking HTTP call off the event loop, so
+                # the socket keeps draining while the request is in flight.
+                row = await asyncio.to_thread(self._fetch_snapshot, symbol)
+            except Exception as exc:
+                print(f"snapshot failed for {symbol}: {type(exc).__name__}: {exc}")
+                continue
+
+            self.buffers[("snapshot", symbol)].append(row)
+            print(f"snapshot {symbol} anchored at update_id {row['last_update_id']}")
+
+    async def _snapshot_loop(self) -> None:
+        """Take snapshots on a fixed interval.
+
+        Sleeps first: the anchor for a new connection is taken by run() at
+        connect time, so starting with a sleep avoids an immediate duplicate.
+        """
+        while True:
+            await asyncio.sleep(self.config.snapshot_seconds)
+            await self._snapshot_all()
 
 
 if __name__ == "__main__":

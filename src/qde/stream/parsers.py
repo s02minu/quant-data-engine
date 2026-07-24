@@ -101,6 +101,32 @@ def parse_depth(data: dict, received_at: int) -> dict:
     }
 
 
+def parse_depth_snapshot(data: dict, symbol: str, received_at: int) -> dict:
+    """Flatten a Binance REST order-book snapshot into a bronze row.
+
+    The diff-depth stream carries changes, not state, so it is meaningless
+    without a starting picture of the book. This snapshot is that anchor.
+
+    Args:
+        data: Decoded JSON body of a /api/v3/depth response.
+        symbol: Canonical symbol. The response omits it, since it was supplied
+            in the request, so it is passed in to keep the row self-contained.
+        received_at: Local arrival time, epoch ms.
+
+    Returns:
+        Flat row. `last_update_id` is the anchor point: when the book is
+        replayed, diff messages at or below it are already reflected here and
+        are discarded.
+    """
+    return {
+        "symbol": symbol,
+        "last_update_id": data["lastUpdateId"],
+        "bids": data["bids"],
+        "asks": data["asks"],
+        "received_at": received_at,
+    }
+
+
 def parse_message(stream: str, data: dict, received_at: int) -> tuple[str, dict]:
     """Route a combined-stream message to the parser for its kind.
 

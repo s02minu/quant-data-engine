@@ -149,9 +149,20 @@ grows; the flat one is retired.
   - [x] Verified: synthetic sequences detect correctly, live feed reports no
         false positives
   - [ ] Reconnect path itself is unverified — needs the mocked socket in step 6
-- [ ] **Step 5b — Snapshot anchoring**
-  - [ ] Periodic REST depth snapshot, stored as its own kind
-  - [ ] Snapshot on reconnect, so the diff stream is re-anchorable after a gap
+- [x] **Step 5b — Snapshot anchoring**
+  - [x] REST depth snapshot stored under its own `kind=snapshot` partition
+  - [x] Snapshot taken on every connect, so each connection is anchored
+  - [x] Periodic snapshots on `snapshot_seconds`
+  - [x] Blocking HTTP reuses the batch retry helper, run via `asyncio.to_thread`
+        so the socket keeps draining
+  - [x] A failed snapshot is skipped, never fatal to a live capture
+  - [x] Verified: diff messages split correctly into stale vs replayable
+        against a snapshot anchor
+  - [ ] **Session-boundary gaps are not recorded.** `SequenceTracker` starts
+        empty each process, so a restart leaves an unrecorded hole between the
+        last id of one session and the first of the next. Matters once the
+        collector runs under a restart policy. Fix: emit start/stop session
+        markers, or persist the last seen id per stream.
 - [ ] **Step 6 — Tests**
   - [ ] Mocked socket: no network needed
   - [ ] Parser unit tests

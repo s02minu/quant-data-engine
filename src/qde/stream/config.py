@@ -21,8 +21,12 @@ class StreamConfig:
         flush_seconds: Seconds to buffer in memory before writing a Parquet
             part file. Larger means fewer, bigger files but more data at risk
             if the process dies before a flush.
+        snapshot_seconds: Interval between REST order-book snapshots, which
+            anchor the diff-depth stream.
+        snapshot_depth: Price levels per snapshot.
         base_dir: Root of the data lake; bronze output is written under it.
         ws_base_url: Binance websocket base URL.
+        rest_base_url: Binance REST API base URL, used for snapshots.
     """
 
     source: str = "binance"
@@ -33,8 +37,11 @@ class StreamConfig:
     kinds: list[str] = field(default_factory=lambda: ["trades", "depth", "book_ticker"])
     depth_speed: str = "100ms"
     flush_seconds: int = 30
+    snapshot_seconds: int = 300
+    snapshot_depth: int = 1000
     base_dir: str = "data"
     ws_base_url: str = "wss://stream.binance.com:9443"
+    rest_base_url: str = "https://api.binance.com"
 
     def stream_names(self) -> list[str]:
         """Return the Binance stream names to subscribe to.
