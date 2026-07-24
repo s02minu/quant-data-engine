@@ -127,11 +127,15 @@ grows; the flat one is retired.
   - [x] Kinds captured: `trades`, `depth`, `book_ticker`
   - [x] `book_ticker` has no exchange timestamp, so `received_at` is its only
         time reference; latency reported as n/a rather than failing
-- [ ] **Step 4 — Buffer and flush**
-  - [ ] In-memory buffer per (kind, symbol)
-  - [ ] Timed flush task running concurrently with the read loop
-  - [ ] Write Parquet part files via `bronze_path()`
-  - [ ] Flush on shutdown so buffered data is not lost
+- [x] **Step 4 — Buffer and flush**
+  - [x] In-memory buffer per (kind, symbol) — one buffer maps to one partition
+  - [x] Timed flush task running concurrently with the read loop
+  - [x] Write Parquet part files via `bronze_path()`
+  - [x] Flush on shutdown so buffered data is not lost
+  - [x] Verified: files read back via DuckDB, partition keys resolved from paths
+  - [ ] Known limitation: the Parquet write blocks the read loop, since `flush`
+        has no await point. Harmless at current volume; move the write to a
+        thread pool if the socket starts backing up.
 - [ ] **Step 5 — Durability**
   - [ ] Reconnect with exponential backoff
   - [ ] Gap detection via trade id / depth update id continuity

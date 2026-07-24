@@ -2,11 +2,15 @@
 
 import asyncio
 import json
+from collections import defaultdict
+from datetime import datetime, timezone
 
+import pandas as pd
 import websockets
 
 from qde.stream.config import StreamConfig
 from qde.stream.parsers import now_ms, parse_message
+from qde.stream.paths import bronze_path
 
 
 class StreamCollector:
@@ -20,6 +24,9 @@ class StreamCollector:
     def __init__(self, config: StreamConfig):
         self.config = config
         self.count = 0
+        # Rows wait here between flushes. Keyed by (kind, symbol) because that
+        # pair identifies one bronze partition, so a buffer maps to one file.
+        self.buffers: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
     def _combined_url(self) -> str:
         """Build the combined-stream URL for all configured subscriptions.
@@ -42,17 +49,30 @@ class StreamCollector:
                 for a bounded demo.
         """
         url = self._combined_url()
-        # opens the connection and guarantees the connection is cleanly closed
-        async with websockets.connect(url) as ws:
-            # Yields one message per push and pauses in between without blocking
-            # the process; runs until the socket closes (or max_messages is hit).
-            async for raw in ws:
-                # Stamped before any parsing work so the value reflects arrival,
-                # not how long processing happened to take.
-                received_at = now_ms()
-                self._handle(json.loads(raw), received_at)
-                if max_messages is not None and self.count >= max_messages:
-                    break
+
+        # The second concurrent task: it sleeps between flushes while the read
+        # loop below keeps draining the socket. An unread socket would back up
+        # and eventually be dropped by the exchange.
+        flush_task = asyncio.create_task(self._flush_loop())
+
+        try:
+            # opens the connection and guarantees the connection is cleanly closed
+            async with websockets.connect(url) as ws:
+                # Yields one message per push and pauses in between without blocking
+                # the process; runs until the socket closes (or max_messages is hit).
+                async for raw in ws:
+                    # Stamped before any parsing work so the value reflects arrival,
+                    # not how long processing happened to take.
+                    received_at = now_ms()
+                    self._handle(json.loads(raw), received_at)
+                    if max_messages is not None and self.count >= max_messages:
+                        break
+        finally:
+            # Runs on normal exit, on error, and on Ctrl-C. Without this final
+            # flush everything buffered since the last interval would be lost,
+            # and streamed data cannot be re-fetched.
+            flush_task.cancel()
+            self.flush()
 
     def _handle(self, message: dict, received_at: int) -> None:
         """Route one message to its parser.
@@ -62,24 +82,51 @@ class StreamCollector:
         """
         self.count += 1
         kind, row = parse_message(message["stream"], message["data"], received_at)
+        self.buffers[(kind, row["symbol"])].append(row)
 
-        # Difference between local arrival and exchange emission: the feed's
-        # end-to-end latency, only measurable because received_at is captured live.
-        # book_ticker carries no exchange timestamp, so latency is undefined there.
-        event_time = row.get("event_time")
-        latency = f"{received_at - event_time:>4}ms" if event_time else " n/a"
+    def flush(self) -> int:
+        """Write every non-empty buffer to a Parquet part file.
 
-        if kind == "trades":
-            detail = f"{row['price']} x {row['quantity']}"
-        elif kind == "book_ticker":
-            detail = f"bid {row['bid_price']} / ask {row['ask_price']}"
-        else:
-            detail = f"{len(row['bids'])} bids / {len(row['asks'])} asks"
-        print(f"[{self.count:>3}] {kind:<11} {row['symbol']:<8} lat={latency}  {detail}")
+        Each (kind, symbol) buffer becomes one file under its bronze partition.
+        Buffers are detached before writing so the read loop can keep appending
+        to a fresh list while the previous batch is on its way to disk.
+
+        Returns:
+            Number of rows written.
+        """
+        batch_time = datetime.now(timezone.utc)
+        written = 0
+
+        for key in list(self.buffers):
+            rows = self.buffers[key]
+            if not rows:
+                continue
+            self.buffers[key] = []
+
+            kind, symbol = key
+            path = bronze_path(self.config, kind, symbol, batch_time)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(rows).to_parquet(path, engine="pyarrow", index=False)
+
+            written += len(rows)
+            print(f"flushed {len(rows):>5} rows -> {path}")
+
+        return written
+
+    async def _flush_loop(self) -> None:
+        """Flush on a fixed interval, concurrently with the read loop."""
+        while True:
+            await asyncio.sleep(self.config.flush_seconds)
+            self.flush()
 
 
 if __name__ == "__main__":
-    # Narrow demo config: one symbol, so the output stays watchable while both
-    # kinds exercise the router. Pass max_messages=None to run indefinitely.
-    demo = StreamConfig(symbols=["BTCUSDT"], kinds=["trades", "depth", "book_ticker"])
-    asyncio.run(StreamCollector(demo).run(max_messages=20))
+    # Narrow demo config: one symbol, and a short flush window so a periodic
+    # flush is visible before the run ends. Real capture uses the defaults and
+    # max_messages=None.
+    demo = StreamConfig(
+        symbols=["BTCUSDT"],
+        kinds=["trades", "depth", "book_ticker"],
+        flush_seconds=5,
+    )
+    asyncio.run(StreamCollector(demo).run(max_messages=200))
