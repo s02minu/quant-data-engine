@@ -6,6 +6,7 @@ import json
 import websockets
 
 from qde.stream.config import StreamConfig
+from qde.stream.parsers import now_ms, parse_message
 
 
 class StreamCollector:
@@ -46,20 +47,35 @@ class StreamCollector:
             # Yields one message per push and pauses in between without blocking
             # the process; runs until the socket closes (or max_messages is hit).
             async for raw in ws:
-                self._handle(json.loads(raw))
+                # Stamped before any parsing work so the value reflects arrival,
+                # not how long processing happened to take.
+                received_at = now_ms()
+                self._handle(json.loads(raw), received_at)
                 if max_messages is not None and self.count >= max_messages:
                     break
 
-    def _handle(self, message: dict) -> None:
-        """Process one message. Placeholder: print a one-line summary."""
+    def _handle(self, message: dict, received_at: int) -> None:
+        """Route one message to its parser.
+
+        Placeholder output for now; step 4 replaces the print with a buffer
+        keyed by (kind, symbol).
+        """
         self.count += 1
-        stream = message.get("stream")
-        data = message.get("data", {})
-        print(f"[{self.count:>3}] {stream}: {data}")
+        kind, row = parse_message(message["stream"], message["data"], received_at)
+
+        # Difference between local arrival and exchange emission: the feed's
+        # end-to-end latency, only measurable because received_at is captured live.
+        latency_ms = received_at - row["event_time"]
+
+        if kind == "trades":
+            detail = f"{row['price']} x {row['quantity']}"
+        else:
+            detail = f"{len(row['bids'])} bids / {len(row['asks'])} asks"
+        print(f"[{self.count:>3}] {kind:<6} {row['symbol']:<8} lat={latency_ms:>4}ms  {detail}")
 
 
 if __name__ == "__main__":
-    # Narrow demo config: one symbol, trades only, so the output is watchable.
-    # Widen by editing symbols/kinds, or pass max_messages=None to run forever.
-    demo = StreamConfig(symbols=["BTCUSDT"], kinds=["trades"])
+    # Narrow demo config: one symbol, so the output stays watchable while both
+    # kinds exercise the router. Pass max_messages=None to run indefinitely.
+    demo = StreamConfig(symbols=["BTCUSDT"], kinds=["trades", "depth"])
     asyncio.run(StreamCollector(demo).run(max_messages=20))

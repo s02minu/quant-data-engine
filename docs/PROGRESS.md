@@ -119,10 +119,11 @@ grows; the flat one is retired.
   - [x] Combined-stream URL from config
   - [x] Async connect + read loop
   - [x] Verified live against Binance
-- [ ] **Step 3 — Parsers**
-  - [ ] Route messages by `stream` field (trade vs depth)
-  - [ ] Flatten payload, preserving `p`/`q` as raw strings
-  - [ ] Stamp local UTC receive-time (event time vs processing time)
+- [x] **Step 3 — Parsers**
+  - [x] Route messages by `stream` field (trade vs depth)
+  - [x] Flatten payload, preserving `p`/`q` as raw strings
+  - [x] Stamp local UTC receive-time (event time vs processing time)
+  - [x] Feed latency observable as `received_at - event_time`
 - [ ] **Step 4 — Buffer and flush**
   - [ ] In-memory buffer per (kind, symbol)
   - [ ] Timed flush task running concurrently with the read loop
@@ -141,6 +142,10 @@ grows; the flat one is retired.
   - [ ] Dockerfile + compose with `restart: unless-stopped`
   - [ ] Deployed to an always-on host
   - [ ] Capture running continuously
+
+Possible later addition: a `bookTicker` kind (best bid/ask on every change,
+i.e. the spread tick by tick). Cheap to add — one branch in `stream_names()`,
+one parser, one route — and useful for microstructure work.
 
 ### Batch side
 
