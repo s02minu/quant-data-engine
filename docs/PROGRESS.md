@@ -138,11 +138,20 @@ grows; the flat one is retired.
   - [ ] Known limitation: the Parquet write blocks the read loop, since `flush`
         has no await point. Harmless at current volume; move the write to a
         thread pool if the socket starts backing up.
-- [ ] **Step 5 — Durability**
-  - [ ] Reconnect with exponential backoff
-  - [ ] Gap detection via trade id / depth update id continuity
-  - [ ] Gap markers recorded in the data
-  - [ ] Periodic REST depth snapshot to anchor the diff stream
+- [x] **Step 5a — Reconnect and gap detection**
+  - [x] Reconnect loop with exponential backoff, capped at 60s
+  - [x] Buffers flushed before waiting out an outage
+  - [x] Per-kind continuity rules: `trades` and `depth` contiguous and
+        countable, `book_ticker` ordering only
+  - [x] Backwards jumps treated as replays, not as missing data
+  - [x] Gap records written to their own `kind=gaps` partition
+  - [x] Sequence state reset on reconnect so one outage yields one record
+  - [x] Verified: synthetic sequences detect correctly, live feed reports no
+        false positives
+  - [ ] Reconnect path itself is unverified — needs the mocked socket in step 6
+- [ ] **Step 5b — Snapshot anchoring**
+  - [ ] Periodic REST depth snapshot, stored as its own kind
+  - [ ] Snapshot on reconnect, so the diff stream is re-anchorable after a gap
 - [ ] **Step 6 — Tests**
   - [ ] Mocked socket: no network needed
   - [ ] Parser unit tests

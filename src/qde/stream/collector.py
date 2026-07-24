@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import websockets
+from websockets.exceptions import WebSocketException
 
 from qde.stream.config import StreamConfig
+from qde.stream.gaps import SequenceTracker, reconnect_gap
 from qde.stream.parsers import now_ms, parse_message
 from qde.stream.paths import bronze_path
 
@@ -27,6 +29,9 @@ class StreamCollector:
         # Rows wait here between flushes. Keyed by (kind, symbol) because that
         # pair identifies one bronze partition, so a buffer maps to one file.
         self.buffers: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        self.sequences = SequenceTracker()
+        self.gap_count = 0
+        self._disconnected_at: int | None = None
 
     def _combined_url(self) -> str:
         """Build the combined-stream URL for all configured subscriptions.
@@ -55,18 +60,37 @@ class StreamCollector:
         # and eventually be dropped by the exchange.
         flush_task = asyncio.create_task(self._flush_loop())
 
+        backoff = 1
+
         try:
-            # opens the connection and guarantees the connection is cleanly closed
-            async with websockets.connect(url) as ws:
-                # Yields one message per push and pauses in between without blocking
-                # the process; runs until the socket closes (or max_messages is hit).
-                async for raw in ws:
-                    # Stamped before any parsing work so the value reflects arrival,
-                    # not how long processing happened to take.
-                    received_at = now_ms()
-                    self._handle(json.loads(raw), received_at)
-                    if max_messages is not None and self.count >= max_messages:
-                        break
+            # Outer loop: a dropped connection is expected, not exceptional.
+            while True:
+                try:
+                    # opens the connection and guarantees the connection is cleanly closed
+                    async with websockets.connect(url) as ws:
+                        self._on_connected()
+                        backoff = 1  # reset only after a connection succeeds
+
+                        # Yields one message per push and pauses in between without
+                        # blocking the process; runs until the socket closes.
+                        async for raw in ws:
+                            # Stamped before any parsing work so the value reflects
+                            # arrival, not how long processing happened to take.
+                            received_at = now_ms()
+                            self._handle(json.loads(raw), received_at)
+                            if max_messages is not None and self.count >= max_messages:
+                                return
+
+                except (WebSocketException, OSError) as exc:
+                    # Buffered rows are written before waiting, so an outage never
+                    # sits on top of unsaved data.
+                    self._disconnected_at = now_ms()
+                    self.flush()
+                    print(f"connection lost ({type(exc).__name__}); retrying in {backoff}s")
+                    await asyncio.sleep(backoff)
+                    # Exponential backoff, capped: a long outage must not turn into
+                    # a tight reconnect loop against the exchange.
+                    backoff = min(backoff * 2, 60)
         finally:
             # Runs on normal exit, on error, and on Ctrl-C. Without this final
             # flush everything buffered since the last interval would be lost,
@@ -82,7 +106,34 @@ class StreamCollector:
         """
         self.count += 1
         kind, row = parse_message(message["stream"], message["data"], received_at)
-        self.buffers[(kind, row["symbol"])].append(row)
+        symbol = row["symbol"]
+        self.buffers[(kind, symbol)].append(row)
+
+        gap = self.sequences.check(kind, symbol, row)
+        if gap is not None:
+            self._record_gap(gap)
+
+    def _record_gap(self, gap: dict) -> None:
+        """Buffer a gap record and announce it.
+
+        Gaps are stored under their own partition rather than as a column on
+        the affected rows, so a hole is queryable without scanning the tape.
+        """
+        self.gap_count += 1
+        self.buffers[("gaps", gap["symbol"])].append(gap)
+        missing = gap["missing_count"]
+        detail = f"{missing} missing" if missing is not None else "count unknown"
+        print(f"GAP  {gap['stream_kind']}/{gap['symbol']}  {gap['reason']}  ({detail})")
+
+    def _on_connected(self) -> None:
+        """Record the outage that preceded this connection, if any."""
+        if self._disconnected_at is None:
+            return
+
+        reconnected_at = now_ms()
+        for kind, symbol in self.sequences.reset():
+            self._record_gap(reconnect_gap(kind, symbol, self._disconnected_at, reconnected_at))
+        self._disconnected_at = None
 
     def flush(self) -> int:
         """Write every non-empty buffer to a Parquet part file.
