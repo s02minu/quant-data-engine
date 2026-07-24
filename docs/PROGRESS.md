@@ -74,6 +74,8 @@ grows; the flat one is retired.
 - [ ] `storage.py`: replace `_ohlcv_path` and the `data/ohlcv/*.parquet` glob in `query()`
 - [ ] `quality.py`: `build_quality_summary` derives symbol/source/interval by
       splitting filenames — read partition keys from the path instead
+- [ ] `scripts/daily_update.py`: discovers symbols the same way; drive it from
+      the registry once that exists rather than from filenames
 - [ ] Update notebooks and the Power BI dashboard source paths
 
 ## Phase 2 — Licensing audit (gating)
@@ -180,6 +182,19 @@ kinds. Relevant to the retention question in ROADMAP §11.
 - [ ] Custom financial tests: OHLC coherence, gap limits, bitemporal ordering
 - [ ] Freshness SLAs per source
 - [ ] Data quality policy documented
+
+### Microstructure checks
+
+The existing checks are bars-shaped and do not carry over to tick data. The
+streaming equivalents:
+
+- [ ] Sequence continuity per kind (`trade_id` contiguous, `update_id` increasing)
+- [ ] Message rate per kind/symbol — a silent feed is indistinguishable from a
+      quiet market without this
+- [ ] Latency percentiles (p50/p99), noting the clock-skew caveat
+- [ ] Crossed-book check (bid >= ask) and non-negative sizes
+- [ ] Rows per partition per day, and part-file counts (small-files watch)
+- [ ] Surface gap records from `kind=gaps` in the quality dashboard
 
 ## Phase 10 — Observability
 
