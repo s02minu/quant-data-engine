@@ -31,6 +31,8 @@ def bronze_path(
         caller creates them before writing, as in qde.storage.
     """
     date_str = batch_time.strftime("%Y-%m-%d")
+    # %f is microseconds (6 digits); [:-3] trims to milliseconds. Z marks UTC.
+    # Millisecond precision keeps successive flushes from colliding on a filename.
     stamp = batch_time.strftime("%Y%m%dT%H%M%S%f")[:-3] + "Z"
 
     return (
