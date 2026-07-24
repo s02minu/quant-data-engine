@@ -65,17 +65,21 @@ class StreamCollector:
 
         # Difference between local arrival and exchange emission: the feed's
         # end-to-end latency, only measurable because received_at is captured live.
-        latency_ms = received_at - row["event_time"]
+        # book_ticker carries no exchange timestamp, so latency is undefined there.
+        event_time = row.get("event_time")
+        latency = f"{received_at - event_time:>4}ms" if event_time else " n/a"
 
         if kind == "trades":
             detail = f"{row['price']} x {row['quantity']}"
+        elif kind == "book_ticker":
+            detail = f"bid {row['bid_price']} / ask {row['ask_price']}"
         else:
             detail = f"{len(row['bids'])} bids / {len(row['asks'])} asks"
-        print(f"[{self.count:>3}] {kind:<6} {row['symbol']:<8} lat={latency_ms:>4}ms  {detail}")
+        print(f"[{self.count:>3}] {kind:<11} {row['symbol']:<8} lat={latency}  {detail}")
 
 
 if __name__ == "__main__":
     # Narrow demo config: one symbol, so the output stays watchable while both
     # kinds exercise the router. Pass max_messages=None to run indefinitely.
-    demo = StreamConfig(symbols=["BTCUSDT"], kinds=["trades", "depth"])
+    demo = StreamConfig(symbols=["BTCUSDT"], kinds=["trades", "depth", "book_ticker"])
     asyncio.run(StreamCollector(demo).run(max_messages=20))

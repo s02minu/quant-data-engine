@@ -45,6 +45,36 @@ def parse_trade(data: dict, received_at: int) -> dict:
     }
 
 
+def parse_book_ticker(data: dict, received_at: int) -> dict:
+    """Flatten a Binance book-ticker payload into a bronze row.
+
+    Fires on every change to the best bid or ask, so it resolves top-of-book
+    moves that the 100ms diff-depth stream aggregates away.
+
+    The payload carries no exchange timestamp, which makes `received_at` the
+    only time reference these rows will ever have; without it they cannot be
+    placed on a timeline at all.
+
+    Args:
+        data: The "data" object of a combined-stream bookTicker message.
+        received_at: Local arrival time, epoch ms.
+
+    Returns:
+        Flat row. `update_id` is the book's global update id: strictly
+        increasing, but not by one per message, so gap detection checks
+        ordering rather than contiguity.
+    """
+    return {
+        "symbol": data["s"],
+        "bid_price": data["b"],        # string: exact digits, no float rounding
+        "bid_qty": data["B"],          # string: same reason
+        "ask_price": data["a"],        # string: same reason
+        "ask_qty": data["A"],          # string: same reason
+        "update_id": data["u"],
+        "received_at": received_at,
+    }
+
+
 def parse_depth(data: dict, received_at: int) -> dict:
     """Flatten a Binance diff-depth payload into a bronze row.
 
@@ -89,6 +119,8 @@ def parse_message(stream: str, data: dict, received_at: int) -> tuple[str, dict]
     # matched anywhere in the name rather than at the end.
     if stream.endswith("@trade"):
         return "trades", parse_trade(data, received_at)
+    if stream.endswith("@bookTicker"):
+        return "book_ticker", parse_book_ticker(data, received_at)
     if "@depth" in stream:
         return "depth", parse_depth(data, received_at)
     raise ValueError(f"Unrecognised stream: {stream!r}")

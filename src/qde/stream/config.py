@@ -30,7 +30,7 @@ class StreamConfig:
     # default_factory (not a bare list) so each instance gets its own list;
     # a shared mutable default would leak edits across every StreamConfig.
     symbols: list[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
-    kinds: list[str] = field(default_factory=lambda: ["trades", "depth"])
+    kinds: list[str] = field(default_factory=lambda: ["trades", "depth", "book_ticker"])
     depth_speed: str = "100ms"
     flush_seconds: int = 30
     base_dir: str = "data"
@@ -51,6 +51,8 @@ class StreamConfig:
             pair = symbol.lower()  # the only place Binance's lowercase convention lives
             if "trades" in self.kinds:
                 names.append(f"{pair}@trade")
+            if "book_ticker" in self.kinds:
+                names.append(f"{pair}@bookTicker")  # Binance's camelCase stays at this boundary
             if "depth" in self.kinds:
                 names.append(f"{pair}@depth@{self.depth_speed}")
         return names

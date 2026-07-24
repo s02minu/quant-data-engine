@@ -120,10 +120,13 @@ grows; the flat one is retired.
   - [x] Async connect + read loop
   - [x] Verified live against Binance
 - [x] **Step 3 — Parsers**
-  - [x] Route messages by `stream` field (trade vs depth)
-  - [x] Flatten payload, preserving `p`/`q` as raw strings
+  - [x] Route messages by `stream` field to the parser for their kind
+  - [x] Flatten payload, preserving prices/quantities as raw strings
   - [x] Stamp local UTC receive-time (event time vs processing time)
   - [x] Feed latency observable as `received_at - event_time`
+  - [x] Kinds captured: `trades`, `depth`, `book_ticker`
+  - [x] `book_ticker` has no exchange timestamp, so `received_at` is its only
+        time reference; latency reported as n/a rather than failing
 - [ ] **Step 4 — Buffer and flush**
   - [ ] In-memory buffer per (kind, symbol)
   - [ ] Timed flush task running concurrently with the read loop
@@ -143,9 +146,9 @@ grows; the flat one is retired.
   - [ ] Deployed to an always-on host
   - [ ] Capture running continuously
 
-Possible later addition: a `bookTicker` kind (best bid/ask on every change,
-i.e. the spread tick by tick). Cheap to add — one branch in `stream_names()`,
-one parser, one route — and useful for microstructure work.
+Note on volume: `book_ticker` fires on every change to the size resting at the
+best bid or ask, not only on price moves, so it is the chattiest of the three
+kinds. Relevant to the retention question in ROADMAP §11.
 
 ### Batch side
 
