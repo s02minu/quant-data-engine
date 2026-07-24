@@ -63,6 +63,19 @@ day it is not running is data that cannot be recovered later.
 - [ ] Hive-style partitioning, `group` as outermost key
 - [ ] Partitioning scheme documented
 
+### Unify the legacy layout
+
+The batch pipeline predates the medallion decision and writes a flat layout,
+`data/ohlcv/<symbol>_<source>_<interval>.parquet`, while the stream collector
+writes `data/bronze/group=.../...`. Two layouts cannot coexist as source count
+grows; the flat one is retired.
+
+- [ ] Migrate existing OHLCV files to `bronze/group=bars/source=.../symbol=.../date=...`
+- [ ] `storage.py`: replace `_ohlcv_path` and the `data/ohlcv/*.parquet` glob in `query()`
+- [ ] `quality.py`: `build_quality_summary` derives symbol/source/interval by
+      splitting filenames — read partition keys from the path instead
+- [ ] Update notebooks and the Power BI dashboard source paths
+
 ## Phase 2 — Licensing audit (gating)
 
 - [ ] Classify every current source as redistributable or not
