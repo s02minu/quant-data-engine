@@ -163,10 +163,13 @@ grows; the flat one is retired.
         last id of one session and the first of the next. Matters once the
         collector runs under a restart policy. Fix: emit start/stop session
         markers, or persist the last seen id per stream.
-- [ ] **Step 6 — Tests**
-  - [ ] Mocked socket: no network needed
-  - [ ] Parser unit tests
-  - [ ] Partition-path tests
+- [x] **Step 6 — Tests**
+  - [x] Config, path, parser, and gap unit tests (pure, offline, deterministic)
+  - [x] Mocked-socket collector test: a fake websocket yields scripted messages
+        then raises to simulate a drop; no network needed
+  - [x] Reconnect path verified: forced drop, resume, exactly one reconnect gap
+        recorded, no spurious sequence jump across the seam
+  - [x] 19 tests passing in ~3s with no internet, unlike the batch loader tests
 - [ ] **Step 7 — Run it for real**
   - [ ] Dockerfile + compose with `restart: unless-stopped`
   - [ ] Deployed to an always-on host
