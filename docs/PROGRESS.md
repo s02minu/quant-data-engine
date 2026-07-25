@@ -63,6 +63,17 @@ day it is not running is data that cannot be recovered later.
 - [ ] Hive-style partitioning, `group` as outermost key
 - [ ] Partitioning scheme documented
 
+### Lake maintenance
+
+- [x] Compaction (`qde.compact`): merges the many small part files in a settled
+      partition into one. Only touches partitions dated before today, since the
+      collector still writes the current day. Crash-safe via temp → delete →
+      rename, with a recovery pass for interrupted runs. Tested (incl. both
+      recovery cases) and verified on real data: 51 files -> 17, rows unchanged.
+- [ ] Sync: upload compacted files to R2, verify, then delete locally so disk
+      stays flat and the VPS becomes disposable. Pairs with compaction:
+      compact settled partitions -> upload -> prune. Schedule both on the VPS.
+
 ### Unify the legacy layout
 
 The batch pipeline predates the medallion decision and writes a flat layout,
