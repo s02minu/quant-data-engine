@@ -1,0 +1,12 @@
+services:
+  collector:
+    build: .
+    image: qde-collector
+    restart: unless-stopped
+    environment:
+      QDE_BASE_DIR: /data
+      QDE_SYMBOLS: BTCUSDT,ETHUSDT,SOLUSDT
+      QDE_KINDS: trades,depth,book_ticker
+    volumes:
+      - ./data:/data
+    stop_grace_period: 30s

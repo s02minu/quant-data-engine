@@ -1,0 +1,12 @@
+.venv
+data
+.git
+.idea
+.pytest_cache
+__pycache__
+*.pyc
+notebooks
+dashboard
+assets
+tests
+*.pbix
