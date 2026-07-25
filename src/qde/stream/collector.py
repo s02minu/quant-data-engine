@@ -11,17 +11,29 @@ from websockets.exceptions import WebSocketException
 
 from qde.loaders.http import get_with_requests
 from qde.stream.config import StreamConfig
-from qde.stream.gaps import SequenceTracker, reconnect_gap
+from qde.stream.gaps import (
+    SESSION_START,
+    SESSION_STOP,
+    SequenceTracker,
+    reconnect_gap,
+    session_record,
+)
 from qde.stream.parsers import now_ms, parse_depth_snapshot, parse_message
 from qde.stream.paths import bronze_path
 
+# Session markers describe the whole collector, not one symbol, so they use a
+# sentinel in the symbol partition. The leading underscore keeps it from ever
+# colliding with a real ticker.
+SESSION_SYMBOL = "_all"
+
 
 class StreamCollector:
-    """Connects to Binance, subscribes to the configured streams, and reads
-    messages as they arrive.
+    """Captures Binance streams to the bronze layer.
 
-    This step only establishes the live connection and surfaces each message.
-    Parsing, buffering, and writing to bronze are added in later steps.
+    Connects to the configured streams, parses each message, buffers rows by
+    (kind, symbol), and flushes micro-batches to partitioned Parquet. Survives
+    disconnects with backoff, records sequence gaps and session boundaries, and
+    periodically anchors the diff-depth stream with REST snapshots.
     """
 
     def __init__(self, config: StreamConfig):
@@ -55,6 +67,11 @@ class StreamCollector:
                 for a bounded demo.
         """
         url = self._combined_url()
+
+        # Marks the boundary a restart would otherwise leave silent: any data
+        # before it belongs to a prior session, and the span since that session
+        # ended is downtime.
+        self._record_session(SESSION_START, now_ms())
 
         # The second concurrent task: it sleeps between flushes while the read
         # loop below keeps draining the socket. An unread socket would back up
@@ -102,17 +119,16 @@ class StreamCollector:
         finally:
             # Runs on normal exit, on error, and on Ctrl-C. Without this final
             # flush everything buffered since the last interval would be lost,
-            # and streamed data cannot be re-fetched.
+            # and streamed data cannot be re-fetched. A best-effort stop marker
+            # closes the session; a hard kill (SIGKILL) skips it, in which case
+            # the next start marker still bounds the downtime.
             flush_task.cancel()
             snapshot_task.cancel()
+            self._record_session(SESSION_STOP, now_ms(), self.count, self.gap_count)
             self.flush()
 
     def _handle(self, message: dict, received_at: int) -> None:
-        """Route one message to its parser.
-
-        Placeholder output for now; step 4 replaces the print with a buffer
-        keyed by (kind, symbol).
-        """
+        """Parse one message, buffer it, and check sequence continuity."""
         self.count += 1
         kind, row = parse_message(message["stream"], message["data"], received_at)
         symbol = row["symbol"]
@@ -133,6 +149,14 @@ class StreamCollector:
         missing = gap["missing_count"]
         detail = f"{missing} missing" if missing is not None else "count unknown"
         print(f"GAP  {gap['stream_kind']}/{gap['symbol']}  {gap['reason']}  ({detail})")
+
+    def _record_session(self, event: str, at_ms: int,
+                        message_count: int | None = None,
+                        gap_count: int | None = None) -> None:
+        """Buffer a session start/stop marker under the session partition."""
+        record = session_record(event, at_ms, message_count, gap_count)
+        self.buffers[("session", SESSION_SYMBOL)].append(record)
+        print(f"session {event} at {at_ms}")
 
     def _on_connected(self) -> None:
         """Record the outage that preceded this connection, if any."""

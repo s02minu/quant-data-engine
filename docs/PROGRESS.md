@@ -158,11 +158,11 @@ grows; the flat one is retired.
   - [x] A failed snapshot is skipped, never fatal to a live capture
   - [x] Verified: diff messages split correctly into stale vs replayable
         against a snapshot anchor
-  - [ ] **Session-boundary gaps are not recorded.** `SequenceTracker` starts
-        empty each process, so a restart leaves an unrecorded hole between the
-        last id of one session and the first of the next. Matters once the
-        collector runs under a restart policy. Fix: emit start/stop session
-        markers, or persist the last seen id per stream.
+  - [x] **Session-boundary gaps recorded.** Start/stop markers written to a
+        `kind=session` partition; downtime is the span between one session's
+        stop (or last data) and the next start. Chosen over persisting last-seen
+        ids because a restart gap is a wall-clock outage, not a sequence jump.
+        Stop is best-effort (skipped on SIGKILL); the next start still bounds it.
 - [x] **Step 6 — Tests**
   - [x] Config, path, parser, and gap unit tests (pure, offline, deterministic)
   - [x] Mocked-socket collector test: a fake websocket yields scripted messages

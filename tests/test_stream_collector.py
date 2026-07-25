@@ -4,9 +4,9 @@ import json
 import pandas as pd
 
 import qde.stream.collector as collector_mod
-from qde.stream.collector import StreamCollector
+from qde.stream.collector import SESSION_SYMBOL, StreamCollector
 from qde.stream.config import StreamConfig
-from qde.stream.gaps import RECONNECT
+from qde.stream.gaps import RECONNECT, SESSION_START, SESSION_STOP
 
 
 def _trade_msg(trade_id):
@@ -100,3 +100,22 @@ def test_collector_writes_bronze_parts(tmp_path, monkeypatch):
     assert list(trades["trade_id"]) == [1, 2, 3]
     # Prices survived the round-trip as strings, not floats.
     assert trades.iloc[0]["price"] == "100.0"
+
+
+def test_collector_records_session_start_and_stop(tmp_path, monkeypatch):
+    scripts = [([_trade_msg(1), _trade_msg(2)], None)]
+    monkeypatch.setattr(collector_mod.websockets, "connect", _fake_connect(scripts))
+
+    cfg = StreamConfig(symbols=["BTCUSDT"], kinds=["trades"], base_dir=str(tmp_path))
+    collector = StreamCollector(cfg)
+    asyncio.run(collector.run(max_messages=2))
+
+    session = pd.read_parquet(
+        tmp_path / f"bronze/group=microstructure/source=binance/kind=session/symbol={SESSION_SYMBOL}"
+    )
+    events = list(session["event"])
+    assert SESSION_START in events
+    assert SESSION_STOP in events
+    # The stop marker carries the session totals; start leaves them null.
+    stop = session[session["event"] == SESSION_STOP].iloc[0]
+    assert stop["message_count"] == 2

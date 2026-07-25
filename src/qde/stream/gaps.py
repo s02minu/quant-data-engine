@@ -19,6 +19,37 @@ Continuity guarantees differ by kind:
 SEQUENCE_JUMP = "sequence_jump"
 RECONNECT = "reconnect"
 
+SESSION_START = "start"
+SESSION_STOP = "stop"
+
+
+def session_record(
+        event: str,
+        at_ms: int,
+        message_count: int | None = None,
+        gap_count: int | None = None,
+) -> dict:
+    """Mark the start or clean stop of a capture session.
+
+    Sequence tracking cannot span a process restart, so a gap across one is not
+    a sequence jump but a wall-clock outage: the collector simply was not
+    running. Recording when each session begins and ends makes that downtime
+    the visible span between one session and the next, rather than a silent
+    hole no id can reveal.
+
+    Args:
+        event: `SESSION_START` or `SESSION_STOP`.
+        at_ms: Wall-clock time of the event, epoch ms.
+        message_count: Messages handled this session (on stop).
+        gap_count: Gaps recorded this session (on stop).
+    """
+    return {
+        "event": event,
+        "at_ms": at_ms,
+        "message_count": message_count,
+        "gap_count": gap_count,
+    }
+
 
 def _gap_record(
         stream_kind: str,
