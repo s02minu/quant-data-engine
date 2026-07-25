@@ -170,7 +170,7 @@ grows; the flat one is retired.
   - [x] Reconnect path verified: forced drop, resume, exactly one reconnect gap
         recorded, no spurious sequence jump across the seam
   - [x] 19 tests passing in ~3s with no internet, unlike the batch loader tests
-- [~] **Step 7 — Run it for real**
+- [x] **Step 7 — Run it for real**
   - [x] Entry point `python -m qde.stream`, config from env (precursor to
         pydantic-settings); runs indefinitely, `QDE_MAX_MESSAGES` bounds a test
   - [x] `websockets` added to dependencies — was undeclared, would break a
@@ -179,9 +179,11 @@ grows; the flat one is retired.
         buffer instead of dropping it
   - [x] Dockerfile, `.dockerignore`, compose with `restart: unless-stopped`,
         `stop_grace_period: 30s`, and `./data` mounted as a volume
-  - [ ] Build and run the container locally (not verifiable in this env)
-  - [ ] Deploy to an always-on host
-  - [ ] Capture running continuously
+  - [x] Built and running in Docker on a Hetzner VPS (EU) — EU location avoids
+        Binance's US-IP restriction; box is outbound-only behind ufw
+  - [x] Capture running continuously, detached from any local session
+  - [x] Measured rate: ~0.5-1 GB/day for 3 symbols x all kinds; ~27k small
+        files/day. ~3-6 weeks of local disk runway on a 40 GB box.
 
 Note on volume: `book_ticker` fires on every change to the size resting at the
 best bid or ask, not only on price moves, so it is the chattiest of the three
