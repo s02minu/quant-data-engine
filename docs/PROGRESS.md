@@ -74,8 +74,10 @@ day it is not running is data that cannot be recovered later.
       locally only after a same-size check confirms the remote copy. Idempotent
       (a synced file is gone locally, so re-runs skip it); S3 client injected so
       tested offline with a fake. Credentials read from env, never hardcoded.
-- [ ] Schedule compact -> sync as a daily job on the VPS (cron running a one-off
-      container with the R2 env). End-to-end test against real R2 from the VPS.
+- [x] Scheduled compact -> sync as a daily VPS cron job (00:30 UTC) via
+      `scripts/maintain.sh`, one-off container with R2 env sourced from
+      secrets/r2.env. Verified end-to-end: 16 files (~95 MB) uploaded to R2,
+      local pruned, 0 failures.
 - [ ] R2 retention: delete objects older than the chosen window (start ~14 days)
       to cap storage cost. Small follow-on to sync.
 - [ ] Point DuckDB at R2 (`httpfs` / `s3` creds) to query the remote lake.
