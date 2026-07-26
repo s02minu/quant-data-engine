@@ -54,7 +54,9 @@ day it is not running is data that cannot be recovered later.
       Fixed real findings: dead imports, a duplicate `load_kraken_ohlcv` import,
       `timezone.utc` -> `datetime.UTC`, `try/except/pass` -> `contextlib.suppress`;
       formatted the codebase. 33 offline tests still green after.
-- [ ] `mypy` static typing, clean
+- [x] `mypy` static typing, clean (config in `pyproject.toml`,
+      `ignore_missing_imports`). Only 2 findings, both pandas-stubs false
+      positives; resolved with targeted, documented `# type: ignore[code]`.
 - [ ] `structlog` structured logging across loaders
 - [ ] `pydantic-settings` typed config from env
 

@@ -85,7 +85,8 @@ def load_ohlcv_local(
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
-    df = pd.read_parquet(path, engine="pyarrow")
+    # pandas-stubs' pyarrow-engine overload is too strict here; the call is valid.
+    df = pd.read_parquet(path, engine="pyarrow")  # type: ignore[call-overload]
 
     return df
 

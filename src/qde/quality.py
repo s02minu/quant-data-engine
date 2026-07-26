@@ -26,7 +26,8 @@ def check_gaps(df: pd.DataFrame, calendar: str = "crypto") -> pd.DataFrame:
 
     else:
         full_range = pd.date_range(df.index.min(), df.index.max(), freq="D", tz="UTC")
-        missing = full_range.difference(df.index)
+        # df.index is a DatetimeIndex at runtime; pandas-stubs types it as Index[Any].
+        missing = full_range.difference(df.index)  # type: ignore[arg-type]
 
     return missing
 
