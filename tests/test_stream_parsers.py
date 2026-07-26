@@ -9,8 +9,15 @@ from qde.stream.parsers import (
 
 
 def test_parse_trade_preserves_price_strings_and_stamps_received_at():
-    data = {"s": "BTCUSDT", "t": 42, "p": "64996.01000000", "q": "0.5",
-            "T": 111, "E": 112, "m": True}
+    data = {
+        "s": "BTCUSDT",
+        "t": 42,
+        "p": "64996.01000000",
+        "q": "0.5",
+        "T": 111,
+        "E": 112,
+        "m": True,
+    }
     row = parse_trade(data, received_at=999)
 
     # Prices stay as exact strings; no float conversion at the bronze boundary.

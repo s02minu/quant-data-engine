@@ -1,5 +1,6 @@
 import pandas as pd
 import pytest
+
 from qde.loaders.kraken_loader import load_kraken_ohlcv
 
 

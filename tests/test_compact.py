@@ -11,8 +11,13 @@ TODAY = date(2026, 7, 25)
 def _write_part(base, kind, symbol, day, name, rows):
     """Create one part file with `rows` integer rows, return its partition dir."""
     partition = (
-        Path(base) / "bronze" / "group=microstructure" / "source=binance"
-        / f"kind={kind}" / f"symbol={symbol}" / f"date={day}"
+        Path(base)
+        / "bronze"
+        / "group=microstructure"
+        / "source=binance"
+        / f"kind={kind}"
+        / f"symbol={symbol}"
+        / f"date={day}"
     )
     partition.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"n": range(rows)}).to_parquet(partition / name, index=False)

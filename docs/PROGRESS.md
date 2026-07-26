@@ -50,7 +50,10 @@ day it is not running is data that cannot be recovered later.
 
 - [x] pytest suite (loaders, symbol mapping, storage round-trips, errors)
 - [ ] Mock API responses so tests run without internet
-- [ ] `ruff` lint + format, configured in `pyproject.toml`
+- [x] `ruff` lint + format, configured in `pyproject.toml` (E/W/F/I/UP/B/SIM).
+      Fixed real findings: dead imports, a duplicate `load_kraken_ohlcv` import,
+      `timezone.utc` -> `datetime.UTC`, `try/except/pass` -> `contextlib.suppress`;
+      formatted the codebase. 33 offline tests still green after.
 - [ ] `mypy` static typing, clean
 - [ ] `structlog` structured logging across loaders
 - [ ] `pydantic-settings` typed config from env

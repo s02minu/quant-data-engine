@@ -11,11 +11,20 @@ from qde.stream.gaps import RECONNECT, SESSION_START, SESSION_STOP
 
 def _trade_msg(trade_id):
     """A combined-stream trade frame, JSON-encoded as the socket delivers it."""
-    return json.dumps({
-        "stream": "btcusdt@trade",
-        "data": {"s": "BTCUSDT", "t": trade_id, "p": "100.0", "q": "1.0",
-                 "T": 1000, "E": 1000, "m": True},
-    })
+    return json.dumps(
+        {
+            "stream": "btcusdt@trade",
+            "data": {
+                "s": "BTCUSDT",
+                "t": trade_id,
+                "p": "100.0",
+                "q": "1.0",
+                "T": 1000,
+                "E": 1000,
+                "m": True,
+            },
+        }
+    )
 
 
 class _FakeConn:
@@ -111,7 +120,8 @@ def test_collector_records_session_start_and_stop(tmp_path, monkeypatch):
     asyncio.run(collector.run(max_messages=2))
 
     session = pd.read_parquet(
-        tmp_path / f"bronze/group=microstructure/source=binance/kind=session/symbol={SESSION_SYMBOL}"
+        tmp_path
+        / f"bronze/group=microstructure/source=binance/kind=session/symbol={SESSION_SYMBOL}"
     )
     events = list(session["event"])
     assert SESSION_START in events

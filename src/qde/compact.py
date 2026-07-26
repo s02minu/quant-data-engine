@@ -16,7 +16,7 @@ originals survived the merge never committed, so the temp is discarded; if they
 were already deleted the rename simply never ran, so the temp is finalized.
 """
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -25,7 +25,7 @@ TEMP_NAME = ".compact.tmp.parquet"
 
 
 def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")[:-3] + "Z"
 
 
 def _recover_partition(partition_dir: Path) -> None:
@@ -69,7 +69,7 @@ def partition_date(partition_dir: Path) -> date | None:
     for part in partition_dir.parts:
         if part.startswith("date="):
             try:
-                return date.fromisoformat(part[len("date="):])
+                return date.fromisoformat(part[len("date=") :])
             except ValueError:
                 return None
     return None
@@ -84,7 +84,7 @@ def compact_bronze(base_dir: str = "data", today: date | None = None) -> dict:
     Returns a summary of partitions compacted and files merged.
     """
     if today is None:
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
 
     bronze = Path(base_dir) / "bronze"
     if not bronze.exists():
@@ -113,5 +113,7 @@ if __name__ == "__main__":
     import os
 
     summary = compact_bronze(base_dir=os.getenv("QDE_BASE_DIR", "data"))
-    print(f"compacted {summary['partitions_compacted']} partitions, "
-          f"merged {summary['files_merged']} files")
+    print(
+        f"compacted {summary['partitions_compacted']} partitions, "
+        f"merged {summary['files_merged']} files"
+    )

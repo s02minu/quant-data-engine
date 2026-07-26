@@ -7,10 +7,10 @@ from qde.stream.config import StreamConfig
 
 
 def bronze_path(
-        config: StreamConfig,
-        kind: str,
-        symbol: str,
-        batch_time: datetime,
+    config: StreamConfig,
+    kind: str,
+    symbol: str,
+    batch_time: datetime,
 ) -> Path:
     """Build the part-file path for one flushed micro-batch.
 

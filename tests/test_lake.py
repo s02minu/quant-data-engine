@@ -4,8 +4,7 @@ from qde.lake import bronze_glob
 def test_bronze_glob_defaults_to_all_partitions(monkeypatch):
     monkeypatch.setenv("QDE_R2_BUCKET", "qde-lake")
     assert bronze_glob() == (
-        "r2://qde-lake/bronze/group=microstructure/source=binance/"
-        "kind=*/symbol=*/date=*/*.parquet"
+        "r2://qde-lake/bronze/group=microstructure/source=binance/kind=*/symbol=*/date=*/*.parquet"
     )
 
 

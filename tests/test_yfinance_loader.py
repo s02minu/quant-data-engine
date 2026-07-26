@@ -1,5 +1,6 @@
 import pandas as pd
 import pytest
+
 from qde.loaders.yfinance_loader import load_yfinance_ohlcv
 
 
@@ -7,7 +8,7 @@ def test_returns_nonempty_dataframe():
     df = load_yfinance_ohlcv("BTC-USD", "2024-01-01", "2024-02-01")
     # asserts df is a DataFrame
     assert isinstance(df, pd.DataFrame)
-    #asserts df is not empty
+    # asserts df is not empty
     assert not df.empty
 
 

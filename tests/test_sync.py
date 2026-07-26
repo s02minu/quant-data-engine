@@ -34,8 +34,13 @@ class FakeS3:
 
 def _write_part(base, kind, symbol, day, name, rows):
     partition = (
-        Path(base) / "bronze" / "group=microstructure" / "source=binance"
-        / f"kind={kind}" / f"symbol={symbol}" / f"date={day}"
+        Path(base)
+        / "bronze"
+        / "group=microstructure"
+        / "source=binance"
+        / f"kind={kind}"
+        / f"symbol={symbol}"
+        / f"date={day}"
     )
     partition.mkdir(parents=True, exist_ok=True)
     file = partition / name
@@ -82,7 +87,10 @@ def test_todays_partition_is_not_synced(tmp_path):
 
 
 def test_size_mismatch_keeps_local_copy(tmp_path):
-    key = "bronze/group=microstructure/source=binance/kind=trades/symbol=SOLUSDT/date=2026-07-24/part-0.parquet"
+    key = (
+        "bronze/group=microstructure/source=binance/"
+        "kind=trades/symbol=SOLUSDT/date=2026-07-24/part-0.parquet"
+    )
     file = _write_part(tmp_path, "trades", "SOLUSDT", "2026-07-24", "part-0.parquet", 5)
     client = FakeS3(truncate={key})
 

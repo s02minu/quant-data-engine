@@ -43,8 +43,9 @@ def open_lake() -> duckdb.DuckDBPyConnection:
     return connect()
 
 
-def bronze_glob(kind: str = "*", symbol: str = "*", date: str = "*",
-                bucket: str | None = None) -> str:
+def bronze_glob(
+    kind: str = "*", symbol: str = "*", date: str = "*", bucket: str | None = None
+) -> str:
     """Build a r2:// glob selecting bronze partitions.
 
     Each argument narrows a partition key; the default "*" matches all. A

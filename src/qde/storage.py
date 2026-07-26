@@ -1,17 +1,13 @@
-import pandas as pd
-import duckdb
-
 from pathlib import Path
-from qde.loaders import load_ohlcv, symbols
+
+import duckdb
+import pandas as pd
+
+from qde.loaders import load_ohlcv
 
 
 # Path helper function
-def _ohlcv_path(
-        symbol: str,
-        source: str,
-        interval: str = '1d',
-        base_dir: str = 'data'
-) -> Path:
+def _ohlcv_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> Path:
     """
     Builds the file path for a given symbol/source/interval.
     The single source of truth for where files live.
@@ -25,18 +21,18 @@ def _ohlcv_path(
     Returns:
         Path: Path to the saved file.
     """
-    path = Path(base_dir) / 'ohlcv' / f'{symbol}_{source}_{interval}.parquet'
+    path = Path(base_dir) / "ohlcv" / f"{symbol}_{source}_{interval}.parquet"
     return path
 
 
 # Function to save the OHLCV data to Parquet
 def save_ohlcv(
-        symbol: str,
-        source: str,
-        start: str,
-        end: str | None = None,
-        interval: str = '1d',
-        base_dir: str = 'data'
+    symbol: str,
+    source: str,
+    start: str,
+    end: str | None = None,
+    interval: str = "1d",
+    base_dir: str = "data",
 ) -> str:
     """
     Fetch data from a source and save it to Parquet.
@@ -56,22 +52,19 @@ def save_ohlcv(
 
     """
     # Call the unified loader to fetch the data
-    df =  load_ohlcv(symbol, start=start, end=end, interval=interval, source=source)
+    df = load_ohlcv(symbol, start=start, end=end, interval=interval, source=source)
 
     # Create the directory if it doesn't exist. Build the file oath.
     path = _ohlcv_path(symbol, source, interval, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, engine='pyarrow')
+    df.to_parquet(path, engine="pyarrow")
 
     return str(path)
 
 
 # Local retrieve of the data
 def load_ohlcv_local(
-        symbol: str,
-        source: str,
-        interval: str = '1d',
-        base_dir: str = 'data'
+    symbol: str, source: str, interval: str = "1d", base_dir: str = "data"
 ) -> pd.DataFrame:
     """
     Read a saved Parquet file and return it as a pandas DataFrame.
@@ -90,20 +83,15 @@ def load_ohlcv_local(
     path = _ohlcv_path(symbol, source, interval, base_dir)
 
     if not path.exists():
-        raise FileNotFoundError(f'File not found: {path}')
+        raise FileNotFoundError(f"File not found: {path}")
 
-    df = pd.read_parquet(path, engine='pyarrow')
+    df = pd.read_parquet(path, engine="pyarrow")
 
     return df
 
 
 # Update the file path on a regular basis
-def update_ohlcv(
-        symbol: str,
-        source: str,
-        interval: str = '1d',
-        base_dir: str = 'data'
-) -> None:
+def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> None:
 
     # Load data in file
     df_old = load_ohlcv_local(symbol, source, interval, base_dir)
@@ -118,7 +106,7 @@ def update_ohlcv(
     try:
         df_new = load_ohlcv(symbol, start=next_day, source=source)
     except ValueError:
-        print(f'{symbol} already up to date through {latest.date()}')
+        print(f"{symbol} already up to date through {latest.date()}")
         return
 
     # Concatenate the data
@@ -130,14 +118,11 @@ def update_ohlcv(
     # Create the directory if it doesn't exist. Build the file oath.
     path = _ohlcv_path(symbol, source, interval, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, engine='pyarrow')
+    df.to_parquet(path, engine="pyarrow")
 
 
 # Sql
-def query(
-        sql: str,
-        base_dir: str = 'data'
-) -> pd.DataFrame:
+def query(sql: str, base_dir: str = "data") -> pd.DataFrame:
     """
     SQL Helper function.
     Create a temporary query engine that can read the Parquet files.
@@ -151,20 +136,12 @@ def query(
     con = duckdb.connect()
 
     # Find Parquet files
-    files = list((Path(base_dir) / "ohlcv").glob('*.parquet'))
+    files = list((Path(base_dir) / "ohlcv").glob("*.parquet"))
 
     for file in files:
         name = file.stem
-        con.sql(f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM \'{file}\'')
+        con.sql(f"CREATE OR REPLACE VIEW \"{name}\" AS SELECT * FROM '{file}'")
 
     result = con.sql(sql).df()
 
     return result
-
-
-
-
-
-
-
-

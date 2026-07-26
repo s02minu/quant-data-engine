@@ -1,8 +1,10 @@
 import time
+
 import requests
 
+
 def get_with_requests(url, params, max_retries=4):
-    """"
+    """ "
     Make a get request with retries on temporary failure.
 
     Retries on rate limits (429) and server errors (5xx)
@@ -29,7 +31,7 @@ def get_with_requests(url, params, max_retries=4):
 
         # Rate limited or server error - wait and retry
         if response.status_code == 429 or response.status_code >= 500:
-            wait = 2 ** attempt     # 1, 2, 4, 8
+            wait = 2**attempt  # 1, 2, 4, 8
             time.sleep(wait)
             continue
 
@@ -38,5 +40,3 @@ def get_with_requests(url, params, max_retries=4):
 
     # Exhausted all retries
     raise ValueError(f"Request failed after {max_retries} retries: {url}")
-
-

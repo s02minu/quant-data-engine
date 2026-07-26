@@ -1,7 +1,8 @@
 import pandas as pd
 import pytest
 
-from qde.loaders import  load_ohlcv
+from qde.loaders import load_ohlcv
+
 
 # Test Loading via yfinance
 def test_load_via_yfinance():
@@ -29,10 +30,3 @@ def test_bad_source():
 def test_inexistent_symbol():
     with pytest.raises(ValueError):
         load_ohlcv("SPY", start="2019-01-01", end="2019-02-01", source="binance")
-
-
-
-
-
-
-

@@ -1,6 +1,7 @@
 """Continuous capture entry point: python -m qde.stream."""
 
 import asyncio
+import contextlib
 import os
 import signal
 
@@ -48,15 +49,11 @@ async def main() -> None:
     # this falls back to the default KeyboardInterrupt handling.
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
+        with contextlib.suppress(NotImplementedError, AttributeError):
             loop.add_signal_handler(sig, task.cancel)
-        except (NotImplementedError, AttributeError):
-            pass
 
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
 
 if __name__ == "__main__":

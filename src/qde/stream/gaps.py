@@ -24,10 +24,10 @@ SESSION_STOP = "stop"
 
 
 def session_record(
-        event: str,
-        at_ms: int,
-        message_count: int | None = None,
-        gap_count: int | None = None,
+    event: str,
+    at_ms: int,
+    message_count: int | None = None,
+    gap_count: int | None = None,
 ) -> dict:
     """Mark the start or clean stop of a capture session.
 
@@ -52,14 +52,14 @@ def session_record(
 
 
 def _gap_record(
-        stream_kind: str,
-        symbol: str,
-        reason: str,
-        last_seq: int | None,
-        next_seq: int | None,
-        missing_count: int | None,
-        gap_start_ms: int | None,
-        gap_end_ms: int,
+    stream_kind: str,
+    symbol: str,
+    reason: str,
+    last_seq: int | None,
+    next_seq: int | None,
+    missing_count: int | None,
+    gap_start_ms: int | None,
+    gap_end_ms: int,
 ) -> dict:
     """Assemble one gap record.
 
@@ -79,10 +79,10 @@ def _gap_record(
 
 
 def reconnect_gap(
-        stream_kind: str,
-        symbol: str,
-        disconnected_at: int,
-        reconnected_at: int,
+    stream_kind: str,
+    symbol: str,
+    disconnected_at: int,
+    reconnected_at: int,
 ) -> dict:
     """Record the outage between losing a connection and resuming it.
 

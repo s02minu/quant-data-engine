@@ -3,7 +3,7 @@
 import asyncio
 import json
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import websockets
@@ -150,9 +150,9 @@ class StreamCollector:
         detail = f"{missing} missing" if missing is not None else "count unknown"
         print(f"GAP  {gap['stream_kind']}/{gap['symbol']}  {gap['reason']}  ({detail})")
 
-    def _record_session(self, event: str, at_ms: int,
-                        message_count: int | None = None,
-                        gap_count: int | None = None) -> None:
+    def _record_session(
+        self, event: str, at_ms: int, message_count: int | None = None, gap_count: int | None = None
+    ) -> None:
         """Buffer a session start/stop marker under the session partition."""
         record = session_record(event, at_ms, message_count, gap_count)
         self.buffers[("session", SESSION_SYMBOL)].append(record)
@@ -178,7 +178,7 @@ class StreamCollector:
         Returns:
             Number of rows written.
         """
-        batch_time = datetime.now(timezone.utc)
+        batch_time = datetime.now(UTC)
         written = 0
 
         for key in list(self.buffers):

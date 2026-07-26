@@ -1,33 +1,26 @@
 import pandas as pd
-import requests
 
 from qde.loaders.http import get_with_requests
 
 
-def load_binance_ohlcv(
-        symbol,
-        start,
-        end=None,
-        interval="1d",
-        limit=1000
-) -> pd.DataFrame:
-    """ Load OHLCV data for a single symbol from Binance, returning a
-        cleaned DataFrame with flat lowercase columns and a UTC-aware index.
+def load_binance_ohlcv(symbol, start, end=None, interval="1d", limit=1000) -> pd.DataFrame:
+    """Load OHLCV data for a single symbol from Binance, returning a
+    cleaned DataFrame with flat lowercase columns and a UTC-aware index.
 
-        Args:
-            symbol (str): a ticker symbol.
-            start (str): the time period to begin.
-            end (str): the time period to end.
-            interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
-            limit (int, optional): maximum number of candles to return. Defaults to 1000.
+    Args:
+        symbol (str): a ticker symbol.
+        start (str): the time period to begin.
+        end (str): the time period to end.
+        interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
+        limit (int, optional): maximum number of candles to return. Defaults to 1000.
 
-        Returns:
-            DataFrame with columns: date, open, high, low, close, volume.
-            Index by a UTC-aware DatetimeIndex named 'date'.
+    Returns:
+        DataFrame with columns: date, open, high, low, close, volume.
+        Index by a UTC-aware DatetimeIndex named 'date'.
 
-        Raises:
-            ValueError: If the API returns a non-200 status or an empty response.
-            """
+    Raises:
+        ValueError: If the API returns a non-200 status or an empty response.
+    """
 
     # Convert start to epoch ms
     start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
@@ -38,26 +31,24 @@ def load_binance_ohlcv(
     else:
         end_ms = int(pd.Timestamp(end, tz="UTC").timestamp() * 1000)
 
-
     url = "https://api.binance.com/api/v3/klines"
     all_data = []
     current_start = start_ms
 
     while True:
-        params = {"symbol": symbol,
-                  "interval": interval,
-                  "startTime": current_start,
-                  "endTime": end_ms,
-                  "limit": limit
-                  }
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "startTime": current_start,
+            "endTime": end_ms,
+            "limit": limit,
+        }
 
         response = get_with_requests(url, params=params)  # request retry helper
 
         # Fail test Guard for no response from binance
         if response.status_code != 200:
-            raise ValueError(
-                f"Binance API error {response.status_code}: {response.text}"
-            )
+            raise ValueError(f"Binance API error {response.status_code}: {response.text}")
 
         batch = response.json()
 
@@ -78,18 +69,40 @@ def load_binance_ohlcv(
     # Fail test Guard for no data returned but request successful
     if not all_data:
         raise ValueError(
-            f"No data returned for symbol={symbol!r}, start={start!r}, end={end!r}, interval={interval!r}"
+            f"No data returned for symbol={symbol!r}, start={start!r}, "
+            f"end={end!r}, interval={interval!r}"
         )
 
     # Convert the returned data (list of lists) into a table
-    df = pd.DataFrame(all_data,
-                      columns=["kline_open", "open", "high", "low", "close", "volume",
-                               "kline_close", "quote_volume", "num_trades",
-                               "taker_buy_volume", "taker_buy_quote_volume", "unused"])
+    df = pd.DataFrame(
+        all_data,
+        columns=[
+            "kline_open",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "kline_close",
+            "quote_volume",
+            "num_trades",
+            "taker_buy_volume",
+            "taker_buy_quote_volume",
+            "unused",
+        ],
+    )
 
     # Convert the str to numeric
-    numeric_columns = ["open", "high", "low", "close", "volume",
-                       "quote_volume", "taker_buy_volume", "taker_buy_quote_volume"]
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+        "taker_buy_volume",
+        "taker_buy_quote_volume",
+    ]
 
     df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric)
 
@@ -101,6 +114,3 @@ def load_binance_ohlcv(
     df = df[["open", "high", "low", "close", "volume"]]
 
     return df
-
-
-

@@ -1,10 +1,9 @@
+from pathlib import Path
+
 import pandas as pd
 
-from pathlib import Path
-from qde.storage import update_ohlcv
 from qde.quality import build_quality_summary
-
-
+from qde.storage import update_ohlcv
 
 print(f"Update started at {pd.Timestamp.now()}")
 
@@ -28,6 +27,3 @@ for file in files:
 summary = build_quality_summary()
 
 print(f"Update complete at {pd.Timestamp.now()}")
-
-
-

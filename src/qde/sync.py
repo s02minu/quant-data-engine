@@ -15,7 +15,7 @@ Credentials come from the environment, never the code:
 """
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from qde.compact import partition_date
@@ -52,7 +52,7 @@ def sync_bronze(base_dir: str, bucket: str, client, today=None) -> dict:
         failed upload or size mismatch.
     """
     if today is None:
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
 
     base = Path(base_dir)
     bronze = base / "bronze"
@@ -99,5 +99,7 @@ if __name__ == "__main__":
         bucket=os.environ["QDE_R2_BUCKET"],
         client=r2_client_from_env(),
     )
-    print(f"uploaded {summary['uploaded']} files "
-          f"({summary['bytes']} bytes), {summary['failed']} kept for retry")
+    print(
+        f"uploaded {summary['uploaded']} files "
+        f"({summary['bytes']} bytes), {summary['failed']} kept for retry"
+    )

@@ -4,22 +4,22 @@ from qde.loaders.http import get_with_requests
 
 
 def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
-    """ Load OHLCV data for a single symbol from Kraken, returning a
-        cleaned DataFrame with flat lowercase columns and a UTC-aware index.
+    """Load OHLCV data for a single symbol from Kraken, returning a
+    cleaned DataFrame with flat lowercase columns and a UTC-aware index.
 
-        Args:
-            symbol (str): a ticker symbol.
-            start (str): the time period to begin.
-            end (str): the time period to end.
-            interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
+    Args:
+        symbol (str): a ticker symbol.
+        start (str): the time period to begin.
+        end (str): the time period to end.
+        interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
 
 
-        Returns:
-            DataFrame with columns: date, open, high, low, close, volume.
-            Index by a UTC-aware DatetimeIndex named 'date'.
+    Returns:
+        DataFrame with columns: date, open, high, low, close, volume.
+        Index by a UTC-aware DatetimeIndex named 'date'.
 
-        Raises:
-            ValueError: If the API returns a non-200 status or an empty response.
+    Raises:
+        ValueError: If the API returns a non-200 status or an empty response.
     """
     # Get the request
     url = "https://api.kraken.com/0/public/OHLC"
@@ -44,7 +44,7 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
 
     # Take care of pagination
     all_candles = []
-    prev_since = None           # tracks the previous cursor, to detect "no progress"
+    prev_since = None  # tracks the previous cursor, to detect "no progress"
 
     while True:
         params = {
@@ -70,7 +70,7 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
 
         all_candles.extend(candles)
 
-        last = result["last"] # Kraken's cursor for the next request
+        last = result["last"]  # Kraken's cursor for the next request
 
         # Stop when the cursor stops advancing.
         # (Could be simplified to `last == since`
@@ -84,7 +84,10 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
         # set next round's cursor to the new one (advance)
         since = last
 
-    df = pd.DataFrame(all_candles, columns=["timestamp", "open", "high", "low", "close", "vwap", "volume", "trades"])
+    df = pd.DataFrame(
+        all_candles,
+        columns=["timestamp", "open", "high", "low", "close", "vwap", "volume", "trades"],
+    )
 
     # Convert the str to numeric
     numeric_columns = ["open", "high", "low", "close", "vwap", "volume"]
@@ -102,14 +105,3 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
     df = df[["open", "high", "low", "close", "volume"]]
 
     return df
-
-
-
-
-
-
-
-
-
-
-

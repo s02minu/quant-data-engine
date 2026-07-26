@@ -9,10 +9,10 @@ SYMBOL_MAP = {
         "BTCUSDT": "BTC-USD",
         "ETHUSDT": "ETH-USD",
         "SOLUSDT": "SOL-USD",
-        "SPY": "SPY",      # S&P 500 ETF
-        "QQQ": "QQQ",      # Nasdaq 100 ETF
-        "GLD": "GLD",      # Gold ETF
-        "TLT": "TLT",      # 20+ Year Treasury Bond ETF
+        "SPY": "SPY",  # S&P 500 ETF
+        "QQQ": "QQQ",  # Nasdaq 100 ETF
+        "GLD": "GLD",  # Gold ETF
+        "TLT": "TLT",  # 20+ Year Treasury Bond ETF
         "DX-Y.NYB": "DX-Y.NYB",  # US Dollar Index (DXY)
     },
     "binance": {
@@ -24,5 +24,4 @@ SYMBOL_MAP = {
         "BTCUSDT": "XBTUSD",
         "ETHUSDT": "ETHUSD",
     },
-
 }
