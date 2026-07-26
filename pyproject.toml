@@ -15,6 +15,7 @@ dependencies = [
     "duckdb",
     "pandas-market-calendars",
     "websockets",
+    "boto3",
 ]
 
 [project.optional-dependencies]

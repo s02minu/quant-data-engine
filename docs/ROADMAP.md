@@ -21,7 +21,7 @@ got there.
 
 A large amount of duplicated, unglamorous work sits in front of every
 quantitative analysis: pulling from a dozen APIs, reconciling symbol
-conventions, normalising timestamp units, handling pagination, dealing with
+conventions, normalizing timestamp units, handling pagination, dealing with
 revisions. Most analysts do not want to do this work, and paying a vendor to
 avoid it is expensive. This platform does that work once, in the open, and
 publishes the result.

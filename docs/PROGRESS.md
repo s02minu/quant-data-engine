@@ -70,9 +70,15 @@ day it is not running is data that cannot be recovered later.
       collector still writes the current day. Crash-safe via temp → delete →
       rename, with a recovery pass for interrupted runs. Tested (incl. both
       recovery cases) and verified on real data: 51 files -> 17, rows unchanged.
-- [ ] Sync: upload compacted files to R2, verify, then delete locally so disk
-      stays flat and the VPS becomes disposable. Pairs with compaction:
-      compact settled partitions -> upload -> prune. Schedule both on the VPS.
+- [x] Sync (`qde.sync`): uploads settled bronze files to R2 and deletes each
+      locally only after a same-size check confirms the remote copy. Idempotent
+      (a synced file is gone locally, so re-runs skip it); S3 client injected so
+      tested offline with a fake. Credentials read from env, never hardcoded.
+- [ ] Schedule compact -> sync as a daily job on the VPS (cron running a one-off
+      container with the R2 env). End-to-end test against real R2 from the VPS.
+- [ ] R2 retention: delete objects older than the chosen window (start ~14 days)
+      to cap storage cost. Small follow-on to sync.
+- [ ] Point DuckDB at R2 (`httpfs` / `s3` creds) to query the remote lake.
 
 ### Unify the legacy layout
 
@@ -255,6 +261,8 @@ streaming equivalents:
 ## Phase 12 — Catalogue and publishing
 
 - [ ] Public R2 bucket, publishing job filtered on `redistributable`
+- [ ] Rate limiting + Cloudflare CDN cache in front of the public bucket, so a
+      heavy or malicious reader cannot run up Class B op costs on the account
 - [ ] Catalogue of datasets, schemas, freshness, DQ stats, licence
 - [ ] Docker packaging
 - [ ] Streamlit dashboard

@@ -64,7 +64,7 @@ def compact_partition(partition_dir: Path) -> int:
     return len(originals)
 
 
-def _partition_date(partition_dir: Path) -> date | None:
+def partition_date(partition_dir: Path) -> date | None:
     """Read the UTC date from a `.../date=YYYY-MM-DD` partition path."""
     for part in partition_dir.parts:
         if part.startswith("date="):
@@ -97,8 +97,8 @@ def compact_bronze(base_dir: str = "data", today: date | None = None) -> dict:
     partitions_compacted = 0
     files_merged = 0
     for partition_dir in sorted(partition_dirs):
-        partition_date = _partition_date(partition_dir)
-        if partition_date is None or partition_date >= today:
+        pdate = partition_date(partition_dir)
+        if pdate is None or pdate >= today:
             continue  # unparseable, or the still-active current day
 
         merged = compact_partition(partition_dir)
