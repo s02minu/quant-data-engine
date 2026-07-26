@@ -116,7 +116,10 @@ data/bronze/group=microstructure/source=binance/kind=<kind>/symbol=<symbol>/date
 Query it directly with DuckDB, reading partition keys as columns:
 ```python
 import duckdb
-duckdb.sql("SELECT kind, symbol, count(*) FROM read_parquet('data/bronze/**/*.parquet', hive_partitioning=true) GROUP BY ALL")
+
+duckdb.sql(
+    "SELECT kind, symbol, count(*) FROM read_parquet('data/bronze/**/*.parquet', hive_partitioning=true) GROUP BY ALL"
+)
 ```
 
 ### Project structure

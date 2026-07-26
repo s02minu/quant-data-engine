@@ -87,16 +87,16 @@ a `SourceSpec` (pydantic) holding everything constant about that source:
 
 ```python
 class SourceSpec(BaseModel):
-    group: str                      # which shared schema it writes to (§3.3)
-    name: str                       # "binance", "fred", "cboe"
+    group: str  # which shared schema it writes to (§3.3)
+    name: str  # "binance", "fred", "cboe"
     symbols: list[str]
     granularity: str
     max_rows_per_call: int
     rate_limit_per_min: int
-    expected_daily_rows: int        # DQ: row-count anomaly threshold
+    expected_daily_rows: int  # DQ: row-count anomaly threshold
     null_tolerance: dict[str, float]
     freshness_sla_minutes: int
-    redistributable: bool           # see §6
+    redistributable: bool  # see §6
     license_note: str
 ```
 
