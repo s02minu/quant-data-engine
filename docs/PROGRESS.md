@@ -78,9 +78,17 @@ day it is not running is data that cannot be recovered later.
       `scripts/maintain.sh`, one-off container with R2 env sourced from
       secrets/r2.env. Verified end-to-end: 16 files (~95 MB) uploaded to R2,
       local pruned, 0 failures.
-- [ ] R2 retention: delete objects older than the chosen window (start ~14 days)
-      to cap storage cost. Small follow-on to sync.
-- [ ] Point DuckDB at R2 (`httpfs` / `s3` creds) to query the remote lake.
+- [ ] R2 retention — **on hold, deliberately.** Originally planned as "delete
+      objects older than ~14 days" to cap storage cost. Decided against for now:
+      raw microstructure is the primary backtest fuel and is irreplaceable once
+      dropped, while storage is cheap (~$5/mo for a full year on R2, zero egress).
+      Keep everything while the symbol set is small; revisit only if volume grows
+      enough that the bill matters, and prefer tiering (cheaper storage class)
+      over deletion. See ROADMAP §11 retention [open].
+- [x] Query the R2 lake with DuckDB (`qde.lake`): `httpfs` + an R2 secret from a
+      read-only analysis token (separate from the VPS write token; creds bound as
+      parameters, loaded from a local gitignored `secrets/r2-read.env`). Verified:
+      counted ~3.1M rows across kinds/symbols straight from R2, no server.
 
 ### Unify the legacy layout
 
