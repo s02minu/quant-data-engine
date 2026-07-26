@@ -17,6 +17,10 @@ scratch_*.py
 # Claude Code local settings (also globally ignored; kept here so the rule ships with the repo)
 .claude/
 
+# Secrets / credentials — never commit R2 keys or any env file
+secrets/
+*.env
+
 #Leraning journal
 lessons/
 
