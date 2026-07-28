@@ -1,15 +1,20 @@
 """Configuration for a streaming capture run."""
 
-from dataclasses import dataclass, field
+from typing import Annotated, Literal
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
-@dataclass
-class StreamConfig:
+class StreamConfig(BaseSettings):
     """Everything constant about a websocket capture run.
 
-    A deliberately small precursor to the source registry described in
-    docs/ROADMAP.md: one place holding identity, subscriptions, and the
-    micro-batch knobs, rather than constants scattered through the code.
+    A pydantic-settings model: the field defaults below are the in-code
+    defaults, and every field is overridable from the environment under the
+    QDE_ prefix (QDE_SYMBOLS, QDE_FLUSH_SECONDS, QDE_DEPTH_SPEED, ...). Values
+    are type-coerced and validated at construction, so a bad override — a
+    non-integer QDE_FLUSH_SECONDS or an unsupported QDE_DEPTH_SPEED — fails fast
+    at startup rather than deep inside the collector.
 
     Attributes:
         source: Exchange name. Becomes a partition key on disk.
@@ -29,19 +34,39 @@ class StreamConfig:
         rest_base_url: Binance REST API base URL, used for snapshots.
     """
 
+    model_config = SettingsConfigDict(env_prefix="QDE_")
+
     source: str = "binance"
     group: str = "microstructure"
-    # default_factory (not a bare list) so each instance gets its own list;
-    # a shared mutable default would leak edits across every StreamConfig.
-    symbols: list[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
-    kinds: list[str] = field(default_factory=lambda: ["trades", "depth", "book_ticker"])
-    depth_speed: str = "100ms"
+    # NoDecode: take QDE_SYMBOLS / QDE_KINDS as a plain comma-separated string
+    # (BTCUSDT,ETHUSDT) rather than pydantic-settings' default JSON decoding of
+    # list fields — that default would reject the values docker-compose already
+    # passes. The split (and, for symbols, the upper-casing) happens in the
+    # validators below.
+    symbols: Annotated[list[str], NoDecode] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    kinds: Annotated[list[str], NoDecode] = ["trades", "depth", "book_ticker"]
+    depth_speed: Literal["100ms", "1000ms"] = "100ms"
     flush_seconds: int = 30
     snapshot_seconds: int = 300
     snapshot_depth: int = 1000
     base_dir: str = "data"
     ws_base_url: str = "wss://stream.binance.com:9443"
     rest_base_url: str = "https://api.binance.com"
+
+    @field_validator("symbols", "kinds", mode="before")
+    @classmethod
+    def _split_csv(cls, value: str | list[str]) -> list[str]:
+        """Accept a comma-separated string from env, or a list passed from code."""
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("symbols")
+    @classmethod
+    def _canonical_symbols(cls, symbols: list[str]) -> list[str]:
+        """Canonical symbols are uppercase; Binance's lowercasing lives in
+        stream_names(), the single boundary that speaks its convention."""
+        return [s.upper() for s in symbols]
 
     def stream_names(self) -> list[str]:
         """Return the Binance stream names to subscribe to.

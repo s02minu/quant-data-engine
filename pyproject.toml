@@ -17,6 +17,7 @@ dependencies = [
     "websockets",
     "boto3",
     "structlog",
+    "pydantic-settings",
 ]
 
 [project.optional-dependencies]

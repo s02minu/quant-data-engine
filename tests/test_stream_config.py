@@ -16,7 +16,7 @@ def test_stream_names_respect_selected_kinds():
 
 
 def test_each_config_gets_its_own_symbol_list():
-    # The default_factory guards against a shared mutable default.
+    # pydantic copies the default list per instance, so no shared mutable default.
     a = StreamConfig()
     b = StreamConfig()
     a.symbols.append("XRPUSDT")

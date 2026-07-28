@@ -61,7 +61,13 @@ day it is not running is data that cannot be recovered later.
       compact, sync) via `qde.log`: leveled, ISO-timestamped, key-value events;
       console renderer by default, JSON when `QDE_LOG_FORMAT=json`. Entry points
       call `configure()`. (Batch loaders' user-facing prints left as-is.)
-- [ ] `pydantic-settings` typed config from env
+- [x] `pydantic-settings` typed config from env: `StreamConfig` is now a
+      `BaseSettings` model. Every field is overridable under the `QDE_` prefix
+      (was only 3 of 11 hand-wired), values are type-coerced and validated at
+      construction (a bad `QDE_DEPTH_SPEED`/`QDE_FLUSH_SECONDS` fails at startup,
+      not deep in the collector), and the hand-rolled `config_from_env()` is
+      gone. A `NoDecode` + validator keeps the comma-separated env UX
+      (`QDE_SYMBOLS=BTCUSDT,ETHUSDT`) that docker-compose already relies on.
 
 ## Phase 1 — Lakehouse storage on Cloudflare R2
 

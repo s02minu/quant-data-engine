@@ -12,7 +12,7 @@ further files and can be merged without racing an in-progress write.
 Crash safety uses a temp-then-rename protocol. Each partition is merged into a
 dot-prefixed temp file, the originals are deleted, then the temp is renamed into
 place. A recovery pass resolves a temp left by an interrupted run: if the
-originals survigtved the merge never committed, so the temp is discarded; if they
+originals survived the merge never committed, so the temp is discarded; if they
 were already deleted the rename simply never ran, so the temp is finalized.
 """
 
