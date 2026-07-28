@@ -13,7 +13,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 |---|---|---|
 | — | Foundation (the working pipeline) | Done |
 | 0 | Harden the foundation | Partial |
-| 1 | Lakehouse storage on Cloudflare R2 | Not started |
+| 1 | Lakehouse storage on Cloudflare R2 | Partial — core deployed, legacy layout pending |
 | 2 | Licensing audit | Not started |
 | 3 | Group schemas | Not started |
 | 4 | Registry + `BaseIngestor` | Not started |
@@ -71,11 +71,19 @@ day it is not running is data that cannot be recovered later.
 
 ## Phase 1 — Lakehouse storage on Cloudflare R2
 
-- [ ] R2 bucket provisioned, credentials handled via env
-- [ ] Writers target S3-compatible storage (boto3 / fsspec)
-- [ ] DuckDB `httpfs` querying `s3://` paths directly
-- [ ] Hive-style partitioning, `group` as outermost key
-- [ ] Partitioning scheme documented
+- [x] R2 bucket (`qde-lake`) provisioned, credentials via env — a write token on
+      the VPS, a separate read-only token for analysis; never hardcoded.
+- [x] Data lands in R2 via **write-local-then-sync**, not direct-to-S3 writers:
+      the collector writes to local disk for durability and `qde.sync` ships
+      settled files with boto3, deleting locally only after a same-size check.
+      Chosen over writing straight to object storage so a mid-flush crash can
+      never lose un-backfillable data. Details in Lake maintenance below.
+- [x] DuckDB `httpfs` queries the R2 lake directly (`qde.lake`): partition
+      pruning + column pushdown, no server. Verified ~3.1M rows counted from R2.
+- [x] Hive-style partitioning, `group` as outermost key:
+      `bronze/group=microstructure/source=binance/kind=.../symbol=.../date=...`.
+- [x] Partitioning scheme documented — layout in the README, the group-by-shape
+      rationale in ROADMAP §3.3.
 
 ### Lake maintenance
 
