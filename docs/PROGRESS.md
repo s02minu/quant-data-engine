@@ -12,7 +12,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | Phase | Title | Status |
 |---|---|---|
 | — | Foundation (the working pipeline) | Done |
-| 0 | Harden the foundation | Partial |
+| 0 | Harden the foundation | Done |
 | 1 | Lakehouse storage on Cloudflare R2 | Partial — core deployed, legacy layout pending |
 | 2 | Licensing audit | Not started |
 | 3 | Group schemas | Not started |
@@ -49,7 +49,11 @@ day it is not running is data that cannot be recovered later.
 ## Phase 0 — Harden the foundation
 
 - [x] pytest suite (loaders, symbol mapping, storage round-trips, errors)
-- [ ] Mock API responses so tests run without internet
+- [x] Mock API responses so tests run without internet: `tests/conftest.py`
+      fixtures monkeypatch the two network boundaries (`requests.get` for
+      Binance/Kraken, `yfinance.download`) with canned payloads. The four loader
+      tests now run offline (verified green behind a dead proxy) and the full
+      suite dropped from ~11s to ~4.5s.
 - [x] `ruff` lint + format, configured in `pyproject.toml` (E/W/F/I/UP/B/SIM).
       Fixed real findings: dead imports, a duplicate `load_kraken_ohlcv` import,
       `timezone.utc` -> `datetime.UTC`, `try/except/pass` -> `contextlib.suppress`;
