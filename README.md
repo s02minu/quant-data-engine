@@ -1,10 +1,11 @@
 ## quant-data-engine
 
-Financial data engine that pulls, cleans, stores, and serves market data as a queryable local database.
+Financial data platform that ingests, stores, and serves market data — batch OHLCV and live crypto microstructure — as a queryable Parquet lakehouse on Cloudflare R2.
 
-**Status:** Batch pipeline and streaming collector both operational.  
-**Batch:** REST loaders, Parquet storage, incremental updates, DuckDB SQL, quality monitoring.  
-**Streaming:** live trades, L2 order-book deltas, and top-of-book quotes captured to a partitioned bronze lake — with micro-batching, reconnection, gap detection, and containerized 24/7 running.
+**Status:** Running in production — autonomous ingestion, cloud storage, and direct querying.  
+**Batch:** REST loaders, Parquet storage, incremental updates, DuckDB SQL, Power BI quality monitoring.  
+**Streaming:** live trades, L2 order-book deltas, and top-of-book quotes captured to a partitioned bronze lake — micro-batching, reconnection, gap detection; runs **24/7 in Docker on a VPS**.  
+**Storage & serving:** a daily job compacts and syncs bronze to **Cloudflare R2** (zero-egress object storage) and prunes locally; the lake is queried directly with DuckDB, no server. Linted (ruff), type-checked (mypy), and tested offline (pytest).
 
 ### Architecture
 
@@ -16,25 +17,26 @@ flowchart TD
     end
 
     REST -->|"batch pull · pagination · retries"| BL["Batch loaders<br/>qde.loaders"]
-    WS -->|"async read · buffer · flush"| SC["Stream collector<br/>qde.stream"]
+    WS -->|"async read · buffer · flush"| SC["Stream collector<br/>qde.stream — 24/7 in Docker on a VPS"]
 
-    BL --> BARS[("Parquet: OHLCV bars<br/>data/ohlcv")]
-    SC -->|"micro-batches"| BRONZE[("Bronze lake<br/>group=microstructure<br/>kind / symbol / date")]
+    BL --> BARS[("Parquet OHLCV bars<br/>data/ohlcv")]
+    SC -->|"micro-batches"| BRONZE[("Bronze lake<br/>group / kind / symbol / date")]
 
-    BARS --> DUCK["DuckDB<br/>SQL on Parquet"]
+    BRONZE -->|"daily cron: compact + sync + prune"| R2[("Cloudflare R2<br/>durable object storage")]
+
+    BARS --> DUCK["DuckDB<br/>SQL on Parquet — local or R2"]
     BRONZE --> DUCK
-    DUCK --> QA["Quality checks<br/>+ Power BI dashboard"]
+    R2 --> DUCK
+    DUCK --> OUT["Queries · Power BI · quality checks"]
 
-    BRONZE -.-> SILVER["Silver / Gold<br/>dbt · book reconstruction · features"]
-    BARS -.-> SILVER
-    SILVER -.-> R2[("Cloudflare R2<br/>public Parquet lake")]
-    R2 -.-> SERVE["Catalogue · serve files<br/>analysts query with their own DuckDB"]
+    R2 -.-> SILVER["Silver / Gold<br/>dbt · book reconstruction · features"]
+    SILVER -.-> PUB["Public catalogue<br/>serve files to analysts"]
 
     classDef planned stroke-dasharray:5 5;
-    class SILVER,R2,SERVE planned;
+    class SILVER,PUB planned;
 ```
 
-Solid = operational today. Dashed = planned phases (full plan and reasoning in [docs/ROADMAP.md](docs/ROADMAP.md)).
+Solid = operational today (ingestion → bronze → R2 → query, running autonomously). Dashed = planned phases (full plan and reasoning in [docs/ROADMAP.md](docs/ROADMAP.md)).
 
 ### What it does
 
@@ -44,6 +46,8 @@ Solid = operational today. Dashed = planned phases (full plan and reasoning in [
 - Queries stored data instantly via DuckDB SQL or direct DataFrame load — no API calls, no internet required.
 - Monitors data quality automatically with four checks (gaps, duplicates, nulls, price sanity), surfaced in a Power BI dashboard.
 - Captures live Binance microstructure — trades, order-book deltas, and top-of-book quotes — over WebSockets into a hive-partitioned bronze lake, buffering and flushing micro-batches, reconnecting on drops, and recording gaps so a hole in the tape is never silent.
+- Runs autonomously: the collector runs 24/7 in Docker on a VPS, and a daily cron job compacts each settled day's small files, syncs them to Cloudflare R2, and prunes local copies — so the disk stays flat and the box is disposable.
+- Serves files, not queries: query the R2 lake directly with your own DuckDB (partition pruning, column pushdown), pushing compute to the client so marginal cost per user is near zero — R2's zero egress fees make this viable.
 
 ### Quickstart
 
@@ -122,12 +126,38 @@ duckdb.sql(
 )
 ```
 
+### Cloud storage & serving
+
+A daily maintenance job (`scripts/maintain.sh`, run by cron on the VPS) compacts
+each settled day's many small part files into a few large ones, uploads them to
+Cloudflare R2, and prunes the local copies **only after R2 confirms a same-size
+copy** — so the disk stays flat and the capture box is disposable. Compaction
+(`qde.compact`) and sync (`qde.sync`) are crash-safe and idempotent.
+
+R2's zero egress fees make the serving model viable: instead of hosting a query
+engine, the lake is published as files and analysts point their own DuckDB at it,
+pushing compute to the client.
+
+```python
+from qde.lake import open_lake, bronze_glob
+
+con = open_lake()  # reads read-only R2 credentials from a local env file
+con.sql(f"""
+    SELECT symbol, count(*) AS trades
+    FROM read_parquet('{bronze_glob(kind="trades")}', hive_partitioning=true)
+    GROUP BY symbol
+""").show()
+```
+
 ### Project structure
 ```
 src/qde/
 ├── __init__.py               # Package root
 ├── storage.py                # Save, load, update Parquet + DuckDB query
 ├── quality.py                # Data quality checks + summary
+├── compact.py                # Crash-safe merge of small bronze part files
+├── sync.py                   # Upload settled bronze to R2, prune local
+├── lake.py                   # Query the R2 lake with DuckDB (read-only token)
 ├── loaders/                  # Batch REST ingestion (OHLCV bars)
 │   ├── __init__.py           # Unified load_ohlcv() with source routing
 │   ├── http.py               # Retry helper with exponential backoff
@@ -143,6 +173,7 @@ src/qde/
     ├── paths.py              # Hive-partitioned bronze path builder
     └── __main__.py           # `python -m qde.stream` entry point
 
+scripts/maintain.sh                # Daily compact + sync (run by cron on the VPS)
 Dockerfile, docker-compose.yml     # Containerized 24/7 collector
 ```
 
@@ -155,20 +186,23 @@ Dockerfile, docker-compose.yml     # Containerized 24/7 collector
 | websockets | Async client for Binance live streams |
 | asyncio | Concurrency for the streaming collector (read loop + flush + snapshot) |
 | pyarrow | Parquet read/write engine |
-| DuckDB | SQL queries directly on Parquet files |
+| DuckDB | SQL queries directly on Parquet files, local or on R2 (`httpfs`) |
+| Cloudflare R2 (boto3) | Durable, zero-egress object storage for the lake |
 | pandas-market-calendars | NYSE calendar for equity gap detection |
-| pytest | Automated testing |
-| Docker | Containerized 24/7 collector with restart policy |
+| pytest | Automated testing (incl. mocked socket + S3) |
+| ruff, mypy | Linting, formatting, and static type checking |
+| Docker + cron | 24/7 collector (restart policy) + daily compact/sync/prune |
 
 ### Tests
 ```bash
 pytest
 ```
-Covering loader contracts, symbol mapping, storage round-trips, and error handling for
-the batch side; and config, path, parser, gap detection, and a mocked-socket reconnect
-test for the streaming side. The streaming tests fake the WebSocket, so they run offline
-and deterministically — including the disconnect-and-recover path that can't be triggered
-against the live exchange.
+Covering loader contracts, symbol mapping, and storage round-trips on the batch side;
+and config, paths, parsers, gap detection, compaction (including crash-recovery),
+R2 sync, and lake-query construction on the streaming/cloud side. The socket and the
+S3 client are both faked, so these suites run **offline and deterministically** —
+including the disconnect-and-recover path that can't be triggered against the live
+exchange, and the upload-verify-prune path without touching real R2.
 
 ### Data quality monitoring
 
@@ -182,8 +216,12 @@ Automated daily quality checks with a Power BI dashboard connected to pipeline o
 This project evolves deliberately — every tool must solve a real problem
 before it's added. Full plan with phases and reasoning: [docs/ROADMAP.md](docs/ROADMAP.md)
 
-**Planned evolution:** local Parquet → Cloudflare R2 object storage →
-Dagster orchestration → dbt transformations on DuckDB → FastAPI serving layer
+**Done:** local Parquet lakehouse → Cloudflare R2 object storage with daily
+compaction + sync → direct DuckDB querying of the remote lake, deployed and
+running autonomously.
+
+**Next:** dbt transformations (silver/gold, order-book reconstruction) →
+Dagster orchestration → public catalogue + Streamlit dashboard.
 
 **Deliberately deferred at current scale:** Spark (data fits on one machine —
 DuckDB is faster here), Kafka (one producer, one consumer, replayable sources),
@@ -191,8 +229,9 @@ Kubernetes (a single container doesn't need an orchestrator). These get
 revisited when the constraints that justify them actually appear.
 
 ### Limitations
-- Batch loader tests hit live APIs (not yet mocked); streaming tests run offline.
-- Single-user local storage only — no concurrent access. Object storage (R2) is a planned phase.
+- Batch loader tests hit live APIs (not yet mocked); streaming and lake tests run offline.
+- The R2 lake is currently private (querying needs a read-only token); the public open lake and catalogue service are still planned.
+- Batch OHLCV still writes the legacy flat `data/ohlcv/` layout; unifying it into the partitioned bronze lake is pending.
 - Symbol mapping is manual — new symbols must be added to symbols.py.
 - Kraken's public OHLC endpoint serves only ~720 recent candles per interval, regardless of start date — deep history requires its paid data service.
 - Order-book reconstruction from depth deltas is deferred to a later transform; the collector captures raw deltas and periodic snapshots (bronze), not a rebuilt book.
