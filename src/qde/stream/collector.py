@@ -10,6 +10,7 @@ import websockets
 from websockets.exceptions import WebSocketException
 
 from qde.loaders.http import get_with_requests
+from qde.log import configure, get_logger
 from qde.stream.config import StreamConfig
 from qde.stream.gaps import (
     SESSION_START,
@@ -20,6 +21,8 @@ from qde.stream.gaps import (
 )
 from qde.stream.parsers import now_ms, parse_depth_snapshot, parse_message
 from qde.stream.paths import bronze_path
+
+log = get_logger(__name__)
 
 # Session markers describe the whole collector, not one symbol, so they use a
 # sentinel in the symbol partition. The leading underscore keeps it from ever
@@ -111,7 +114,7 @@ class StreamCollector:
                     # sits on top of unsaved data.
                     self._disconnected_at = now_ms()
                     self.flush()
-                    print(f"connection lost ({type(exc).__name__}); retrying in {backoff}s")
+                    log.warning("connection_lost", error=type(exc).__name__, retry_in_s=backoff)
                     await asyncio.sleep(backoff)
                     # Exponential backoff, capped: a long outage must not turn into
                     # a tight reconnect loop against the exchange.
@@ -146,9 +149,13 @@ class StreamCollector:
         """
         self.gap_count += 1
         self.buffers[("gaps", gap["symbol"])].append(gap)
-        missing = gap["missing_count"]
-        detail = f"{missing} missing" if missing is not None else "count unknown"
-        print(f"GAP  {gap['stream_kind']}/{gap['symbol']}  {gap['reason']}  ({detail})")
+        log.warning(
+            "gap",
+            kind=gap["stream_kind"],
+            symbol=gap["symbol"],
+            reason=gap["reason"],
+            missing=gap["missing_count"],
+        )
 
     def _record_session(
         self, event: str, at_ms: int, message_count: int | None = None, gap_count: int | None = None
@@ -156,7 +163,8 @@ class StreamCollector:
         """Buffer a session start/stop marker under the session partition."""
         record = session_record(event, at_ms, message_count, gap_count)
         self.buffers[("session", SESSION_SYMBOL)].append(record)
-        print(f"session {event} at {at_ms}")
+        # 'event' is structlog's reserved first-positional name, so use 'state'.
+        log.info("session", state=event, at_ms=at_ms)
 
     def _on_connected(self) -> None:
         """Record the outage that preceded this connection, if any."""
@@ -193,7 +201,7 @@ class StreamCollector:
             pd.DataFrame(rows).to_parquet(path, engine="pyarrow", index=False)
 
             written += len(rows)
-            print(f"flushed {len(rows):>5} rows -> {path}")
+            log.info("flushed", rows=len(rows), kind=kind, symbol=symbol, path=str(path))
 
         return written
 
@@ -231,11 +239,13 @@ class StreamCollector:
                 # the socket keeps draining while the request is in flight.
                 row = await asyncio.to_thread(self._fetch_snapshot, symbol)
             except Exception as exc:
-                print(f"snapshot failed for {symbol}: {type(exc).__name__}: {exc}")
+                log.warning(
+                    "snapshot_failed", symbol=symbol, error=type(exc).__name__, detail=str(exc)
+                )
                 continue
 
             self.buffers[("snapshot", symbol)].append(row)
-            print(f"snapshot {symbol} anchored at update_id {row['last_update_id']}")
+            log.info("snapshot", symbol=symbol, last_update_id=row["last_update_id"])
 
     async def _snapshot_loop(self) -> None:
         """Take snapshots on a fixed interval.
@@ -249,6 +259,7 @@ class StreamCollector:
 
 
 if __name__ == "__main__":
+    configure()
     # Narrow demo config: one symbol, and a short flush window so a periodic
     # flush is visible before the run ends. Real capture uses the defaults and
     # max_messages=None.

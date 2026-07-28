@@ -57,7 +57,10 @@ day it is not running is data that cannot be recovered later.
 - [x] `mypy` static typing, clean (config in `pyproject.toml`,
       `ignore_missing_imports`). Only 2 findings, both pandas-stubs false
       positives; resolved with targeted, documented `# type: ignore[code]`.
-- [ ] `structlog` structured logging across loaders
+- [x] `structlog` structured logging for the unattended services (collector,
+      compact, sync) via `qde.log`: leveled, ISO-timestamped, key-value events;
+      console renderer by default, JSON when `QDE_LOG_FORMAT=json`. Entry points
+      call `configure()`. (Batch loaders' user-facing prints left as-is.)
 - [ ] `pydantic-settings` typed config from env
 
 ## Phase 1 — Lakehouse storage on Cloudflare R2

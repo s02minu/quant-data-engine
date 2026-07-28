@@ -16,6 +16,7 @@ dependencies = [
     "pandas-market-calendars",
     "websockets",
     "boto3",
+    "structlog",
 ]
 
 [project.optional-dependencies]

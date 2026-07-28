@@ -5,6 +5,7 @@ import contextlib
 import os
 import signal
 
+from qde.log import configure
 from qde.stream.collector import StreamCollector
 from qde.stream.config import StreamConfig
 
@@ -34,6 +35,7 @@ def config_from_env() -> StreamConfig:
 
 
 async def main() -> None:
+    configure()
     config = config_from_env()
     # Bounds a run for testing; unset means capture indefinitely.
     raw_max = os.getenv("QDE_MAX_MESSAGES")

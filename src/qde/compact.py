@@ -12,7 +12,7 @@ further files and can be merged without racing an in-progress write.
 Crash safety uses a temp-then-rename protocol. Each partition is merged into a
 dot-prefixed temp file, the originals are deleted, then the temp is renamed into
 place. A recovery pass resolves a temp left by an interrupted run: if the
-originals survived the merge never committed, so the temp is discarded; if they
+originals survigtved the merge never committed, so the temp is discarded; if they
 were already deleted the rename simply never ran, so the temp is finalized.
 """
 
@@ -21,7 +21,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from qde.log import configure, get_logger
+
 TEMP_NAME = ".compact.tmp.parquet"
+
+log = get_logger(__name__)
 
 
 def _stamp() -> str:
@@ -112,8 +116,10 @@ def compact_bronze(base_dir: str = "data", today: date | None = None) -> dict:
 if __name__ == "__main__":
     import os
 
+    configure()
     summary = compact_bronze(base_dir=os.getenv("QDE_BASE_DIR", "data"))
-    print(
-        f"compacted {summary['partitions_compacted']} partitions, "
-        f"merged {summary['files_merged']} files"
+    log.info(
+        "compacted",
+        partitions=summary["partitions_compacted"],
+        files=summary["files_merged"],
     )

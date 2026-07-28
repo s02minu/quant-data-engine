@@ -19,6 +19,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from qde.compact import partition_date
+from qde.log import configure, get_logger
+
+log = get_logger(__name__)
 
 
 def r2_client_from_env():
@@ -75,31 +78,34 @@ def sync_bronze(base_dir: str, bucket: str, client, today=None) -> dict:
             client.upload_file(str(file), bucket, key)
             remote_size = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
         except Exception as exc:
-            print(f"sync failed for {key}: {type(exc).__name__}: {exc}")
+            log.warning("sync_failed", key=key, error=type(exc).__name__, detail=str(exc))
             failed += 1
             continue
 
         if remote_size != local_size:
             # The remote copy does not match; keep the local file for a retry.
-            print(f"size mismatch for {key}: local {local_size}, remote {remote_size}")
+            log.warning("size_mismatch", key=key, local=local_size, remote=remote_size)
             failed += 1
             continue
 
         file.unlink()  # safe: R2 confirmed a copy of the same size
         uploaded += 1
         total_bytes += local_size
-        print(f"synced {key} ({local_size} bytes)")
+        log.info("synced", key=key, bytes=local_size)
 
     return {"uploaded": uploaded, "bytes": total_bytes, "failed": failed}
 
 
 if __name__ == "__main__":
+    configure()
     summary = sync_bronze(
         base_dir=os.getenv("QDE_BASE_DIR", "data"),
         bucket=os.environ["QDE_R2_BUCKET"],
         client=r2_client_from_env(),
     )
-    print(
-        f"uploaded {summary['uploaded']} files "
-        f"({summary['bytes']} bytes), {summary['failed']} kept for retry"
+    log.info(
+        "sync_complete",
+        uploaded=summary["uploaded"],
+        bytes=summary["bytes"],
+        failed=summary["failed"],
     )
