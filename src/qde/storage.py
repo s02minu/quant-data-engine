@@ -25,6 +25,41 @@ def _ohlcv_path(symbol: str, source: str, interval: str = "1d", base_dir: str = 
     return path
 
 
+def _bars_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> Path:
+    """Build the bronze path for one OHLCV bar series.
+
+    The new source of truth for where bars live, replacing ``_ohlcv_path``.
+    Hive-partitioned by the keys we actually filter on -- source, symbol,
+    interval -- with the whole time series kept in a single file.
+
+    Unlike the microstructure lake (see ``qde.stream.paths.bronze_path``),
+    bars are NOT partitioned by date: a daily series is one row per day, so a
+    ``date=`` partition would mean thousands of one-row files (the small-files
+    problem). ``date`` stays a column inside the file instead. Same
+    partitioning idea, different grain -- because bars and ticks have
+    different shapes (group-by-shape).
+
+    Args:
+        symbol (str): a ticker symbol, e.g. "BTCUSDT". A partition key.
+        source (str): the source, e.g. "binance". A partition key.
+        interval (str, optional): bar size, e.g. '1d', '1h', '1m'. A partition
+            key. Default: '1d'.
+        base_dir (str, optional): the lake root. Default: 'data'.
+
+    Returns:
+        Path: Path to the series' single Parquet file.
+    """
+    return (
+        Path(base_dir)
+        / "bronze"
+        / "group=bars"
+        / f"source={source}"
+        / f"symbol={symbol}"
+        / f"interval={interval}"
+        / "bars.parquet"
+    )
+
+
 # Function to save the OHLCV data to Parquet
 def save_ohlcv(
     symbol: str,
