@@ -90,7 +90,7 @@ def save_ohlcv(
     df = load_ohlcv(symbol, start=start, end=end, interval=interval, source=source)
 
     # Create the directory if it doesn't exist. Build the file oath.
-    path = _ohlcv_path(symbol, source, interval, base_dir)
+    path = _bars_path(symbol, source, interval, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, engine="pyarrow")
 
@@ -115,7 +115,7 @@ def load_ohlcv_local(
           Clean DataFrame
     """
     # Check if path exits
-    path = _ohlcv_path(symbol, source, interval, base_dir)
+    path = _bars_path(symbol, source, interval, base_dir)
 
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -152,7 +152,7 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
     df = df[~df.index.duplicated(keep="last")]
 
     # Create the directory if it doesn't exist. Build the file oath.
-    path = _ohlcv_path(symbol, source, interval, base_dir)
+    path = _bars_path(symbol, source, interval, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, engine="pyarrow")
 
