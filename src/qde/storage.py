@@ -160,24 +160,33 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
 # Sql
 def query(sql: str, base_dir: str = "data") -> pd.DataFrame:
     """
-    SQL Helper function.
-    Create a temporary query engine that can read the Parquet files.
+    Run SQL against the bars lake and return a DataFrame.
+
+    Registers a single ``bars`` view over the partitioned bronze bars lake.
+    Because it reads with ``hive_partitioning=true``, the partition keys
+    (``source``, ``symbol``, ``interval``) come back as ordinary columns you
+    can filter on, alongside the file's own columns (``date``, ``open``,
+    ``high``, ``low``, ``close``, ``volume``). This replaces the old
+    one-view-per-file scheme, where each file was its own table named
+    ``<symbol>_<source>_<interval>``.
 
     Args:
-        sql (str): a SQL query to execute.
-        base_dir (str, optional): the base directory to save the file. Default: 'data'.
+        sql (str): a SQL query to execute, e.g.
+            "SELECT date, close FROM bars WHERE symbol = 'BTCUSDT'".
+        base_dir (str, optional): the lake root. Default: 'data'.
+
+    Returns:
+        pd.DataFrame: the query result.
     """
 
     # Duckdb connection
     con = duckdb.connect()
 
-    # Find Parquet files
-    files = list((Path(base_dir) / "ohlcv").glob("*.parquet"))
+    # One view over the whole bars lake; hive keys become filterable columns.
+    bars_glob = (Path(base_dir) / "bronze" / "group=bars" / "**" / "*.parquet").as_posix()
+    con.sql(
+        "CREATE OR REPLACE VIEW bars AS "
+        f"SELECT * FROM read_parquet('{bars_glob}', hive_partitioning=true)"
+    )
 
-    for file in files:
-        name = file.stem
-        con.sql(f"CREATE OR REPLACE VIEW \"{name}\" AS SELECT * FROM '{file}'")
-
-    result = con.sql(sql).df()
-
-    return result
+    return con.sql(sql).df()

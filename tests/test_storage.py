@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from qde.storage import load_ohlcv_local, save_ohlcv, update_ohlcv
+import pandas as pd
+
+from qde.storage import _bars_path, load_ohlcv_local, query, save_ohlcv, update_ohlcv
 
 
 # Assert the called file exists on disk
@@ -43,3 +45,22 @@ def test_update_add_new_data(tmp_path):
     # Check row count grew
     df_after = load_ohlcv_local("BTCUSDT", source="binance", base_dir=str(tmp_path))
     assert len(df_after) > len(df_before)
+
+
+def test_query_reads_bars_lake(tmp_path):
+    # Write a tiny bars file straight into the partitioned bronze layout.
+    df = pd.DataFrame(
+        {"open": [1.0], "high": [2.0], "low": [0.5], "close": [1.5], "volume": [10.0]},
+        index=pd.DatetimeIndex(["2024-01-01"], tz="UTC", name="date"),
+    )
+    path = _bars_path("BTCUSDT", "binance", "1d", base_dir=str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(path, engine="pyarrow")
+
+    # The hive partition keys (source/symbol/interval) come back as columns.
+    out = query("SELECT symbol, source, interval, close FROM bars", base_dir=str(tmp_path))
+
+    assert out.loc[0, "symbol"] == "BTCUSDT"
+    assert out.loc[0, "source"] == "binance"
+    assert out.loc[0, "interval"] == "1d"
+    assert out.loc[0, "close"] == 1.5
