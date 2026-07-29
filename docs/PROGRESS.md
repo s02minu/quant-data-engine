@@ -13,7 +13,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 |---|---|---|
 | — | Foundation (the working pipeline) | Done |
 | 0 | Harden the foundation | Done |
-| 1 | Lakehouse storage on Cloudflare R2 | Partial — core deployed, legacy layout pending |
+| 1 | Lakehouse storage on Cloudflare R2 | Done |
 | 2 | Licensing audit | Not started |
 | 3 | Group schemas | Not started |
 | 4 | Registry + `BaseIngestor` | Not started |
@@ -123,13 +123,18 @@ The batch pipeline predates the medallion decision and writes a flat layout,
 writes `data/bronze/group=.../...`. Two layouts cannot coexist as source count
 grows; the flat one is retired.
 
-- [ ] Migrate existing OHLCV files to `bronze/group=bars/source=.../symbol=.../date=...`
-- [ ] `storage.py`: replace `_ohlcv_path` and the `data/ohlcv/*.parquet` glob in `query()`
-- [ ] `quality.py`: `build_quality_summary` derives symbol/source/interval by
-      splitting filenames — read partition keys from the path instead
-- [ ] `scripts/daily_update.py`: discovers symbols the same way; drive it from
-      the registry once that exists rather than from filenames
-- [ ] Update notebooks and the Power BI dashboard source paths
+- [x] Migrate existing OHLCV files to `bronze/group=bars/source=/symbol=/interval=`
+      — one file per series, **no `date` partition** (daily bars are one row/day,
+      so date-partitioning would spawn one-row files). Done via
+      `scripts/migrate_ohlcv_to_bronze.py` (copy → verify identical → prune).
+- [x] `storage.py`: `_bars_path` is the new source of truth; `query()` reads a
+      single hive-partitioned `bars` view (source/symbol/interval as columns).
+      Dead `_ohlcv_path` removal is the final cleanup.
+- [x] `quality.py`: `build_quality_summary` discovers series from partition
+      metadata via `list_bars_series`, not by splitting filenames
+- [x] `scripts/daily_update.py`: same partition-metadata discovery
+- [ ] Update notebooks (demo, live_demo, sql_practice); Power BI reads
+      `data/quality_summary.csv`, whose path is unchanged
 
 ## Phase 2 — Licensing audit (gating)
 

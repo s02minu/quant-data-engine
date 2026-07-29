@@ -19,7 +19,7 @@ flowchart TD
     REST -->|"batch pull · pagination · retries"| BL["Batch loaders<br/>qde.loaders"]
     WS -->|"async read · buffer · flush"| SC["Stream collector<br/>qde.stream — 24/7 in Docker on a VPS"]
 
-    BL --> BARS[("Parquet OHLCV bars<br/>data/ohlcv")]
+    BL --> BARS[("Parquet OHLCV bars<br/>bronze/group=bars")]
     SC -->|"micro-batches"| BRONZE[("Bronze lake<br/>group / kind / symbol / date")]
 
     BRONZE -->|"daily cron: compact + sync + prune"| R2[("Cloudflare R2<br/>durable object storage")]
@@ -78,7 +78,7 @@ save_ohlcv("SPY", source="yfinance", start="2015-01-01")
 ```python
 from qde.storage import query
 
-df = query("SELECT date, close FROM BTCUSDT_binance_1d WHERE close > 60000")
+df = query("SELECT date, close FROM bars WHERE symbol='BTCUSDT' AND close > 60000")
 ```
 
 **Update with only new data**
@@ -231,7 +231,6 @@ revisited when the constraints that justify them actually appear.
 ### Limitations
 - Batch loader tests hit live APIs (not yet mocked); streaming and lake tests run offline.
 - The R2 lake is currently private (querying needs a read-only token); the public open lake and catalogue service are still planned.
-- Batch OHLCV still writes the legacy flat `data/ohlcv/` layout; unifying it into the partitioned bronze lake is pending.
 - Symbol mapping is manual — new symbols must be added to symbols.py.
 - Kraken's public OHLC endpoint serves only ~720 recent candles per interval, regardless of start date — deep history requires its paid data service.
 - Order-book reconstruction from depth deltas is deferred to a later transform; the collector captures raw deltas and periodic snapshots (bronze), not a rebuilt book.
