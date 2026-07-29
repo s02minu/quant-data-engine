@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 import pandas_market_calendars as mcal
 
+from qde.storage import list_bars_series, load_ohlcv_local
+
 
 # Gap detection
 def check_gaps(df: pd.DataFrame, calendar: str = "crypto") -> pd.DataFrame:
@@ -136,18 +138,15 @@ def build_quality_summary(base_dir="data"):
         DataFrame with one row per dataset, showing row counts,
         date range, staleness, and quality check results.
     """
-    # Find all parquet files in the base dir and split for summary
-    files = list((Path(base_dir) / "ohlcv").glob("*.parquet"))
+    # Discover series from the lake's own partition metadata, not filenames.
+    series = list_bars_series(base_dir)
 
     all_rows = []
 
-    for file in files:
-        parts = file.stem.split("_")
-        symbol = parts[0]
-        source = parts[1]
-        interval = parts[2]
-
-        df = pd.read_parquet(file)
+    for symbol, source, interval in zip(
+        series["symbol"], series["source"], series["interval"], strict=True
+    ):
+        df = load_ohlcv_local(symbol, source, interval, base_dir)
 
         # Determine calendar type
         calendar = "equity" if source == "yfinance" else "crypto"

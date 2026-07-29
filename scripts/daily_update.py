@@ -1,21 +1,16 @@
-from pathlib import Path
-
 import pandas as pd
 
 from qde.quality import build_quality_summary
-from qde.storage import update_ohlcv
+from qde.storage import list_bars_series, update_ohlcv
 
 print(f"Update started at {pd.Timestamp.now()}")
 
-# Loop through all the symbols and call the update function on each
-files = list((Path("data") / "ohlcv").glob("*.parquet"))
+# Discover series from the lake's partition metadata, then update each.
+series = list_bars_series()
 
-for file in files:
-    parts = file.stem.split("_")
-    symbol = parts[0]
-    source = parts[1]
-    interval = parts[2]
-
+for symbol, source, interval in zip(
+    series["symbol"], series["source"], series["interval"], strict=True
+):
     try:
         update_ohlcv(symbol, source=source, interval=interval)
         print(f"{symbol} updated")

@@ -190,3 +190,20 @@ def query(sql: str, base_dir: str = "data") -> pd.DataFrame:
     )
 
     return con.sql(sql).df()
+
+
+def list_bars_series(base_dir: str = "data") -> pd.DataFrame:
+    """List the (source, symbol, interval) series present in the bars lake.
+
+    Reads partition metadata straight from the lake, so callers never parse
+    filenames. Returns an empty frame when no bars have landed yet.
+    """
+    root = Path(base_dir) / "bronze" / "group=bars"
+    if not any(root.glob("**/*.parquet")):
+        return pd.DataFrame(columns=["source", "symbol", "interval"])
+
+    return query(
+        "SELECT DISTINCT source, symbol, interval FROM bars "
+        "ORDER BY source, symbol, interval",
+        base_dir=base_dir,
+    )
