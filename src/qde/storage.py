@@ -6,25 +6,6 @@ import pandas as pd
 from qde.loaders import load_ohlcv
 
 
-# Path helper function
-def _ohlcv_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> Path:
-    """
-    Builds the file path for a given symbol/source/interval.
-    The single source of truth for where files live.
-
-    Args:
-        symbol (str): a ticker symbol.
-        source (str): a ticker source.
-        interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
-        base_dir (str, optional): the base directory to save the file. Default: 'data'.
-
-    Returns:
-        Path: Path to the saved file.
-    """
-    path = Path(base_dir) / "ohlcv" / f"{symbol}_{source}_{interval}.parquet"
-    return path
-
-
 def _bars_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> Path:
     """Build the bronze path for one OHLCV bar series.
 
