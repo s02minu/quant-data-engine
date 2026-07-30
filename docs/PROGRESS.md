@@ -26,9 +26,10 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 11 | CI/CD | Not started |
 | 12 | Catalogue and publishing | Not started |
 
-**Current focus:** the websocket collector (Phase 6). It is prioritised ahead of
-earlier phases because streamed microstructure data is un-backfillable — every
-day it is not running is data that cannot be recovered later.
+**Current focus:** the websocket collector (Phase 6) is built and running 24/7,
+and Phase 1 (R2 lakehouse + the bars→bronze migration) is complete. What remains
+in Phase 6 is the **batch side** — watermark pattern and a backfill CLI. Earlier
+phases (2–5) are still open; their sequencing is an open question.
 
 ---
 
@@ -129,11 +130,12 @@ grows; the flat one is retired.
       `scripts/migrate_ohlcv_to_bronze.py` (copy → verify identical → prune).
 - [x] `storage.py`: `_bars_path` is the new source of truth; `query()` reads a
       single hive-partitioned `bars` view (source/symbol/interval as columns).
-      Dead `_ohlcv_path` removal is the final cleanup.
+      Dead `_ohlcv_path` has now been removed.
 - [x] `quality.py`: `build_quality_summary` discovers series from partition
       metadata via `list_bars_series`, not by splitting filenames
 - [x] `scripts/daily_update.py`: same partition-metadata discovery
-- [ ] Update notebooks (demo, live_demo, sql_practice); Power BI reads
+- [x] Notebooks updated for the `bars` view (`demo.ipynb` tracked;
+      `live_demo`/`sql_practice` are gitignored, fixed locally). Power BI reads
       `data/quality_summary.csv`, whose path is unchanged
 
 ## Phase 2 — Licensing audit (gating)
@@ -206,7 +208,7 @@ grows; the flat one is retired.
   - [x] Sequence state reset on reconnect so one outage yields one record
   - [x] Verified: synthetic sequences detect correctly, live feed reports no
         false positives
-  - [ ] Reconnect path itself is unverified — needs the mocked socket in step 6
+  - [x] Reconnect path verified with the mocked socket in Step 6
 - [x] **Step 5b — Snapshot anchoring**
   - [x] REST depth snapshot stored under its own `kind=snapshot` partition
   - [x] Snapshot taken on every connect, so each connection is anchored
