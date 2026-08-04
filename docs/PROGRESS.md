@@ -102,9 +102,18 @@ question.
       locally only after a same-size check confirms the remote copy. Idempotent
       (a synced file is gone locally, so re-runs skip it); S3 client injected so
       tested offline with a fake. Credentials read from env, never hardcoded.
-- [x] Scheduled compact -> sync as a daily VPS cron job (00:30 UTC) via
-      `scripts/maintain.sh`, one-off container with R2 env sourced from
-      secrets/r2.env. Verified end-to-end: 16 files (~95 MB) uploaded to R2,
+- [x] Bars publishing (`qde.sync.publish_bars`): bars are a single mutable file
+      per series, so they are mirrored to R2 with **overwrite** (not shipped-and-
+      pruned like microstructure) and the local working copy is kept for the next
+      incremental upsert. `qde.sync` now runs both, and the quality-summary CSV is
+      published too. Closes the "bars are local-only" gap. Tested offline.
+- [x] Scheduled maintenance as a daily VPS cron job (00:30 UTC) via
+      `scripts/maintain.sh`. Now runs **bars update → compact → sync**
+      (`scripts/daily_update.py` for the incremental bars pull, then microstructure
+      compaction, then the sync that ships microstructure and publishes bars +
+      the quality CSV). *VPS redeploy pending: the image needs the batch deps
+      (yfinance, pandas_market_calendars) and the VPS bars lake needs a one-time
+      seed.* Original compact→sync verified end-to-end: 16 files (~95 MB) uploaded,
       local pruned, 0 failures.
 - [ ] R2 retention — **on hold, deliberately.** Originally planned as "delete
       objects older than ~14 days" to cap storage cost. Decided against for now:

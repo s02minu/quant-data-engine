@@ -15,6 +15,9 @@ set -a
 . ./secrets/r2.env
 set +a
 
+echo "[$(date -u +%FT%TZ)] bars update start"
+docker compose run --rm collector python scripts/daily_update.py
+
 echo "[$(date -u +%FT%TZ)] compaction start"
 docker compose run --rm collector python -m qde.compact
 
