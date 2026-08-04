@@ -19,7 +19,8 @@ were already deleted the rename simply never ran, so the temp is finalized.
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from qde.log import configure, get_logger
 
@@ -49,6 +50,13 @@ def _recover_partition(partition_dir: Path) -> None:
 def compact_partition(partition_dir: Path) -> int:
     """Merge every part file in one partition into a single file.
 
+    Part files are streamed through one writer, a file at a time, rather than
+    concatenated in memory all at once. A chatty day (book_ticker fires on every
+    best-bid/ask change) can be gigabytes, and the raw-string price/quantity
+    columns are especially heavy once materialised in pandas, so a
+    whole-partition concat can exhaust a small box (OOM). Reading and writing one
+    Arrow table at a time keeps peak memory to roughly a single part file.
+
     Returns the number of files merged, or 0 if there was nothing to do.
     """
     _recover_partition(partition_dir)
@@ -57,10 +65,22 @@ def compact_partition(partition_dir: Path) -> int:
     if len(originals) < 2:
         return 0
 
-    merged = pd.concat((pd.read_parquet(f) for f in originals), ignore_index=True)
+    # Reconcile schemas from the file footers only (cheap, no data loaded) so a
+    # column that is all-null in one part and typed in another still lines up.
+    # ParquetFile reads the file as-is; unlike pq.read_schema/read_table it never
+    # infers the hive partition columns (group/source/...) from the path.
+    schema = pa.unify_schemas([pq.ParquetFile(f).schema_arrow for f in originals])
 
     tmp = partition_dir / TEMP_NAME
-    merged.to_parquet(tmp, engine="pyarrow", index=False)
+    writer = pq.ParquetWriter(tmp, schema)
+    try:
+        for original in originals:
+            writer.write_table(pq.ParquetFile(original).read().cast(schema))
+    finally:
+        writer.close()
+
+    # Originals are removed only after the merged file is fully written and
+    # closed; a crash before this leaves them intact for the recovery pass.
     for original in originals:
         original.unlink()
     tmp.rename(partition_dir / f"part-compacted-{_stamp()}.parquet")

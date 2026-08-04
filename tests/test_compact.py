@@ -87,3 +87,29 @@ def test_recovery_finalises_temp_when_originals_gone(tmp_path):
     assert len(files) == 1
     assert "compacted" in files[0].name
     assert len(pd.read_parquet(part)) == 4
+
+
+def test_merges_parts_with_mismatched_null_column(tmp_path):
+    # The streaming merge must reconcile schemas: one part has an all-null column
+    # (null type), another has it typed. A naive writer would reject the mismatch.
+    part = (
+        Path(tmp_path)
+        / "bronze"
+        / "group=microstructure"
+        / "source=binance"
+        / "kind=trades"
+        / "symbol=XRPUSDT"
+        / "date=2026-07-24"
+    )
+    part.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"n": [1, 2], "price": [None, None]}).to_parquet(
+        part / "part-0.parquet", index=False
+    )
+    pd.DataFrame({"n": [3], "price": [1.5]}).to_parquet(part / "part-1.parquet", index=False)
+
+    compact_bronze(base_dir=str(tmp_path), today=TODAY)
+
+    out = pd.read_parquet(next(part.glob("part-compacted-*.parquet")))
+    assert len(out) == 3
+    # The null-typed column reconciled with the float one; the real value survived.
+    assert out["price"].dropna().tolist() == [1.5]

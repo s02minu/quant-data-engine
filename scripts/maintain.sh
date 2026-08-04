@@ -19,7 +19,10 @@ echo "[$(date -u +%FT%TZ)] bars update start"
 docker compose run --rm collector python -m qde.daily_update
 
 echo "[$(date -u +%FT%TZ)] compaction start"
-docker compose run --rm collector python -m qde.compact
+# Non-fatal: a compaction problem (e.g. one oversized partition) must not abort
+# the run before sync, or settled data and bars would never reach R2.
+docker compose run --rm collector python -m qde.compact \
+  || echo "[$(date -u +%FT%TZ)] compaction failed; continuing to sync"
 
 echo "[$(date -u +%FT%TZ)] sync start"
 docker compose run --rm \
