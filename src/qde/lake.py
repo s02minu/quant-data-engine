@@ -58,6 +58,23 @@ def bronze_glob(
     )
 
 
+def bars_glob(
+    source: str = "*", symbol: str = "*", interval: str = "*", bucket: str | None = None
+) -> str:
+    """Build an r2:// glob selecting bars series.
+
+    The bars twin of ``bronze_glob``. Bars are grouped by shape, not partitioned
+    by date -- one file per (source, symbol, interval) -- so the keys are source,
+    symbol, and interval, with no kind or date. Each argument narrows a key; the
+    default "*" matches all.
+    """
+    bucket = bucket or os.environ.get("QDE_R2_BUCKET", "qde-lake")
+    return (
+        f"r2://{bucket}/bronze/group=bars/source={source}/"
+        f"symbol={symbol}/interval={interval}/*.parquet"
+    )
+
+
 def _load_local_env(path: str = "secrets/r2-read.env") -> None:
     """Load KEY=VALUE lines from a local env file into the environment.
 

@@ -1,4 +1,4 @@
-from qde.lake import bronze_glob
+from qde.lake import bars_glob, bronze_glob
 
 
 def test_bronze_glob_defaults_to_all_partitions(monkeypatch):
@@ -16,3 +16,17 @@ def test_bronze_glob_narrows_by_partition(monkeypatch):
 
 def test_bronze_glob_bucket_override():
     assert bronze_glob(bucket="other").startswith("r2://other/bronze/")
+
+
+def test_bars_glob_defaults_to_all_partitions(monkeypatch):
+    monkeypatch.setenv("QDE_R2_BUCKET", "qde-lake")
+    assert bars_glob() == (
+        "r2://qde-lake/bronze/group=bars/source=*/symbol=*/interval=*/*.parquet"
+    )
+
+
+def test_bars_glob_narrows_by_partition(monkeypatch):
+    monkeypatch.setenv("QDE_R2_BUCKET", "qde-lake")
+    assert "source=binance/symbol=BTCUSDT/interval=1d" in bars_glob(
+        source="binance", symbol="BTCUSDT", interval="1d"
+    )
