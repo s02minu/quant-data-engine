@@ -17,6 +17,8 @@ Example:
     python -m qde.backfill --from 2020-01-01                    # every series in the lake
 """
 
+import os
+
 from qde.loaders import load_ohlcv
 from qde.log import configure, get_logger
 from qde.storage import list_bars_series, upsert_bars
@@ -134,7 +136,11 @@ def main() -> None:
     parser.add_argument("--interval", help="restrict to one bar size, e.g. 1d")
     parser.add_argument("--from", dest="start", required=True, help="start date, e.g. 2020-01-01")
     parser.add_argument("--to", dest="end", default=None, help="end date (default: now)")
-    parser.add_argument("--base-dir", default="data", help="lake root (default: data)")
+    parser.add_argument(
+        "--base-dir",
+        default=os.getenv("QDE_BASE_DIR", "data"),
+        help="lake root (default: $QDE_BASE_DIR, else 'data') -- matches compact/sync",
+    )
     args = parser.parse_args()
 
     if args.group != "bars":
