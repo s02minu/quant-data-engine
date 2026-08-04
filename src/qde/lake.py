@@ -13,6 +13,7 @@ read from the environment:
 import os
 
 import duckdb
+import pandas as pd
 
 
 def connect() -> duckdb.DuckDBPyConnection:
@@ -73,6 +74,45 @@ def bars_glob(
         f"r2://{bucket}/bronze/group=bars/source={source}/"
         f"symbol={symbol}/interval={interval}/*.parquet"
     )
+
+
+_MICROSTRUCTURE_KINDS = ("trades", "depth", "book_ticker", "snapshot", "gaps", "session")
+
+
+def query(sql: str) -> pd.DataFrame:
+    """Run SQL against the R2 lake with named views already registered.
+
+    The R2 counterpart of ``qde.storage.query``: a query reads like plain SQL
+    against tables -- ``SELECT ... FROM bars WHERE symbol = 'BTCUSDT'`` -- rather
+    than spelling out ``read_parquet('r2://.../*.parquet', hive_partitioning=true)``.
+    The same SQL therefore runs against the local lake (``storage.query``) and
+    the R2 lake (here).
+
+    Registers a ``bars`` view plus one view per microstructure kind (``trades``,
+    ``depth``, ``book_ticker``, ...), one per kind because each kind has its own
+    schema. Hive partition keys come back as ordinary, filterable columns. Views
+    are lazy: creating them transfers nothing; a query only reads the partitions
+    its ``WHERE`` clause selects.
+    """
+    con = open_lake()
+
+    con.execute(
+        f"CREATE OR REPLACE VIEW bars AS "
+        f"SELECT * FROM read_parquet('{bars_glob()}', hive_partitioning=true)"
+    )
+
+    for kind in _MICROSTRUCTURE_KINDS:
+        try:
+            con.execute(
+                f"CREATE OR REPLACE VIEW {kind} AS "
+                f"SELECT * FROM read_parquet('{bronze_glob(kind=kind)}', hive_partitioning=true)"
+            )
+        except Exception:
+            # A kind with no data yet has no files to glob; skip its view rather
+            # than fail the whole query.
+            continue
+
+    return con.execute(sql).df()
 
 
 def _load_local_env(path: str = "secrets/r2-read.env") -> None:
