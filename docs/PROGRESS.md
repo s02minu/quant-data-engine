@@ -26,11 +26,13 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 11 | CI/CD | Not started |
 | 12 | Catalogue and publishing | Not started |
 
-**Current focus:** Phase 6 is complete — the websocket collector runs 24/7, and
-the batch side now has watermarked incremental loads, idempotent upserts, and a
-group-level backfill CLI. Phase 1 (R2 lakehouse + the bars→bronze migration) is
-done too. Earlier phases (2–5) and 7+ are still open; their sequencing is an open
-question.
+**Current focus:** Phase 6 is complete and the platform is fully deployed. The
+collector runs 24/7; the batch side has watermarked incremental loads, idempotent
+upserts, and a group-level backfill CLI, and now runs nightly on the VPS with bars
+published to R2 (durable + queryable like microstructure). Recent hardening:
+memory-safe streaming compaction, and a `NoNewData` exception so a real fetch error
+is no longer mistaken for "already up to date". Earlier phases (2–5) and 7+ are
+open; the registry (Phase 4) is the likely next step.
 
 ---
 
@@ -96,8 +98,11 @@ question.
 - [x] Compaction (`qde.compact`): merges the many small part files in a settled
       partition into one. Only touches partitions dated before today, since the
       collector still writes the current day. Crash-safe via temp → delete →
-      rename, with a recovery pass for interrupted runs. Tested (incl. both
-      recovery cases) and verified on real data: 51 files -> 17, rows unchanged.
+      rename, with a recovery pass for interrupted runs. **Streams part files
+      through one Arrow writer, a file at a time**, so peak memory stays flat
+      regardless of partition size — a whole-partition pandas concat OOM-killed the
+      job on the 3.7 GB VPS. Tested (incl. both recovery cases + schema
+      reconciliation) and verified on real data: 51 files -> 17, rows unchanged.
 - [x] Sync (`qde.sync`): uploads settled bronze files to R2 and deletes each
       locally only after a same-size check confirms the remote copy. Idempotent
       (a synced file is gone locally, so re-runs skip it); S3 client injected so
@@ -108,13 +113,13 @@ question.
       incremental upsert. `qde.sync` now runs both, and the quality-summary CSV is
       published too. Closes the "bars are local-only" gap. Tested offline.
 - [x] Scheduled maintenance as a daily VPS cron job (00:30 UTC) via
-      `scripts/maintain.sh`. Now runs **bars update → compact → sync**
-      (`scripts/daily_update.py` for the incremental bars pull, then microstructure
-      compaction, then the sync that ships microstructure and publishes bars +
-      the quality CSV). *VPS redeploy pending: the image needs the batch deps
-      (yfinance, pandas_market_calendars) and the VPS bars lake needs a one-time
-      seed.* Original compact→sync verified end-to-end: 16 files (~95 MB) uploaded,
-      local pruned, 0 failures.
+      `scripts/maintain.sh`, now **deployed and running**. Runs **bars update →
+      compact → sync**: `python -m qde.daily_update` (incremental bars), then
+      microstructure compaction, then the sync that ships microstructure and
+      publishes bars + the quality CSV. Compaction is non-fatal in the script so a
+      hiccup can never block the sync/publish. Verified end-to-end on the VPS: all
+      8 bar series published to R2 (`publish_bars_complete published=8 failed=0`)
+      and queried back from the laptop via `qde.lake`. Runbook: `docs/deploy.md`.
 - [ ] R2 retention — **on hold, deliberately.** Originally planned as "delete
       objects older than ~14 days" to cap storage cost. Decided against for now:
       raw microstructure is the primary backtest fuel and is irreplaceable once

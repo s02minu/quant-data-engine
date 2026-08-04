@@ -88,6 +88,11 @@ from qde.storage import update_ohlcv
 update_ohlcv("BTCUSDT", source="binance")
 ```
 
+**Backfill a date range — idempotent, works identically across sources**
+```bash
+python -m qde.backfill --source binance --symbol BTCUSDT --from 2015-01-01
+```
+
 ### Streaming collector (microstructure)
 
 Captures live Binance data — trades, L2 order-book deltas, and top-of-book quotes —
@@ -128,26 +133,31 @@ duckdb.sql(
 
 ### Cloud storage & serving
 
-A daily maintenance job (`scripts/maintain.sh`, run by cron on the VPS) compacts
-each settled day's many small part files into a few large ones, uploads them to
-Cloudflare R2, and prunes the local copies **only after R2 confirms a same-size
-copy** — so the disk stays flat and the capture box is disposable. Compaction
-(`qde.compact`) and sync (`qde.sync`) are crash-safe and idempotent.
+A daily maintenance job (`scripts/maintain.sh`, run by cron on the VPS) refreshes
+the batch bars incrementally (`qde.daily_update`), compacts each settled day's many
+small microstructure part files into a few large ones, then syncs to Cloudflare R2.
+Microstructure is uploaded and **pruned locally only after R2 confirms a same-size
+copy** (so the disk stays flat and the box is disposable); the mutable bars files are
+mirrored to R2 with overwrite and kept locally for the next incremental update.
+Compaction (`qde.compact`, which streams part files through Arrow one at a time so it
+never loads a whole partition into memory) and sync (`qde.sync`) are crash-safe and
+idempotent.
 
 R2's zero egress fees make the serving model viable: instead of hosting a query
 engine, the lake is published as files and analysts point their own DuckDB at it,
 pushing compute to the client.
 
 ```python
-from qde.lake import open_lake, bronze_glob
+from qde.lake import query  # same SQL as qde.storage.query, but reading from R2
 
-con = open_lake()  # reads read-only R2 credentials from a local env file
-con.sql(f"""
-    SELECT symbol, count(*) AS trades
-    FROM read_parquet('{bronze_glob(kind="trades")}', hive_partitioning=true)
-    GROUP BY symbol
-""").show()
+# `bars` and each microstructure kind (`trades`, `depth`, ...) are pre-registered
+# as views, so a query reads like a database rather than a read_parquet('r2://...') call.
+query("SELECT date, close FROM bars WHERE symbol = 'BTCUSDT'")
+query("SELECT symbol, count(*) AS trades FROM trades GROUP BY symbol")
 ```
+
+For full control over which partitions are scanned, build the glob yourself with
+`open_lake()` + `bronze_glob()` (microstructure) or `bars_glob()` (bars).
 
 ### Project structure
 ```
@@ -155,11 +165,14 @@ src/qde/
 ├── __init__.py               # Package root
 ├── storage.py                # Save, load, update Parquet + DuckDB query
 ├── quality.py                # Data quality checks + summary
-├── compact.py                # Crash-safe merge of small bronze part files
-├── sync.py                   # Upload settled bronze to R2, prune local
+├── compact.py                # Stream-merge small bronze part files (memory-safe)
+├── sync.py                   # Sync microstructure to R2 (prune) + publish bars
 ├── lake.py                   # Query the R2 lake with DuckDB (read-only token)
+├── daily_update.py           # Nightly incremental refresh of all bar series
+├── backfill.py               # Idempotent group-level backfill CLI
 ├── loaders/                  # Batch REST ingestion (OHLCV bars)
 │   ├── __init__.py           # Unified load_ohlcv() with source routing
+│   ├── exceptions.py         # NoNewData — a successful but empty response
 │   ├── http.py               # Retry helper with exponential backoff
 │   ├── binance_loader.py     # Binance REST API, pagination, epoch → UTC
 │   ├── yfinance_loader.py    # Yahoo Finance loader, MultiIndex handling
