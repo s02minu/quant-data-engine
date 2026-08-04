@@ -1,24 +1,10 @@
-import pandas as pd
+"""Thin wrapper so the batch refresh can still be run by file path.
 
-from qde.quality import build_quality_summary
-from qde.storage import list_bars_series, update_ohlcv
+The logic lives in ``qde.daily_update`` (a package module, so it ships in the
+Docker image and honours ``QDE_BASE_DIR``). Prefer ``python -m qde.daily_update``.
+"""
 
-print(f"Update started at {pd.Timestamp.now()}")
+from qde.daily_update import main
 
-# Discover series from the lake's partition metadata, then update each.
-series = list_bars_series()
-
-for symbol, source, interval in zip(
-    series["symbol"], series["source"], series["interval"], strict=True
-):
-    try:
-        update_ohlcv(symbol, source=source, interval=interval)
-        print(f"{symbol} updated")
-    except Exception as e:
-        print(f"{symbol} failed: {e}")
-
-
-# Refresh the csv
-summary = build_quality_summary()
-
-print(f"Update complete at {pd.Timestamp.now()}")
+if __name__ == "__main__":
+    main()
