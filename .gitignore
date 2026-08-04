@@ -2,8 +2,6 @@
 notebooks/live_demo.ipynb
 notebooks/sql_practice.ipynb
 
-run_update.bat
-
 # data storage file
 data/
 
