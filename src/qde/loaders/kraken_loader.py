@@ -1,5 +1,6 @@
 import pandas as pd
 
+from qde.loaders.exceptions import NoNewData
 from qde.loaders.http import get_with_requests
 
 
@@ -19,7 +20,9 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
         Index by a UTC-aware DatetimeIndex named 'date'.
 
     Raises:
-        ValueError: If the API returns a non-200 status or an empty response.
+        ValueError: If the API returns an error or an unsupported interval.
+        NoNewData: If the request succeeds but the source has no rows in range
+            (a subclass of ``ValueError``).
     """
     # Get the request
     url = "https://api.kraken.com/0/public/OHLC"
@@ -60,9 +63,13 @@ def load_kraken_ohlcv(symbol, start, end=None, interval="1d") -> pd.DataFrame:
         if data["error"]:
             raise ValueError(f"Kraken API error: {data['error']}")
 
-        # Guard against empty result
+        # No error but an empty result: a successful request with nothing to
+        # return -- the "no new data" case, not a failure.
         if not data["result"]:
-            raise ValueError()
+            raise NoNewData(
+                f"No data returned for pair={symbol!r}, since={since!r}, "
+                f"interval={interval!r}"
+            )
 
         result = data["result"]
         pair_key = [k for k in result if k != "last"][0]

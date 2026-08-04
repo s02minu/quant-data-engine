@@ -1,6 +1,8 @@
 import pandas as pd
 import yfinance as yf
 
+from qde.loaders.exceptions import NoNewData
+
 
 def load_yfinance_ohlcv(symbol, start, end=None, interval="1d"):
     """Load OHLCV data for a single symbol from Yahoo Finance, returning a cleaned
@@ -17,7 +19,10 @@ def load_yfinance_ohlcv(symbol, start, end=None, interval="1d"):
         Index by a UTC-aware DatetimeIndex named 'date'.
 
     Raises:
-        ValueError: If empty DataFrame.
+        NoNewData: If yfinance returns an empty frame -- the source has no rows
+            in range (a subclass of ``ValueError``). yfinance cannot distinguish
+            an empty range from an unknown ticker; genuinely unmapped symbols are
+            already rejected upstream by ``load_ohlcv``'s symbol-map lookup.
     """
 
     df = yf.download(
@@ -28,9 +33,10 @@ def load_yfinance_ohlcv(symbol, start, end=None, interval="1d"):
         auto_adjust=True,
     )
 
-    # Guard against empty DataFrames
+    # An empty frame from a successful download is the "no new data" case, not a
+    # failure -- an incremental pull past the last bar legitimately gets nothing.
     if df.empty:
-        raise ValueError(
+        raise NoNewData(
             f"No df returned for symbol={symbol!r}, start={start!r}, "
             f"end={end!r}, interval={interval!r}"
         )

@@ -3,7 +3,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from qde.loaders import load_ohlcv
+from qde.loaders import NoNewData, load_ohlcv
 
 
 def _bars_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> Path:
@@ -195,8 +195,10 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
     """Incrementally extend a stored bar series with any newer bars.
 
     Reads the series' watermark (its last stored date), fetches only bars after
-    it, and upserts them. If the source has nothing newer, the series is already
-    current and nothing is written.
+    it, and upserts them. If the source has nothing newer (``NoNewData``), the
+    series is already current and nothing is written. Any other failure -- an
+    unknown/delisted symbol, an API error -- propagates so callers can count it
+    as a failure rather than mistake a dead series for an up-to-date one.
 
     Args:
         symbol (str): a ticker symbol.
@@ -207,6 +209,9 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
     Raises:
         FileNotFoundError: if the series has not been stored yet -- there is no
             watermark to advance from, so backfill or save it first.
+        ValueError: if the loader fails for a real reason (unknown symbol, API
+            error). Only ``NoNewData`` (a ``ValueError`` subclass) is swallowed
+            as the benign already-current case.
     """
     watermark = bars_watermark(symbol, source, interval, base_dir)
     if watermark is None:
@@ -221,9 +226,12 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
 
     try:
         df_new = load_ohlcv(symbol, start=next_day, interval=interval, source=source)
-    except ValueError:
-        # The loaders raise ValueError when the source returns no rows, which
-        # for an incremental pull just means the series is already current.
+    except NoNewData:
+        # NoNewData means a successful fetch returned zero rows: for an
+        # incremental pull that just means the series is already current. Only
+        # this narrow case is treated as up-to-date -- a real failure (unknown
+        # symbol, API error) raises a plain ValueError and propagates, so the
+        # daily update counts it as failed instead of silently going stale.
         print(f"{symbol} already up to date through {watermark.date()}")
         return
 

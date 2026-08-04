@@ -1,5 +1,6 @@
 import pandas as pd
 
+from qde.loaders.exceptions import NoNewData
 from qde.loaders.http import get_with_requests
 
 
@@ -19,7 +20,9 @@ def load_binance_ohlcv(symbol, start, end=None, interval="1d", limit=1000) -> pd
         Index by a UTC-aware DatetimeIndex named 'date'.
 
     Raises:
-        ValueError: If the API returns a non-200 status or an empty response.
+        ValueError: If the API returns a non-200 status.
+        NoNewData: If the request succeeds but the source has no rows in range
+            (a subclass of ``ValueError``).
     """
 
     # Convert start to epoch ms
@@ -66,9 +69,10 @@ def load_binance_ohlcv(symbol, start, end=None, interval="1d", limit=1000) -> pd
         # Advance 1 ms after the last ms retrieved
         current_start = batch[-1][0] + 1
 
-    # Fail test Guard for no data returned but request successful
+    # A successful request that returns nothing is the "no new data" case, not a
+    # failure -- an incremental pull past the last bar legitimately gets zero rows.
     if not all_data:
-        raise ValueError(
+        raise NoNewData(
             f"No data returned for symbol={symbol!r}, start={start!r}, "
             f"end={end!r}, interval={interval!r}"
         )

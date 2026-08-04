@@ -1,7 +1,10 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
+import qde.storage as storage
+from qde.loaders import NoNewData
 from qde.storage import (
     _bars_path,
     bars_watermark,
@@ -65,6 +68,40 @@ def test_update_add_new_data(tmp_path):
     # Check row count grew
     df_after = load_ohlcv_local("BTCUSDT", source="binance", base_dir=str(tmp_path))
     assert len(df_after) > len(df_before)
+
+
+def test_update_no_new_data_is_up_to_date(tmp_path, monkeypatch):
+    # A NoNewData from the loader means the source has nothing newer: the update
+    # returns quietly and leaves the stored series untouched.
+    upsert_bars(
+        _sample_bars(["2024-01-01", "2024-01-02"]), "BTCUSDT", "binance", base_dir=str(tmp_path)
+    )
+
+    def no_new(*args, **kwargs):
+        raise NoNewData("nothing newer")
+
+    monkeypatch.setattr(storage, "load_ohlcv", no_new)
+
+    update_ohlcv("BTCUSDT", source="binance", base_dir=str(tmp_path))
+
+    out = load_ohlcv_local("BTCUSDT", "binance", base_dir=str(tmp_path))
+    assert len(out) == 2
+
+
+def test_update_propagates_real_loader_error(tmp_path, monkeypatch):
+    # A real failure (an API error, a delisted symbol) is a plain ValueError and
+    # must propagate -- not be swallowed as "already up to date".
+    upsert_bars(
+        _sample_bars(["2024-01-01", "2024-01-02"]), "BTCUSDT", "binance", base_dir=str(tmp_path)
+    )
+
+    def boom(*args, **kwargs):
+        raise ValueError("Binance API error 500: internal error")
+
+    monkeypatch.setattr(storage, "load_ohlcv", boom)
+
+    with pytest.raises(ValueError, match="Binance API error 500"):
+        update_ohlcv("BTCUSDT", source="binance", base_dir=str(tmp_path))
 
 
 def test_query_reads_bars_lake(tmp_path):
