@@ -18,7 +18,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 3 | Group schemas | Not started |
 | 4 | Registry + `BaseIngestor` | Not started |
 | 5 | Source expansion | Not started |
-| 6 | **Streaming and backfills** | **In progress** |
+| 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
 | 9 | Data quality | Not started |
@@ -26,10 +26,11 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 11 | CI/CD | Not started |
 | 12 | Catalogue and publishing | Not started |
 
-**Current focus:** the websocket collector (Phase 6) is built and running 24/7,
-and Phase 1 (R2 lakehouse + the bars→bronze migration) is complete. What remains
-in Phase 6 is the **batch side** — watermark pattern and a backfill CLI. Earlier
-phases (2–5) are still open; their sequencing is an open question.
+**Current focus:** Phase 6 is complete — the websocket collector runs 24/7, and
+the batch side now has watermarked incremental loads, idempotent upserts, and a
+group-level backfill CLI. Phase 1 (R2 lakehouse + the bars→bronze migration) is
+done too. Earlier phases (2–5) and 7+ are still open; their sequencing is an open
+question.
 
 ---
 
@@ -251,9 +252,20 @@ kinds. Relevant to the retention question in ROADMAP §11.
 
 ### Batch side
 
-- [ ] Watermark pattern: last-loaded timestamp per source
-- [ ] Idempotent partition overwrites
-- [ ] Group-level backfill CLI
+- [x] Watermark pattern: `bars_watermark()` reads the last stored date per series
+      straight from the data (no sidecar ledger that could drift) — the high-water
+      mark an incremental pull advances from. `update_ohlcv` now fetches only bars
+      after it.
+- [x] Idempotent partition overwrites: `upsert_bars()` merges an incoming frame
+      into the series file, deduping by `date` last-write-wins, then writes via a
+      temp→rename (crash-safe, no half-written Parquet). `save_ohlcv` and
+      `update_ohlcv` route through it, so a repeated or overlapping load converges
+      to one row per date instead of duplicating. *The* core batch pattern.
+- [x] Group-level backfill CLI (`python -m qde.backfill`): re-pull a date range and
+      upsert it, uniformly across sources. `--source` + `--symbol` bootstraps a new
+      series; filters narrow the set; no filter refreshes every series in the lake.
+      A failing series is logged and skipped, never fatal. Verified idempotent
+      across process runs (two identical runs → identical row count).
 
 ## Phase 7 — Orchestration with Dagster
 

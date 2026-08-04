@@ -41,6 +41,95 @@ def _bars_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "
     )
 
 
+def _write_bars_atomic(df: pd.DataFrame, path: Path) -> None:
+    """Write a bars frame to ``path`` via a temp file and an atomic rename.
+
+    A direct ``to_parquet`` that is interrupted mid-write leaves a truncated
+    file in place, which then breaks every query over the lake. Writing to a
+    temp sibling and renaming means the destination only ever holds a complete
+    file. Mirrors the temp-then-rename protocol used by ``qde.compact``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    df.to_parquet(tmp, engine="pyarrow")
+    tmp.replace(path)  # os.replace: atomic overwrite on the same filesystem
+
+
+def bars_watermark(
+    symbol: str, source: str, interval: str = "1d", base_dir: str = "data"
+) -> pd.Timestamp | None:
+    """Return the last date stored for a bar series, or None if it is absent.
+
+    This is the high-water mark for incremental loading: the next pull only
+    needs data *after* this timestamp. It is read from the stored rows
+    themselves rather than a separate ledger, so the watermark can never drift
+    out of sync with the data it describes.
+
+    Args:
+        symbol (str): a ticker symbol, e.g. "BTCUSDT".
+        source (str): the source, e.g. "binance".
+        interval (str, optional): bar size. Default: '1d'.
+        base_dir (str, optional): the lake root. Default: 'data'.
+
+    Returns:
+        pd.Timestamp | None: the newest stored date, or None if the series has
+        no data yet.
+    """
+    path = _bars_path(symbol, source, interval, base_dir)
+    if not path.exists():
+        return None
+
+    df = pd.read_parquet(path, engine="pyarrow")  # type: ignore[call-overload]
+    if df.empty:
+        return None
+
+    return df.index.max()
+
+
+def upsert_bars(
+    df: pd.DataFrame,
+    symbol: str,
+    source: str,
+    interval: str = "1d",
+    base_dir: str = "data",
+) -> int:
+    """Merge ``df`` into a bar series idempotently; return the stored row count.
+
+    Rows are keyed by their UTC ``date`` index. Any existing rows are read, the
+    incoming frame is concatenated on top, and clashes are resolved
+    last-write-wins so the fresh pull supersedes a prior value for the same day.
+    The result is deduplicated, sorted, and written atomically.
+
+    This is the idempotent partition overwrite: re-running the same fetch, or a
+    backfill whose range overlaps existing data, converges to exactly one row
+    per date instead of accumulating duplicates. The series file is the unit of
+    overwrite -- bars are one file per series, not one file per day.
+
+    Args:
+        df (pd.DataFrame): bars to merge, indexed by a UTC ``date`` index.
+        symbol (str): a ticker symbol.
+        source (str): the source.
+        interval (str, optional): bar size. Default: '1d'.
+        base_dir (str, optional): the lake root. Default: 'data'.
+
+    Returns:
+        int: number of rows in the resulting series file.
+    """
+    path = _bars_path(symbol, source, interval, base_dir)
+
+    if path.exists():
+        existing = pd.read_parquet(path, engine="pyarrow")  # type: ignore[call-overload]
+        combined = pd.concat([existing, df])
+    else:
+        combined = df
+
+    # keep="last": on a duplicate date the incoming row (concatenated last) wins.
+    combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    _write_bars_atomic(combined, path)
+
+    return len(combined)
+
+
 # Function to save the OHLCV data to Parquet
 def save_ohlcv(
     symbol: str,
@@ -50,32 +139,27 @@ def save_ohlcv(
     interval: str = "1d",
     base_dir: str = "data",
 ) -> str:
-    """
-    Fetch data from a source and save it to Parquet.
-    Thin wrapper around unified loader.
-    Plus writes file.
+    """Fetch a bar series from ``source`` and store it in the bronze bars lake.
+
+    Thin wrapper over the unified loader and ``upsert_bars``: the fetched range
+    is merged into any existing series rather than replacing it, so a repeated
+    or overlapping save is idempotent instead of clobbering history.
 
     Args:
-            symbol (str): a ticker symbol.
-            source (str): a ticker source.
-            start (str): the time period to begin.
-            end (str): the time period to end.
-            interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
-            base_dir (str, optional): the base directory to save the file. Default: 'data'.
+        symbol (str): a ticker symbol.
+        source (str): the source.
+        start (str): the time period to begin.
+        end (str, optional): the time period to end. Default: now.
+        interval (str, optional): bar size, e.g. '1d', '1h', '1m'. Default: '1d'.
+        base_dir (str, optional): the lake root. Default: 'data'.
 
     Returns:
-        str: Path to the saved file.
-
+        str: path to the series' Parquet file.
     """
-    # Call the unified loader to fetch the data
     df = load_ohlcv(symbol, start=start, end=end, interval=interval, source=source)
+    upsert_bars(df, symbol, source, interval, base_dir)
 
-    # Create the directory if it doesn't exist. Build the file oath.
-    path = _bars_path(symbol, source, interval, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, engine="pyarrow")
-
-    return str(path)
+    return str(_bars_path(symbol, source, interval, base_dir))
 
 
 # Local retrieve of the data
@@ -107,35 +191,43 @@ def load_ohlcv_local(
     return df
 
 
-# Update the file path on a regular basis
 def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> None:
+    """Incrementally extend a stored bar series with any newer bars.
 
-    # Load data in file
-    df_old = load_ohlcv_local(symbol, source, interval, base_dir)
+    Reads the series' watermark (its last stored date), fetches only bars after
+    it, and upserts them. If the source has nothing newer, the series is already
+    current and nothing is written.
 
-    # Retrieve the last day in the file
-    latest = df_old.index.max()
+    Args:
+        symbol (str): a ticker symbol.
+        source (str): the source.
+        interval (str, optional): bar size. Default: '1d'.
+        base_dir (str, optional): the lake root. Default: 'data'.
 
-    # Get the next day and convert to str for the loader
-    next_day = str((latest + pd.Timedelta(days=1)).date())
+    Raises:
+        FileNotFoundError: if the series has not been stored yet -- there is no
+            watermark to advance from, so backfill or save it first.
+    """
+    watermark = bars_watermark(symbol, source, interval, base_dir)
+    if watermark is None:
+        raise FileNotFoundError(
+            f"No stored series for {symbol!r}/{source!r}/{interval!r}; "
+            "run a backfill or save_ohlcv first."
+        )
 
-    # Unified to fetch form the next_day upward
+    # Fetch from the day after the watermark: the last stored bar is already
+    # held, and re-fetching it would only be deduplicated away.
+    next_day = str((watermark + pd.Timedelta(days=1)).date())
+
     try:
-        df_new = load_ohlcv(symbol, start=next_day, source=source)
+        df_new = load_ohlcv(symbol, start=next_day, interval=interval, source=source)
     except ValueError:
-        print(f"{symbol} already up to date through {latest.date()}")
+        # The loaders raise ValueError when the source returns no rows, which
+        # for an incremental pull just means the series is already current.
+        print(f"{symbol} already up to date through {watermark.date()}")
         return
 
-    # Concatenate the data
-    df = pd.concat([df_old, df_new])
-
-    # Keep the last (most recent) timestamp
-    df = df[~df.index.duplicated(keep="last")]
-
-    # Create the directory if it doesn't exist. Build the file oath.
-    path = _bars_path(symbol, source, interval, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, engine="pyarrow")
+    upsert_bars(df_new, symbol, source, interval, base_dir)
 
 
 # Sql

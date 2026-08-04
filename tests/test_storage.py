@@ -4,12 +4,25 @@ import pandas as pd
 
 from qde.storage import (
     _bars_path,
+    bars_watermark,
     list_bars_series,
     load_ohlcv_local,
     query,
     save_ohlcv,
     update_ohlcv,
+    upsert_bars,
 )
+
+
+def _sample_bars(dates, close=1.5):
+    """Build a minimal bars frame indexed by a UTC ``date`` index."""
+    idx = pd.DatetimeIndex(pd.to_datetime(dates, utc=True), name="date")
+    n = len(dates)
+    return pd.DataFrame(
+        {"open": [1.0] * n, "high": [2.0] * n, "low": [0.5] * n, "close": [close] * n,
+         "volume": [10.0] * n},
+        index=idx,
+    )
 
 
 # Assert the called file exists on disk
@@ -96,3 +109,53 @@ def test_list_bars_series_finds_written_series(tmp_path):
     out = list_bars_series(base_dir=str(tmp_path))
 
     assert set(out["symbol"]) == {"BTCUSDT", "ETHUSDT"}
+
+
+def test_upsert_is_idempotent(tmp_path):
+    df = _sample_bars(["2024-01-01", "2024-01-02", "2024-01-03"])
+
+    first = upsert_bars(df, "BTCUSDT", "binance", base_dir=str(tmp_path))
+    second = upsert_bars(df, "BTCUSDT", "binance", base_dir=str(tmp_path))
+
+    # Writing the same frame twice must not accumulate duplicate dates.
+    assert first == second == 3
+
+
+def test_upsert_merges_last_write_wins(tmp_path):
+    upsert_bars(
+        _sample_bars(["2024-01-01", "2024-01-02"], close=1.0),
+        "BTCUSDT", "binance", base_dir=str(tmp_path),
+    )
+    rows = upsert_bars(
+        _sample_bars(["2024-01-02", "2024-01-03"], close=9.0),
+        "BTCUSDT", "binance", base_dir=str(tmp_path),
+    )
+
+    # 01-01, 01-02, 01-03 — the overlapping 01-02 merges rather than duplicating.
+    assert rows == 3
+
+    out = load_ohlcv_local("BTCUSDT", "binance", base_dir=str(tmp_path))
+    # The second write's value for the shared day wins.
+    assert out.loc[pd.Timestamp("2024-01-02", tz="UTC"), "close"] == 9.0
+
+
+def test_upsert_leaves_no_temp_file(tmp_path):
+    upsert_bars(_sample_bars(["2024-01-01"]), "BTCUSDT", "binance", base_dir=str(tmp_path))
+
+    partition = _bars_path("BTCUSDT", "binance", "1d", base_dir=str(tmp_path)).parent
+    assert list(partition.glob(".*.tmp")) == []
+
+
+def test_bars_watermark_none_when_absent(tmp_path):
+    assert bars_watermark("BTCUSDT", "binance", base_dir=str(tmp_path)) is None
+
+
+def test_bars_watermark_returns_latest_date(tmp_path):
+    upsert_bars(
+        _sample_bars(["2024-01-01", "2024-01-05", "2024-01-03"]),
+        "BTCUSDT", "binance", base_dir=str(tmp_path),
+    )
+
+    assert bars_watermark("BTCUSDT", "binance", base_dir=str(tmp_path)) == pd.Timestamp(
+        "2024-01-05", tz="UTC"
+    )
