@@ -40,3 +40,18 @@ def test_backfill_skips_failing_series(tmp_path, offline_binance):
     )
 
     assert results == {}
+
+
+def test_backfill_from_registry_seeds_declared_series(tmp_path, offline_binance):
+    # --from-registry enumerates the registry's declared set, so an unseeded
+    # series is included and bootstrapped: all three binance symbols land even
+    # though nothing was in the lake to begin with (SOLUSDT was never seeded).
+    results = backfill_bars(
+        "2024-01-01", source="binance", use_registry=True, base_dir=str(tmp_path)
+    )
+
+    assert set(results) == {
+        ("BTCUSDT", "binance", "1d"),
+        ("ETHUSDT", "binance", "1d"),
+        ("SOLUSDT", "binance", "1d"),
+    }

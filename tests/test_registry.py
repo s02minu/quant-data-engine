@@ -3,7 +3,14 @@
 import pandas as pd
 import pytest
 
-from qde.registry import SOURCES, SourceSpec, all_specs, dim_sources, get_spec
+from qde.registry import (
+    SOURCES,
+    SourceSpec,
+    all_specs,
+    declared_series,
+    dim_sources,
+    get_spec,
+)
 
 
 def test_every_source_writes_a_known_group():
@@ -52,6 +59,27 @@ def test_yfinance_is_marked_non_redistributable():
     assert spec.license_note  # a reason must be recorded
     # Exchange-native crypto is redistributable.
     assert get_spec("binance").redistributable is True
+
+
+def test_declared_series_enumerates_every_symbol_interval():
+    all_series = declared_series()
+    # One tuple per (source, symbol, interval); matches the folded-in SYMBOL_MAP.
+    expected = {
+        (spec.name, symbol, interval)
+        for spec in all_specs()
+        for symbol in spec.canonical_symbols
+        for interval in spec.intervals
+    }
+    assert set(all_series) == expected
+    # Tuples are (source, symbol, interval) — same order as list_bars_series.
+    assert ("kraken", "ETHUSDT", "1d") in all_series
+    assert ("binance", "SOLUSDT", "1d") in all_series
+
+
+def test_declared_series_filters_by_group():
+    bars = declared_series(group="bars")
+    assert bars == declared_series()  # every current source is a bars source
+    assert declared_series(group="microstructure") == []  # none registered here yet
 
 
 def test_dim_sources_has_one_row_per_source():

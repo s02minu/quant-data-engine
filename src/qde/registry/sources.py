@@ -106,6 +106,32 @@ def all_specs() -> list[SourceSpec]:
     return list(_SPECS)
 
 
+def declared_series(group: str | None = None) -> list[tuple[str, str, str]]:
+    """Return every ``(source, symbol, interval)`` the registry declares.
+
+    This is the *intended* full set of series — every symbol × interval across
+    every spec — independent of what has actually been seeded into the lake.
+    Diff it against the seeded set (``qde.storage.list_bars_series``) to surface
+    drift (declared but not yet backfilled), or enumerate it to drive a
+    registry-based backfill that can seed new series.
+
+    Args:
+        group: If given, restrict to sources writing that group (e.g. ``"bars"``);
+            otherwise include every group.
+
+    Returns:
+        List of ``(source, symbol, interval)`` tuples, matching the column order
+        of ``list_bars_series`` so the two sets can be diffed directly.
+    """
+    return [
+        (spec.name, symbol, interval)
+        for spec in _SPECS
+        if group is None or spec.group == group
+        for symbol in spec.canonical_symbols
+        for interval in spec.intervals
+    ]
+
+
 def dim_sources() -> pd.DataFrame:
     """Render the registry as the ``dim_sources`` catalogue table.
 

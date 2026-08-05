@@ -16,11 +16,37 @@ and the mounted ``/data`` volume on the VPS.
 
 import os
 
+import pandas as pd
+
 from qde.log import configure, get_logger
 from qde.quality import build_quality_summary
+from qde.registry import declared_series
 from qde.storage import list_bars_series, update_ohlcv
 
 log = get_logger(__name__)
+
+
+def _log_registry_drift(seeded: pd.DataFrame) -> None:
+    """Log any series the registry declares but the lake has not seeded yet.
+
+    Purely informational, and never fatal: the incremental daily update can only
+    advance a series that already has a watermark, so seeding a newly declared
+    one is ``qde.backfill``'s job, not this run's. Surfacing the gap in the
+    nightly logs is how registry drift becomes visible without changing what the
+    update actually does.
+    """
+    try:
+        declared = set(declared_series(group="bars"))
+        have = {(row.source, row.symbol, row.interval) for row in seeded.itertuples(index=False)}
+        missing = sorted(declared - have)
+        if missing:
+            log.info(
+                "registry_unseeded",
+                count=len(missing),
+                series=[f"{src}/{sym}/{iv}" for (src, sym, iv) in missing],
+            )
+    except Exception as exc:  # a drift check must never break the nightly run
+        log.warning("registry_drift_check_failed", error=type(exc).__name__, detail=str(exc))
 
 
 def run(base_dir: str = "data") -> dict:
@@ -53,6 +79,7 @@ def run(base_dir: str = "data") -> dict:
         updated += 1
         log.info("updated", symbol=symbol, source=source, interval=interval)
 
+    _log_registry_drift(series)
     build_quality_summary(base_dir)
     return {"updated": updated, "failed": failed}
 

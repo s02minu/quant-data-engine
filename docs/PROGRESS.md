@@ -16,7 +16,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 1 | Lakehouse storage on Cloudflare R2 | Done |
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Not started |
-| 4 | Registry + `BaseIngestor` | In progress |
+| 4 | Registry + `BaseIngestor` | Done |
 | 5 | Source expansion | Not started |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
@@ -33,17 +33,17 @@ published to R2 (durable + queryable like microstructure). Recent hardening:
 memory-safe streaming compaction, and a `NoNewData` exception so a real fetch error
 is no longer mistaken for "already up to date".
 
-**Now building Phase 4 (the registry, "little book").** Step 1 landed: a
-`SourceSpec` pydantic model and the `qde.registry` package declaring binance /
-kraken / yfinance once each, folding in the scattered `SYMBOL_MAP` (now
-`SourceSpec.symbols`, canonical→native) and the Phase 2 licensing decision
-(`redistributable` / `license_note` per source — yfinance is code-only). The
-registry generates the `dim_sources` catalogue and is a faithful superset of the
-lake (all 8 seeded series declared, plus 5 intended-but-unseeded). Step 2 landed
-too: the `qde.ingest` package — a `BaseIngestor` ABC plus binance/kraken/yfinance
-subclasses — replaces the hand-written loaders with no behavior change (byte-for-byte
-identical output, proven), and `load_ohlcv` is now registry-driven. Next in Phase 4:
-wire the registry into the backfill / daily-update CLIs.
+**Phase 4 (the registry, "little book") is complete.** The `qde.registry` package
+declares binance / kraken / yfinance once each as a `SourceSpec`, folding in the
+scattered `SYMBOL_MAP` (now `SourceSpec.symbols`, canonical→native) and the Phase 2
+licensing decision (`redistributable` / `license_note` — yfinance is code-only), and
+generates the `dim_sources` catalogue. The `qde.ingest` package — a `BaseIngestor`
+ABC plus per-source subclasses — replaced the hand-written loaders with no behavior
+change (byte-for-byte identical output, proven), and `load_ohlcv` is registry-driven.
+The CLIs are wired in: `backfill --from-registry` seeds declared-but-unseeded series,
+and `daily_update` logs registry drift. Adding a source is now one `SourceSpec` row
+plus a small ingestor class. **Next: likely Phase 3 (group schemas) or Phase 5
+(source expansion) — the registry makes new sources cheap to add.**
 
 ---
 
@@ -185,7 +185,7 @@ classification lives on each `SourceSpec` where the publishing job will read it.
 - [ ] `microstructure` schema
 - [ ] ADR: group-by-shape over group-by-asset-class
 
-## Phase 4 — Registry + `BaseIngestor` *(current)*
+## Phase 4 — Registry + `BaseIngestor`
 
 - [x] `SourceSpec` pydantic model (`qde.registry.spec`) — one declarative entry
       per source: group, canonical→native symbol map, intervals, page size, rate
@@ -208,10 +208,15 @@ classification lives on each `SourceSpec` where the publishing job will read it.
       the registry, then delegates to `get_ingestor(source)`. **No behavior change,
       proven**: old-vs-new produce byte-for-byte identical frames on the same
       canned payloads for all three sources; full suite 85 green.
-- [ ] Wire the registry into the backfill / daily-update CLIs (symbols + DQ
-      thresholds sourced from the little book; seed unseeded series from a row)
-- [ ] Follow-ups: README repo-structure tree + `notebooks/demo.ipynb` still name
-      the deleted `*_loader.py` / `symbols.py` modules; refresh when convenient.
+- [x] Wire the registry into the backfill / daily-update CLIs. `declared_series()`
+      exposes the registry's intended set. `qde.backfill --from-registry` enumerates
+      it (so a declared-but-unseeded series is seeded, e.g. kraken ETHUSDT); the
+      default stays lake-discovery. `qde.daily_update` logs registry drift
+      (`registry_unseeded`) each run — informational, never touches the update loop
+      or the deployed job's behavior. Verified: drift surfaces the 5 unseeded series.
+- [ ] Follow-ups (cosmetic): README repo-structure tree + `notebooks/demo.ipynb`
+      still name the deleted `*_loader.py` / `symbols.py` modules; refresh when
+      convenient.
 
 ## Phase 5 — Source expansion
 
