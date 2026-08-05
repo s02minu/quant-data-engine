@@ -7,6 +7,7 @@ a source name to a ready-to-use ingestor via the registry.
 
 from qde.ingest.base import BaseIngestor, RawPage
 from qde.ingest.binance import BinanceIngestor
+from qde.ingest.fred import FredIngestor
 from qde.ingest.kraken import KrakenIngestor
 from qde.ingest.yfinance import YfinanceIngestor
 from qde.registry import get_spec
@@ -19,6 +20,7 @@ _INGESTORS: dict[str, type[BaseIngestor]] = {
     "binance": BinanceIngestor,
     "kraken": KrakenIngestor,
     "yfinance": YfinanceIngestor,
+    "fred": FredIngestor,
 }
 
 

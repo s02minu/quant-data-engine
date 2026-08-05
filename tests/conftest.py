@@ -104,3 +104,31 @@ def offline_yfinance(monkeypatch):
         return _yf_frame()
 
     monkeypatch.setattr(yf_mod.yf, "download", fake_download)
+
+
+def _fred_observations():
+    """Three FRED observations, including a missing '.' value (coerced to NaN)."""
+    return {
+        "observations": [
+            {"realtime_start": "2024-06-01", "realtime_end": "9999-12-31",
+             "date": "2024-01-01", "value": "3.1"},
+            {"realtime_start": "2024-06-01", "realtime_end": "9999-12-31",
+             "date": "2024-02-01", "value": "3.2"},
+            {"realtime_start": "2024-06-01", "realtime_end": "9999-12-31",
+             "date": "2024-03-01", "value": "."},  # missing -> NaN, row kept
+        ]
+    }
+
+
+@pytest.fixture
+def offline_fred(monkeypatch):
+    """Serve a canned FRED observations payload; an unknown series id returns a
+    400 as the API does. Sets a dummy FRED_API_KEY so the key guard passes."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+
+    def fake_get(url, params):
+        if params["series_id"] == "NOTREAL":
+            return FakeResponse(status_code=400, text="Bad Request")
+        return FakeResponse(payload=_fred_observations())
+
+    monkeypatch.setattr(http_mod.requests, "get", fake_get)

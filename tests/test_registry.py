@@ -78,7 +78,13 @@ def test_declared_series_enumerates_every_symbol_interval():
 
 def test_declared_series_filters_by_group():
     bars = declared_series(group="bars")
-    assert bars == declared_series()  # every current source is a bars source
+    series = declared_series(group="series")
+    # The groups partition the full declared set.
+    assert set(bars) | set(series) == set(declared_series())
+    assert set(bars).isdisjoint(series)
+    # FRED is a `series` source, not a bars source.
+    assert all(src != "fred" for (src, _sym, _iv) in bars)
+    assert ("fred", "CPIAUCSL", "1d") in series  # interval is a bars-ism, unused for series
     assert declared_series(group="microstructure") == []  # none registered here yet
 
 

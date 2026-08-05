@@ -25,6 +25,43 @@ _OHLCV_NO_NULLS: dict[str, float] = {
     "volume": 0.0,
 }
 
+# Curated FRED macro spine for the platform's `series` group. Deliberately
+# limited to U.S.-government statistical series (BLS / BEA / Census / Federal
+# Reserve Board / Treasury), which are public domain and so redistributable.
+# Third-party series FRED also hosts (ICE credit indices, S&P/Case-Shiller) are
+# intentionally excluded because they are not redistributable (see the spec's
+# license_note and docs/data-sources.md §4).
+_FRED_SERIES: list[str] = [
+    # growth / activity
+    "GDPC1",  # real GDP
+    "INDPRO",  # industrial production
+    "HOUST",  # housing starts
+    # inflation
+    "CPIAUCSL",  # CPI, all items
+    "CPILFESL",  # core CPI
+    "PCEPI",  # PCE price index
+    "PCEPILFE",  # core PCE
+    # labour
+    "UNRATE",  # unemployment rate
+    "PAYEMS",  # nonfarm payrolls
+    "ICSA",  # initial jobless claims
+    # rates / curve
+    "FEDFUNDS",  # effective fed funds rate
+    "DGS2",  # 2y Treasury
+    "DGS10",  # 10y Treasury
+    "DGS30",  # 30y Treasury
+    "T10Y2Y",  # 10y-2y spread
+    "DFII10",  # 10y TIPS (real yield)
+    "T10YIE",  # 10y breakeven inflation
+    # money / liquidity plumbing
+    "M2SL",  # M2 money stock
+    "WALCL",  # Fed balance sheet (total assets)
+    "RRPONTSYD",  # overnight reverse repo
+    "WTREGEN",  # Treasury General Account
+    # dollar
+    "DTWEXBGS",  # trade-weighted USD (broad)
+]
+
 _SPECS: list[SourceSpec] = [
     SourceSpec(
         group="bars",
@@ -81,6 +118,29 @@ _SPECS: list[SourceSpec] = [
             "Scrapes Yahoo Finance; Yahoo's terms prohibit redistribution. "
             "Code-only source — the ingestor is open-sourced, the data is not "
             "published to the public lake."
+        ),
+    ),
+    SourceSpec(
+        group="series",
+        name="fred",
+        # FRED series ids are already the project-canonical identifier — identity map.
+        symbols={sid: sid for sid in _FRED_SERIES},
+        # `intervals` is unused for `series`: frequency is a per-series property of
+        # the source, not a pull parameter. Left at the default.
+        max_rows_per_call=100000,  # the observations endpoint's page cap
+        rate_limit_per_min=120,  # FRED's documented request budget
+        # A missing observation (FRED's ".") is a legitimate "not published"
+        # marker, not a defect — so `value` nulls are fully tolerated; the DQ
+        # check that matters is a missing *row* where the release calendar
+        # expected one (see docs/schemas/series.md).
+        null_tolerance={"value": 1.0},
+        redistributable=True,
+        license_note=(
+            "FRED delivery of U.S.-government statistical series (BLS / BEA / "
+            "Census / Federal Reserve Board / Treasury) — public domain and "
+            "redistributable. NOTE: FRED also hosts third-party series (ICE, "
+            "S&P/Case-Shiller) that are NOT redistributable; only government "
+            "series are curated here. Re-verify per series before public publishing."
         ),
     ),
 ]
