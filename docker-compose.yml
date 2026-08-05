@@ -9,4 +9,10 @@ services:
       QDE_KINDS: trades,depth,book_ticker
     volumes:
       - ./data:/data
+      # Read-only so the batch entrypoints (daily_update, backfill) can load a
+      # source key -- FRED lives in secrets/fred.env -- via qde.env.load_env_file
+      # (WORKDIR is /app). Mounted, not baked into the image or passed with -e, so
+      # the nightly cron refreshes the series group without extra plumbing. The
+      # BOM-robust loader tolerates a PowerShell-written file; missing files no-op.
+      - ./secrets:/app/secrets:ro
     stop_grace_period: 30s
