@@ -47,13 +47,15 @@ plus a small ingestor class.
 **Phase 3 (group schemas) is done** (`docs/schemas/`), and **Phase 5 Wave 1 is
 underway**: a **data-sourcing plan** (`docs/data-sources.md`) maps the owner's
 two-model strategy + coverage to sources/groups/licensing with a build order, and
-**FRED has landed locally** — `series` storage, the `FredIngestor`, a curated
-26-series government macro spine, group-aware `backfill`/`daily_update`, and a
-BOM-robust `secrets/fred.env` loader. All 26 series (~50k rows) are in the local
-lake. **NEXT (resume point): build `sync.publish_series`** (mirror
-`sync.publish_bars` — overwrite series to R2, keep local) so FRED is durable +
-queryable server-lessly, **then the VPS deploy** (key + seed + nightly refresh).
-After that: CBOE vol, CFTC COT, crypto derivatives (Wave 1 #2-4).
+**FRED has landed locally and now publishes to R2** — `series` storage, the
+`FredIngestor`, a curated 26-series government macro spine, group-aware
+`backfill`/`daily_update`, a BOM-robust `secrets/fred.env` loader, and
+`sync.publish_series` (overwrite-and-keep, mirror of `publish_bars`, wired into
+`qde.sync`'s `__main__`). All 26 series (~50k rows) are in the local lake.
+**NEXT (resume point): the VPS deploy** — copy `FRED_API_KEY` to the VPS, seed
+there, and let the nightly `maintain.sh` refresh + publish it (the sync already
+runs `publish_series`, so no cron change is needed). After that: CBOE vol, CFTC
+COT, crypto derivatives (Wave 1 #2-4).
 
 ---
 
@@ -264,10 +266,18 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       (also fixed `lake._load_local_env`). Live seed via the CLI: **50,289 rows
       across all 26 series** in the local lake. Offline tests for the ingestor,
       env loader, series backfill, and series daily-update.
-      **Pending for production:** (1) publish `series` to R2 (mirror
-      `sync.publish_bars`) so it's durable + queryable from any client; (2) VPS
-      deploy — copy `FRED_API_KEY` to the VPS, seed there, nightly refresh (already
-      wired into `maintain.sh`'s `daily_update`).
+      **`series` now publishes to R2 and is queryable there** —
+      `sync.publish_series` mirrors `publish_bars` (overwrite the single mutable
+      `series.parquet`, keep the local working copy; its `series.parquet` rglob also
+      covers the optional `metric=` partition), wired into `qde.sync`'s `__main__`
+      after the bars publish. `qde.lake` gained a `series_glob` (twin of `bars_glob`,
+      `**` absorbs the optional `metric=` level) and a guarded `series` view, so the
+      same `FROM series` SQL runs against the local lake and R2. Tested offline
+      (publish: 6 cases incl. the metric partition + empty-group no-op; lake: glob
+      defaults/narrowing + view registration); full suite 116 green.
+      **Pending for production:** VPS deploy — copy `FRED_API_KEY` to the VPS, seed
+      there, nightly refresh + publish (already wired into `maintain.sh`'s
+      `daily_update` + `sync`, so no cron change needed).
 - [ ] Volatility complex: VIX/VVIX/SKEW EOD from CBOE (`series`) — Wave 1 #2
 - [ ] CFTC COT positioning (`series`) — Wave 1 #3
 - [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4

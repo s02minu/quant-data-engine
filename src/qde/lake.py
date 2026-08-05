@@ -10,6 +10,7 @@ read from the environment:
     QDE_R2_ACCOUNT_ID, QDE_R2_READ_KEY_ID, QDE_R2_READ_SECRET, QDE_R2_BUCKET
 """
 
+import contextlib
 import os
 
 import duckdb
@@ -78,6 +79,25 @@ def bars_glob(
     )
 
 
+def series_glob(
+    source: str = "*", series_id: str = "*", bucket: str | None = None
+) -> str:
+    """Build an r2:// glob selecting scalar series.
+
+    The series twin of ``bars_glob``. Series are grouped by shape, not partitioned
+    by date -- one file per (source, series_id) -- so the keys are source and
+    series_id. The trailing ``**`` absorbs the optional ``metric=`` partition that
+    multi-scalar sources add (a perp's ``funding_rate`` vs ``open_interest``) while
+    still matching single-scalar sources like FRED, whose file sits one level
+    shallower. Each argument narrows a key; the default "*" matches all.
+    """
+    bucket = bucket or os.environ.get("QDE_R2_BUCKET", "qde-lake")
+    return (
+        f"r2://{bucket}/bronze/group=series/source={source}/"
+        f"series_id={series_id}/**/*.parquet"
+    )
+
+
 _MICROSTRUCTURE_KINDS = ("trades", "depth", "book_ticker", "snapshot", "gaps", "session")
 
 
@@ -90,11 +110,11 @@ def query(sql: str) -> pd.DataFrame:
     The same SQL therefore runs against the local lake (``storage.query``) and
     the R2 lake (here).
 
-    Registers a ``bars`` view plus one view per microstructure kind (``trades``,
-    ``depth``, ``book_ticker``, ...), one per kind because each kind has its own
-    schema. Hive partition keys come back as ordinary, filterable columns. Views
-    are lazy: creating them transfers nothing; a query only reads the partitions
-    its ``WHERE`` clause selects.
+    Registers a ``bars`` view, a ``series`` view, plus one view per microstructure
+    kind (``trades``, ``depth``, ``book_ticker``, ...), one per kind because each
+    kind has its own schema. Hive partition keys come back as ordinary, filterable
+    columns. Views are lazy: creating them transfers nothing; a query only reads
+    the partitions its ``WHERE`` clause selects.
     """
     con = open_lake()
 
@@ -102,6 +122,16 @@ def query(sql: str) -> pd.DataFrame:
         f"CREATE OR REPLACE VIEW bars AS "
         f"SELECT * FROM read_parquet('{bars_glob()}', hive_partitioning=true)"
     )
+
+    # A ``series`` view mirrors the local ``storage.query`` so the same SQL runs
+    # against R2 and the local lake. Guarded like the kinds below: before the FRED
+    # deploy lands series in R2 the glob is empty, so skip the view rather than
+    # break every query.
+    with contextlib.suppress(Exception):
+        con.execute(
+            f"CREATE OR REPLACE VIEW series AS "
+            f"SELECT * FROM read_parquet('{series_glob()}', hive_partitioning=true)"
+        )
 
     for kind in _MICROSTRUCTURE_KINDS:
         try:

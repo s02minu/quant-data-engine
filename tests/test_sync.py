@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from qde.sync import publish_bars, sync_bronze
+from qde.sync import publish_bars, publish_series, sync_bronze
 
 TODAY = date(2026, 7, 25)
 
@@ -171,3 +171,90 @@ def test_publish_bars_size_mismatch_is_flagged(tmp_path):
 
     assert summary["failed"] == 1
     assert summary["published"] == 0
+
+
+def _write_series(base, source, series_id, metric=None, rows=3):
+    partition = (
+        Path(base)
+        / "bronze"
+        / "group=series"
+        / f"source={source}"
+        / f"series_id={series_id}"
+    )
+    if metric is not None:
+        partition = partition / f"metric={metric}"
+    partition.mkdir(parents=True, exist_ok=True)
+    file = partition / "series.parquet"
+    pd.DataFrame({"value": range(rows)}).to_parquet(file, index=False)
+    return file
+
+
+def test_publish_series_uploads_and_keeps_local(tmp_path):
+    f = _write_series(tmp_path, "fred", "CPIAUCSL")
+    client = FakeS3()
+
+    summary = publish_series(str(tmp_path), "qde-lake", client)
+
+    assert summary["published"] == 1
+    assert len(client.objects) == 1
+    assert f.exists()  # series are mutable; the local working copy is kept
+
+
+def test_publish_series_key_mirrors_hive_path(tmp_path):
+    _write_series(tmp_path, "fred", "UNRATE")
+    client = FakeS3()
+
+    publish_series(str(tmp_path), "qde-lake", client)
+
+    (bucket, key), _ = next(iter(client.objects.items()))
+    assert bucket == "qde-lake"
+    assert key == "bronze/group=series/source=fred/series_id=UNRATE/series.parquet"
+
+
+def test_publish_series_covers_metric_partition(tmp_path):
+    # A multi-scalar source nests one level deeper under metric=; the rglob for
+    # series.parquet must still reach it.
+    _write_series(tmp_path, "binance", "BTCUSDT", metric="funding_rate")
+    client = FakeS3()
+
+    publish_series(str(tmp_path), "qde-lake", client)
+
+    (bucket, key), _ = next(iter(client.objects.items()))
+    assert key == (
+        "bronze/group=series/source=binance/series_id=BTCUSDT/"
+        "metric=funding_rate/series.parquet"
+    )
+
+
+def test_publish_series_overwrites_each_run(tmp_path):
+    _write_series(tmp_path, "fred", "DGS10")
+    client = FakeS3()
+
+    first = publish_series(str(tmp_path), "qde-lake", client)
+    second = publish_series(str(tmp_path), "qde-lake", client)
+
+    # Re-published every run (the file mutates); never pruned, so never skipped.
+    assert first["published"] == 1
+    assert second["published"] == 1
+
+
+def test_publish_series_size_mismatch_is_flagged(tmp_path):
+    _write_series(tmp_path, "fred", "FEDFUNDS")
+    key = "bronze/group=series/source=fred/series_id=FEDFUNDS/series.parquet"
+    client = FakeS3(truncate={key})
+
+    summary = publish_series(str(tmp_path), "qde-lake", client)
+
+    assert summary["failed"] == 1
+    assert summary["published"] == 0
+
+
+def test_publish_series_no_series_group_is_noop(tmp_path):
+    # A lake with bars but no series group must not error on the empty glob.
+    _write_bars(tmp_path, "binance", "BTCUSDT")
+    client = FakeS3()
+
+    summary = publish_series(str(tmp_path), "qde-lake", client)
+
+    assert summary == {"published": 0, "bytes": 0, "failed": 0}
+    assert len(client.objects) == 0
