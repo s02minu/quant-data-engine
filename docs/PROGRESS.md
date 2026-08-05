@@ -15,7 +15,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 0 | Harden the foundation | Done |
 | 1 | Lakehouse storage on Cloudflare R2 | Done |
 | 2 | Licensing audit | In progress (per-source fields done) |
-| 3 | Group schemas | Not started |
+| 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
 | 5 | Source expansion | Not started |
 | 6 | Streaming and backfills | Done |
@@ -42,8 +42,14 @@ ABC plus per-source subclasses — replaced the hand-written loaders with no beh
 change (byte-for-byte identical output, proven), and `load_ohlcv` is registry-driven.
 The CLIs are wired in: `backfill --from-registry` seeds declared-but-unseeded series,
 and `daily_update` logs registry drift. Adding a source is now one `SourceSpec` row
-plus a small ingestor class. **Next: likely Phase 3 (group schemas) or Phase 5
-(source expansion) — the registry makes new sources cheap to add.**
+plus a small ingestor class.
+
+**Phase 3 (group schemas) is now done** (`docs/schemas/`), written ahead of source
+expansion because the next sources introduce new shapes. A **data-sourcing plan**
+(`docs/data-sources.md`) maps the owner's two-model strategy + broader coverage to
+concrete sources, groups, and licensing, with a prioritized build order. **Next:
+Phase 5 Wave 1 — the FRED+ALFRED `series`/`events` ingestor** (the macro spine and
+bitemporal calendar core), then CBOE vol, CFTC COT, and crypto derivatives.
 
 ---
 
@@ -179,11 +185,25 @@ classification lives on each `SourceSpec` where the publishing job will read it.
 
 ## Phase 3 — Group schemas
 
-- [ ] `bars` schema
-- [ ] `series` schema
-- [ ] `events` schema (bitemporal: `observed_ts` vs `scheduled_ts`)
-- [ ] `microstructure` schema
-- [ ] ADR: group-by-shape over group-by-asset-class
+Documented in `docs/schemas/`. Written ahead of source expansion because
+FRED/ALFRED and the calendar are the first non-`bars` shapes the lake will hold
+(see `docs/data-sources.md`).
+
+- [x] `bars` schema — `docs/schemas/bars.md` (documents the implemented layout:
+      one mutable file per series, OHLCV on a UTC `date`).
+- [x] `series` schema — `docs/schemas/series.md`. Scalar `(date, value)` series,
+      one file per `(source, series_id)`; optional `metric` dimension for
+      multi-scalar sources; **bitemporal vintage extension** (`realtime_start/end`,
+      `vintaged=true`) for ALFRED revision history. Metadata (units/frequency/
+      licence) lives on the registry, per-series for FRED.
+- [x] `events` schema (bitemporal) — `docs/schemas/events.md`. `scheduled_ts` vs
+      `observed_ts`, `actual`/`forecast`/`previous`/`revision_seq`; the
+      `observed_ts >= scheduled_ts` ordering test; `forecast` is the code-only
+      consensus column (free sources give everything but it).
+- [x] `microstructure` schema — `docs/schemas/microstructure.md` (documents the
+      implemented layout: date-partitioned part files, per-kind columns).
+- [x] Group-by-shape rationale — `docs/schemas/README.md` (why shape over asset
+      class; how medallion + group compose). A formal `docs/adr/` entry can follow.
 
 ## Phase 4 — Registry + `BaseIngestor`
 
@@ -222,11 +242,30 @@ classification lives on each `SourceSpec` where the publishing job will read it.
 
 ## Phase 5 — Source expansion
 
-- [ ] ccxt for unified exchange access (`bars`)
-- [ ] FRED macro series (`series`)
-- [ ] Volatility complex: VIX and term structure (`series`)
-- [ ] Economic calendar (`events`) — blocked on licensing
-- [ ] Equities (`bars`) — corporate actions are the pressure point
+Build order + licensing in `docs/data-sources.md`. Wave 1 (feed the owner's
+two-model strategy, free + redistributable) is underway, starting with FRED.
+
+- [x] **`series` storage** (`qde.storage`) — the scalar-series cousin of bars:
+      `_series_path` / `upsert_series` / `series_watermark` / `list_series`, one
+      mutable file per `(source, series_id)`, optional `metric` partition. The
+      idempotent writer + watermark are factored (`_upsert_frame` / `_watermark`),
+      shared with bars (behavior unchanged). `query()` now serves a `series` view
+      too and pins the session TZ to UTC. Tested (`tests/test_series_storage.py`).
+- [~] FRED macro series (`series`) — **ingestor done + live-verified.**
+      `qde.ingest.fred.FredIngestor` (offset pagination, `"."` → `NaN` row-kept),
+      registered, with a curated 26-series **government-only** (redistributable)
+      macro spine on a `series` `SourceSpec`. Offline tests
+      (`tests/test_fred_ingestor.py`); live pull landed DGS10 (4327 rows) +
+      CPIAUCSL in `data/`. **Pending (Step C):** wire `series` into the
+      backfill/daily-update CLIs (seed all 26, nightly refresh) + VPS deploy
+      (copy `FRED_API_KEY` to the VPS). Key lives in gitignored `secrets/fred.env`.
+- [ ] Volatility complex: VIX/VVIX/SKEW EOD from CBOE (`series`) — Wave 1 #2
+- [ ] CFTC COT positioning (`series`) — Wave 1 #3
+- [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4
+- [ ] Extend microstructure to a 2nd venue — Wave 1 #5
+- [ ] ccxt for unified exchange access (`bars`) — Wave 2
+- [ ] Economic calendar (`events`) — FRED/ALFRED core free; forecast column code-only
+- [ ] Equities (`bars`) — code-only; corporate actions are the pressure point
 
 ## Phase 6 — Streaming and backfills *(current)*
 
