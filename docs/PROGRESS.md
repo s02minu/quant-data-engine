@@ -14,9 +14,9 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | — | Foundation (the working pipeline) | Done |
 | 0 | Harden the foundation | Done |
 | 1 | Lakehouse storage on Cloudflare R2 | Done |
-| 2 | Licensing audit | Not started |
+| 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Not started |
-| 4 | Registry + `BaseIngestor` | Not started |
+| 4 | Registry + `BaseIngestor` | In progress |
 | 5 | Source expansion | Not started |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
@@ -31,8 +31,17 @@ collector runs 24/7; the batch side has watermarked incremental loads, idempoten
 upserts, and a group-level backfill CLI, and now runs nightly on the VPS with bars
 published to R2 (durable + queryable like microstructure). Recent hardening:
 memory-safe streaming compaction, and a `NoNewData` exception so a real fetch error
-is no longer mistaken for "already up to date". Earlier phases (2–5) and 7+ are
-open; the registry (Phase 4) is the likely next step.
+is no longer mistaken for "already up to date".
+
+**Now building Phase 4 (the registry, "little book").** Step 1 landed: a
+`SourceSpec` pydantic model and the `qde.registry` package declaring binance /
+kraken / yfinance once each, folding in the scattered `SYMBOL_MAP` (now
+`SourceSpec.symbols`, canonical→native) and the Phase 2 licensing decision
+(`redistributable` / `license_note` per source — yfinance is code-only). The
+registry generates the `dim_sources` catalogue and is a faithful superset of the
+lake (all 8 seeded series declared, plus 5 intended-but-unseeded). Next in Phase 4:
+`BaseIngestor` ABC + migrate the three loaders onto it, then wire the registry into
+the backfill / daily-update CLIs.
 
 ---
 
@@ -155,8 +164,14 @@ grows; the flat one is retired.
 
 ## Phase 2 — Licensing audit (gating)
 
-- [ ] Classify every current source as redistributable or not
-- [ ] Populate `redistributable` / `license_note` per source
+Folded into the registry (Phase 4) rather than done as a separate pass: the
+classification lives on each `SourceSpec` where the publishing job will read it.
+
+- [x] Classify every current source as redistributable or not — done on the
+      three current specs: binance/kraken redistributable, yfinance not (scrapes
+      Yahoo; code-only source).
+- [x] Populate `redistributable` / `license_note` per source — fields live on
+      `SourceSpec`; every registered source carries a licence note.
 - [ ] Document the two-halves product shape in the README
 - [ ] `docs/licensing.md` written
 
@@ -168,13 +183,23 @@ grows; the flat one is retired.
 - [ ] `microstructure` schema
 - [ ] ADR: group-by-shape over group-by-asset-class
 
-## Phase 4 — Registry + `BaseIngestor`
+## Phase 4 — Registry + `BaseIngestor` *(current)*
 
-- [ ] `SourceSpec` pydantic model
-- [ ] Source registry (the little book)
+- [x] `SourceSpec` pydantic model (`qde.registry.spec`) — one declarative entry
+      per source: group, canonical→native symbol map, intervals, page size, rate
+      limit, DQ thresholds (`expected_daily_rows`, `null_tolerance`,
+      `freshness_sla_minutes`), and the licensing decision. One definition, three
+      consumers (config · DQ contract · catalogue).
+- [x] Source registry, the little book (`qde.registry.sources`) — binance /
+      kraken / yfinance declared once; `SYMBOL_MAP` folded in as
+      `SourceSpec.symbols`. Accessors `get_spec` / `all_specs` / `SOURCES`. Tested
+      (`tests/test_registry.py`, 8 tests): faithful superset of the seeded lake.
+- [x] `dim_sources` generated from the registry — `dim_sources()` renders the
+      specs as the catalogue table (one row per source, incl. the licensing gate).
 - [ ] `BaseIngestor` ABC holding retry, pagination, partitioning, writes
 - [ ] Migrate Binance / Kraken / yfinance onto the pattern
-- [ ] `dim_sources` generated from the registry
+- [ ] Wire the registry into the backfill / daily-update CLIs (symbols + DQ
+      thresholds sourced from the little book; seed unseeded series from a row)
 
 ## Phase 5 — Source expansion
 
