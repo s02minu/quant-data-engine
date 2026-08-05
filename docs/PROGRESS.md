@@ -214,9 +214,11 @@ classification lives on each `SourceSpec` where the publishing job will read it.
       default stays lake-discovery. `qde.daily_update` logs registry drift
       (`registry_unseeded`) each run — informational, never touches the update loop
       or the deployed job's behavior. Verified: drift surfaces the 5 unseeded series.
-- [ ] Follow-ups (cosmetic): README repo-structure tree + `notebooks/demo.ipynb`
-      still name the deleted `*_loader.py` / `symbols.py` modules; refresh when
-      convenient.
+- [x] Docs refreshed for the new layout: README structure tree + architecture
+      diagram, and `notebooks/demo.ipynb` (the code walkthrough) now describe the
+      `qde.registry` / `qde.ingest` design; the deleted `*_loader.py` / `symbols.py`
+      references are gone. Also fixed stale README lines (loader tests are mocked;
+      the daily update runs on the VPS cron, not Windows Task Scheduler).
 
 ## Phase 5 — Source expansion
 

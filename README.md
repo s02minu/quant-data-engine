@@ -16,7 +16,7 @@ flowchart TD
       WS["Binance WebSocket<br/>trades · depth · book_ticker"]
     end
 
-    REST -->|"batch pull · pagination · retries"| BL["Batch loaders<br/>qde.loaders"]
+    REST -->|"batch pull · pagination · retries"| BL["Batch ingestors<br/>qde.registry · qde.ingest"]
     WS -->|"async read · buffer · flush"| SC["Stream collector<br/>qde.stream — 24/7 in Docker on a VPS"]
 
     BL --> BARS[("Parquet OHLCV bars<br/>bronze/group=bars")]
@@ -170,14 +170,18 @@ src/qde/
 ├── lake.py                   # Query the R2 lake with DuckDB (read-only token)
 ├── daily_update.py           # Nightly incremental refresh of all bar series
 ├── backfill.py               # Idempotent group-level backfill CLI
-├── loaders/                  # Batch REST ingestion (OHLCV bars)
-│   ├── __init__.py           # Unified load_ohlcv() with source routing
+├── registry/                 # The "little book": one SourceSpec per source
+│   ├── spec.py               # SourceSpec — config + DQ contract + catalogue in one
+│   └── sources.py            # The registry, dim_sources() catalogue, declared_series()
+├── ingest/                   # BaseIngestor + per-source fetch/normalize
+│   ├── base.py               # BaseIngestor ABC: pagination loop, NoNewData contract
+│   ├── binance.py            # Binance klines, time-cursor pagination
+│   ├── kraken.py             # Kraken OHLC, cursor pagination
+│   └── yfinance.py           # Yahoo Finance, single-shot download
+├── loaders/                  # Unified load facade + shared HTTP (registry-driven)
+│   ├── __init__.py           # load_ohlcv() — resolves source/symbol via the registry
 │   ├── exceptions.py         # NoNewData — a successful but empty response
-│   ├── http.py               # Retry helper with exponential backoff
-│   ├── binance_loader.py     # Binance REST API, pagination, epoch → UTC
-│   ├── yfinance_loader.py    # Yahoo Finance loader, MultiIndex handling
-│   ├── kraken_loader.py      # Kraken REST API, cursor pagination
-│   └── symbols.py            # Cross-source symbol mapping
+│   └── http.py               # Retry helper with exponential backoff
 └── stream/                   # WebSocket capture → bronze (microstructure)
     ├── config.py             # StreamConfig: symbols, kinds, flush window
     ├── collector.py          # Async connect, buffer, flush, reconnect
@@ -210,12 +214,13 @@ Dockerfile, docker-compose.yml     # Containerized 24/7 collector
 ```bash
 pytest
 ```
-Covering loader contracts, symbol mapping, and storage round-trips on the batch side;
-and config, paths, parsers, gap detection, compaction (including crash-recovery),
-R2 sync, and lake-query construction on the streaming/cloud side. The socket and the
-S3 client are both faked, so these suites run **offline and deterministically** —
-including the disconnect-and-recover path that can't be triggered against the live
-exchange, and the upload-verify-prune path without touching real R2.
+Covering the source registry, ingestor contracts, and storage round-trips on the
+batch side; and config, paths, parsers, gap detection, compaction (including
+crash-recovery), R2 sync, and lake-query construction on the streaming/cloud side.
+The REST calls, the socket, and the S3 client are all faked, so every suite runs
+**offline and deterministically** — including the disconnect-and-recover path that
+can't be triggered against the live exchange, and the upload-verify-prune path
+without touching real R2.
 
 ### Data quality monitoring
 
@@ -242,9 +247,8 @@ Kubernetes (a single container doesn't need an orchestrator). These get
 revisited when the constraints that justify them actually appear.
 
 ### Limitations
-- Batch loader tests hit live APIs (not yet mocked); streaming and lake tests run offline.
 - The R2 lake is currently private (querying needs a read-only token); the public open lake and catalogue service are still planned.
-- Symbol mapping is manual — new symbols must be added to symbols.py.
+- Symbol mapping is manual — new symbols are added to the source's `SourceSpec` in `qde.registry` (canonical → native), not auto-normalized across venues.
 - Kraken's public OHLC endpoint serves only ~720 recent candles per interval, regardless of start date — deep history requires its paid data service.
 - Order-book reconstruction from depth deltas is deferred to a later transform; the collector captures raw deltas and periodic snapshots (bronze), not a rebuilt book.
 - Latency (`received_at − event_time`) is subject to clock skew between machines; treat absolute values as approximate.
