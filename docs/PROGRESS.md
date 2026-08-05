@@ -251,14 +251,19 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       idempotent writer + watermark are factored (`_upsert_frame` / `_watermark`),
       shared with bars (behavior unchanged). `query()` now serves a `series` view
       too and pins the session TZ to UTC. Tested (`tests/test_series_storage.py`).
-- [~] FRED macro series (`series`) — **ingestor done + live-verified.**
+- [~] FRED macro series (`series`) — **ingestor + CLIs done; all 26 seeded locally.**
       `qde.ingest.fred.FredIngestor` (offset pagination, `"."` → `NaN` row-kept),
       registered, with a curated 26-series **government-only** (redistributable)
-      macro spine on a `series` `SourceSpec`. Offline tests
-      (`tests/test_fred_ingestor.py`); live pull landed DGS10 (4327 rows) +
-      CPIAUCSL in `data/`. **Pending (Step C):** wire `series` into the
-      backfill/daily-update CLIs (seed all 26, nightly refresh) + VPS deploy
-      (copy `FRED_API_KEY` to the VPS). Key lives in gitignored `secrets/fred.env`.
+      macro spine on a `series` `SourceSpec`. `backfill` and `daily_update` now
+      handle `--group series` (`storage.update_series`), loading the key
+      BOM-robustly from `secrets/fred.env` via the new `qde.env.load_env_file`
+      (also fixed `lake._load_local_env`). Live seed via the CLI: **50,289 rows
+      across all 26 series** in the local lake. Offline tests for the ingestor,
+      env loader, series backfill, and series daily-update.
+      **Pending for production:** (1) publish `series` to R2 (mirror
+      `sync.publish_bars`) so it's durable + queryable from any client; (2) VPS
+      deploy — copy `FRED_API_KEY` to the VPS, seed there, nightly refresh (already
+      wired into `maintain.sh`'s `daily_update`).
 - [ ] Volatility complex: VIX/VVIX/SKEW EOD from CBOE (`series`) — Wave 1 #2
 - [ ] CFTC COT positioning (`series`) — Wave 1 #3
 - [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4

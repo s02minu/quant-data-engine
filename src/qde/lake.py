@@ -15,6 +15,8 @@ import os
 import duckdb
 import pandas as pd
 
+from qde.env import load_env_file
+
 
 def connect() -> duckdb.DuckDBPyConnection:
     """Open a DuckDB connection wired to read the R2 lake.
@@ -119,17 +121,10 @@ def _load_local_env(path: str = "secrets/r2-read.env") -> None:
     """Load KEY=VALUE lines from a local env file into the environment.
 
     A CLI convenience so `python -m qde.lake` works in any shell without
-    sourcing first. Existing environment variables are not overridden.
+    sourcing first. Delegates to the shared BOM-tolerant loader (`qde.env`) so a
+    PowerShell-written UTF-16/BOM secrets file is read correctly.
     """
-    if not os.path.exists(path):
-        return
-    with open(path) as handle:
-        for line in handle:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
+    load_env_file(path)
 
 
 if __name__ == "__main__":

@@ -13,8 +13,13 @@ def _seed(base, symbol, source="binance", dates=("2024-01-01", "2024-01-02")):
     idx = pd.DatetimeIndex(pd.to_datetime(list(dates), utc=True), name="date")
     n = len(dates)
     df = pd.DataFrame(
-        {"open": [1.0] * n, "high": [2.0] * n, "low": [0.5] * n, "close": [1.5] * n,
-         "volume": [10.0] * n},
+        {
+            "open": [1.0] * n,
+            "high": [2.0] * n,
+            "low": [0.5] * n,
+            "close": [1.5] * n,
+            "volume": [10.0] * n,
+        },
         index=idx,
     )
     upsert_bars(df, symbol, source, base_dir=base)
@@ -64,6 +69,21 @@ def test_run_counts_loader_error_as_failed(tmp_path, monkeypatch):
     summary = run(str(tmp_path))
 
     assert summary == {"updated": 0, "failed": 1}
+    assert (Path(tmp_path) / "quality_summary.csv").exists()
+
+
+def test_run_updates_a_seeded_series(tmp_path, offline_fred):
+    # A seeded FRED series is discovered and incrementally updated alongside bars.
+    from qde.storage import upsert_series
+
+    idx = pd.DatetimeIndex(pd.to_datetime(["2023-12-01"], utc=True), name="date")
+    upsert_series(
+        pd.DataFrame({"value": [1.0]}, index=idx), "DGS10", "fred", base_dir=str(tmp_path)
+    )
+
+    summary = run(str(tmp_path))
+
+    assert summary == {"updated": 1, "failed": 0}
     assert (Path(tmp_path) / "quality_summary.csv").exists()
 
 

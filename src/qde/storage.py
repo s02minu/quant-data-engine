@@ -402,6 +402,49 @@ def upsert_series(
     return _upsert_frame(df, _series_path(series_id, source, base_dir, metric))
 
 
+def update_series(
+    series_id: str, source: str, base_dir: str = "data", metric: str | None = None
+) -> None:
+    """Incrementally extend a stored scalar series with any newer observations.
+
+    Reads the series' watermark, fetches only observations after it via the
+    source's ingestor, and upserts them. ``NoNewData`` (nothing newer) is the
+    benign already-current case; any other failure propagates so a real error (a
+    bad key, an API outage) is counted as a failure rather than mistaken for
+    up-to-date. Twin of ``update_ohlcv``.
+
+    Note: this advances the latest-value series; it does not re-pull revisions to
+    already-stored dates (macro data gets revised). Refreshing revisions is a
+    full backfill, or the vintaged/ALFRED variant (see docs/schemas/series.md).
+
+    Raises:
+        FileNotFoundError: if the series has not been stored yet -- backfill first.
+        ValueError: if the fetch fails for a real reason (bad key, API error).
+            Only ``NoNewData`` is swallowed as the benign already-current case.
+    """
+    watermark = series_watermark(series_id, source, base_dir, metric)
+    if watermark is None:
+        raise FileNotFoundError(
+            f"No stored series for {series_id!r}/{source!r}; run a backfill first."
+        )
+
+    # Fetch from the day after the watermark: the last stored observation is
+    # already held, and re-fetching it would only be deduplicated away.
+    next_day = str((watermark + pd.Timedelta(days=1)).date())
+
+    # Lazy import: qde.ingest imports the registry (not storage), but keeping the
+    # import local mirrors the loaders facade and avoids any import-time coupling.
+    from qde.ingest import get_ingestor
+
+    try:
+        df_new = get_ingestor(source).load(series_id, start=next_day)
+    except NoNewData:
+        print(f"{series_id} already up to date through {watermark.date()}")
+        return
+
+    upsert_series(df_new, series_id, source, base_dir, metric)
+
+
 def list_series(base_dir: str = "data") -> pd.DataFrame:
     """List the (source, series_id) series present in the series lake.
 

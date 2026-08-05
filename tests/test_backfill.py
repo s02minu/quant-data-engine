@@ -1,8 +1,9 @@
 """Backfill tests. Offline via the ``offline_binance`` fixture in conftest, which
 serves three canned daily BTC klines (2024-01-01..03) for any known symbol."""
 
-from qde.backfill import backfill_bars, backfill_series
-from qde.storage import _bars_path
+from qde.backfill import backfill_bars, backfill_series, backfill_series_group
+from qde.registry import get_spec
+from qde.storage import _bars_path, _series_path
 
 
 def test_backfill_bootstraps_new_series(tmp_path, offline_binance):
@@ -55,3 +56,21 @@ def test_backfill_from_registry_seeds_declared_series(tmp_path, offline_binance)
         ("ETHUSDT", "binance", "1d"),
         ("SOLUSDT", "binance", "1d"),
     }
+
+
+def test_backfill_series_bootstraps_one(tmp_path, offline_fred):
+    # A single FRED series is bootstrapped even though nothing is in the lake.
+    results = backfill_series_group(
+        "2010-01-01", source="fred", series_id="DGS10", base_dir=str(tmp_path)
+    )
+    assert results == {("fred", "DGS10"): 3}  # the fixture serves three observations
+    assert _series_path("DGS10", "fred", str(tmp_path)).exists()
+
+
+def test_backfill_series_from_registry_seeds_all(tmp_path, offline_fred):
+    # --from-registry over the series group seeds every declared FRED series.
+    results = backfill_series_group(
+        "2010-01-01", source="fred", use_registry=True, base_dir=str(tmp_path)
+    )
+    assert len(results) == len(get_spec("fred").symbols)  # the full curated spine
+    assert all(src == "fred" for (src, _sid) in results)

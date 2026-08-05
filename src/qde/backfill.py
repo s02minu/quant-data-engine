@@ -12,23 +12,32 @@ explicitly on the command line, enumerated from the source registry with
 ``--from-registry`` (the declared/intended set, so a series that is not yet in
 the lake can be seeded), or discovered from what is already in the lake.
 
+Works across groups: ``--group bars`` (default) or ``--group series``. For the
+series group ``--symbol`` is the series id (e.g. ``DGS10``) and a FRED key is
+loaded from ``secrets/fred.env`` if not already exported.
+
 Example:
     python -m qde.backfill --source binance --symbol BTCUSDT --from 2020-01-01
-    python -m qde.backfill --source binance --from 2020-01-01   # binance series in the lake
-    python -m qde.backfill --from-registry --from 2020-01-01    # every declared series (seeds new)
-    python -m qde.backfill --from 2020-01-01                    # every series in the lake
+    python -m qde.backfill --source binance --from 2020-01-01   # binance bars in the lake
+    python -m qde.backfill --from-registry --from 2020-01-01    # every declared bar series
+    python -m qde.backfill --from 2020-01-01                    # every bar series in the lake
+    python -m qde.backfill --group series --from-registry --from 2010-01-01   # all declared series
+    python -m qde.backfill --group series --source fred --symbol DGS10 --from 2010-01-01
 """
 
 import os
 
+from qde.env import load_env_file
+from qde.ingest import get_ingestor
 from qde.loaders import load_ohlcv
 from qde.log import configure, get_logger
 from qde.registry import declared_series
-from qde.storage import list_bars_series, upsert_bars
+from qde.storage import list_bars_series, list_series, upsert_bars, upsert_series
 
 log = get_logger(__name__)
 
-Series = tuple[str, str, str]  # (symbol, source, interval)
+Series = tuple[str, str, str]  # (symbol, source, interval)  -- bars
+SeriesId = tuple[str, str]  # (source, series_id)            -- series group
 
 
 def backfill_series(
@@ -136,19 +145,106 @@ def backfill_bars(
     return results
 
 
+# --- series group -----------------------------------------------------------
+#
+# The scalar-series twin of the bars backfill above. The orchestration is the
+# same (resolve a set, fetch + upsert each, skip failures); only the identity
+# (source, series_id) and the storage/fetch calls differ.
+
+
+def _resolve_series_group(
+    source: str | None,
+    series_id: str | None,
+    base_dir: str,
+    use_registry: bool,
+) -> list[SeriesId]:
+    """Decide which ``(source, series_id)`` scalar series a backfill should touch.
+
+    ``source`` + ``series_id`` names one directly (and need not exist yet).
+    Otherwise the candidate set is the registry's declared series (``use_registry``)
+    or those already in the lake, narrowed by whichever filter was given.
+    """
+    if source and series_id:
+        return [(source, series_id)]
+
+    if use_registry:
+        # declared_series yields (source, series_id, interval); drop the unused
+        # interval (a bars-ism) for the series group.
+        candidates = [(src, sid) for (src, sid, _iv) in declared_series(group="series")]
+    else:
+        df = list_series(base_dir)
+        candidates = [(str(r.source), str(r.series_id)) for r in df.itertuples(index=False)]
+
+    if source:
+        candidates = [c for c in candidates if c[0] == source]
+    if series_id:
+        candidates = [c for c in candidates if c[1] == series_id]
+
+    return candidates
+
+
+def backfill_series_group(
+    start: str,
+    end: str | None = None,
+    source: str | None = None,
+    series_id: str | None = None,
+    base_dir: str = "data",
+    use_registry: bool = False,
+) -> dict[SeriesId, int]:
+    """Backfill every matching scalar series over ``[start, end]``.
+
+    The ``series``-group twin of :func:`backfill_bars`: idempotent per date, one
+    failing series is logged and skipped. ``use_registry`` seeds declared-but-
+    unseeded series (e.g. the full FRED set).
+
+    Returns:
+        dict[SeriesId, int]: row count per series, keyed by ``(source, series_id)``.
+    """
+    series = _resolve_series_group(source, series_id, base_dir, use_registry)
+    if not series:
+        log.warning("backfill_no_series", group="series", source=source, series_id=series_id)
+        return {}
+
+    results: dict[SeriesId, int] = {}
+    for s_source, s_series_id in series:
+        try:
+            df = get_ingestor(s_source).load(s_series_id, start, end)
+            rows = upsert_series(df, s_series_id, s_source, base_dir)
+        except Exception as exc:
+            log.warning(
+                "backfill_failed",
+                group="series",
+                source=s_source,
+                series_id=s_series_id,
+                error=type(exc).__name__,
+                detail=str(exc),
+            )
+            continue
+
+        results[(s_source, s_series_id)] = rows
+        log.info("backfilled", group="series", source=s_source, series_id=s_series_id, rows=rows)
+
+    return results
+
+
 def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
         prog="python -m qde.backfill",
-        description="Idempotently backfill OHLCV bars over a date range.",
+        description="Idempotently backfill a data group over a date range.",
     )
     parser.add_argument(
-        "--group", default="bars", help="data group to backfill (only 'bars' for now)"
+        "--group",
+        default="bars",
+        choices=["bars", "series"],
+        help="data group to backfill",
     )
-    parser.add_argument("--source", help="restrict to one source, e.g. binance")
-    parser.add_argument("--symbol", help="restrict to one symbol, e.g. BTCUSDT")
-    parser.add_argument("--interval", help="restrict to one bar size, e.g. 1d")
+    parser.add_argument("--source", help="restrict to one source, e.g. binance or fred")
+    parser.add_argument(
+        "--symbol", help="restrict to one symbol (bars) or series id (series), e.g. BTCUSDT / DGS10"
+    )
+    parser.add_argument("--interval", help="restrict to one bar size, e.g. 1d (bars only)")
     parser.add_argument(
         "--from-registry",
         dest="use_registry",
@@ -165,21 +261,33 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.group != "bars":
-        parser.error(f"unsupported group {args.group!r}; only 'bars' is available for now")
-
     configure()
-    results = backfill_bars(
-        start=args.start,
-        end=args.end,
-        source=args.source,
-        symbol=args.symbol,
-        interval=args.interval,
-        base_dir=args.base_dir,
-        use_registry=args.use_registry,
-    )
+    if args.group == "bars":
+        results: dict = backfill_bars(
+            start=args.start,
+            end=args.end,
+            source=args.source,
+            symbol=args.symbol,
+            interval=args.interval,
+            base_dir=args.base_dir,
+            use_registry=args.use_registry,
+        )
+    else:  # series
+        # A series source (FRED) needs its API key; load it from the gitignored
+        # secrets file if not already exported.
+        load_env_file("secrets/fred.env")
+        results = backfill_series_group(
+            start=args.start,
+            end=args.end,
+            source=args.source,
+            series_id=args.symbol,  # --symbol is the series id for the series group
+            base_dir=args.base_dir,
+            use_registry=args.use_registry,
+        )
+
     log.info(
         "backfill_complete",
+        group=args.group,
         series=len(results),
         total_rows=sum(results.values()),
     )

@@ -1,9 +1,9 @@
-"""Daily batch refresh of the bars lake.
+"""Daily batch refresh of the lake (bars + series).
 
-Discovers every stored series from the lake's partition metadata, brings each
-current with a watermark-driven incremental update, then rebuilds the quality
-summary CSV. One series failing (a delisted symbol, a source outage) is logged
-and skipped so it never aborts the rest of the nightly run.
+Discovers every stored bar and scalar series from the lake's partition metadata,
+brings each current with a watermark-driven incremental update, then rebuilds the
+quality summary CSV. One series failing (a delisted symbol, a source outage, a
+missing key) is logged and skipped so it never aborts the rest of the nightly run.
 
 Run as a module so it behaves identically on the laptop and in the container:
 
@@ -16,57 +16,68 @@ and the mounted ``/data`` volume on the VPS.
 
 import os
 
-import pandas as pd
-
+from qde.env import load_env_file
 from qde.log import configure, get_logger
 from qde.quality import build_quality_summary
 from qde.registry import declared_series
-from qde.storage import list_bars_series, update_ohlcv
+from qde.storage import (
+    list_bars_series,
+    list_series,
+    update_ohlcv,
+    update_series,
+)
 
 log = get_logger(__name__)
 
 
-def _log_registry_drift(seeded: pd.DataFrame) -> None:
+def _log_registry_drift(base_dir: str) -> None:
     """Log any series the registry declares but the lake has not seeded yet.
 
-    Purely informational, and never fatal: the incremental daily update can only
-    advance a series that already has a watermark, so seeding a newly declared
-    one is ``qde.backfill``'s job, not this run's. Surfacing the gap in the
-    nightly logs is how registry drift becomes visible without changing what the
-    update actually does.
+    Covers both the ``bars`` and ``series`` groups. Purely informational and
+    never fatal: the incremental update can only advance a series that already
+    has a watermark, so seeding a newly declared one is ``qde.backfill``'s job.
+    Surfacing the gap in the nightly logs is how registry drift becomes visible
+    without changing what the update does.
     """
     try:
-        declared = set(declared_series(group="bars"))
-        have = {(row.source, row.symbol, row.interval) for row in seeded.itertuples(index=False)}
-        missing = sorted(declared - have)
-        if missing:
-            log.info(
-                "registry_unseeded",
-                count=len(missing),
-                series=[f"{src}/{sym}/{iv}" for (src, sym, iv) in missing],
-            )
+        bars = {
+            (r.source, r.symbol, r.interval)
+            for r in list_bars_series(base_dir).itertuples(index=False)
+        }
+        series = {
+            (r.source, r.series_id) for r in list_series(base_dir).itertuples(index=False)
+        }
+        missing_bars = sorted(set(declared_series(group="bars")) - bars)
+        missing_series = sorted(
+            {(src, sid) for (src, sid, _iv) in declared_series(group="series")} - series
+        )
+        names = [f"{s}/{y}/{i}" for (s, y, i) in missing_bars]
+        names += [f"{s}/{sid}" for (s, sid) in missing_series]
+        if names:
+            log.info("registry_unseeded", count=len(names), series=names)
     except Exception as exc:  # a drift check must never break the nightly run
         log.warning("registry_drift_check_failed", error=type(exc).__name__, detail=str(exc))
 
 
 def run(base_dir: str = "data") -> dict:
-    """Update every stored series, then rebuild the quality summary.
+    """Update every stored bar and scalar series, then rebuild the quality summary.
 
     Returns:
         dict: counts of series updated vs. skipped after a failure.
     """
-    series = list_bars_series(base_dir)
-
     updated = 0
     failed = 0
+
+    bars = list_bars_series(base_dir)
     for symbol, source, interval in zip(
-        series["symbol"], series["source"], series["interval"], strict=True
+        bars["symbol"], bars["source"], bars["interval"], strict=True
     ):
         try:
             update_ohlcv(symbol, source=source, interval=interval, base_dir=base_dir)
         except Exception as exc:
             log.warning(
                 "update_failed",
+                group="bars",
                 symbol=symbol,
                 source=source,
                 interval=interval,
@@ -77,15 +88,37 @@ def run(base_dir: str = "data") -> dict:
             continue
 
         updated += 1
-        log.info("updated", symbol=symbol, source=source, interval=interval)
+        log.info("updated", group="bars", symbol=symbol, source=source, interval=interval)
 
-    _log_registry_drift(series)
+    scalars = list_series(base_dir)
+    for source, series_id in zip(scalars["source"], scalars["series_id"], strict=True):
+        try:
+            update_series(series_id, source=source, base_dir=base_dir)
+        except Exception as exc:
+            log.warning(
+                "update_failed",
+                group="series",
+                series_id=series_id,
+                source=source,
+                error=type(exc).__name__,
+                detail=str(exc),
+            )
+            failed += 1
+            continue
+
+        updated += 1
+        log.info("updated", group="series", series_id=series_id, source=source)
+
+    _log_registry_drift(base_dir)
     build_quality_summary(base_dir)
     return {"updated": updated, "failed": failed}
 
 
 def main() -> None:
     configure()
+    # Load any series-source key (FRED) so the series update can run; a value
+    # already exported (or set on the VPS) still wins.
+    load_env_file("secrets/fred.env")
     summary = run(os.getenv("QDE_BASE_DIR", "data"))
     log.info("daily_update_complete", updated=summary["updated"], failed=summary["failed"])
 
