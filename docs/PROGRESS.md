@@ -44,12 +44,16 @@ The CLIs are wired in: `backfill --from-registry` seeds declared-but-unseeded se
 and `daily_update` logs registry drift. Adding a source is now one `SourceSpec` row
 plus a small ingestor class.
 
-**Phase 3 (group schemas) is now done** (`docs/schemas/`), written ahead of source
-expansion because the next sources introduce new shapes. A **data-sourcing plan**
-(`docs/data-sources.md`) maps the owner's two-model strategy + broader coverage to
-concrete sources, groups, and licensing, with a prioritized build order. **Next:
-Phase 5 Wave 1 — the FRED+ALFRED `series`/`events` ingestor** (the macro spine and
-bitemporal calendar core), then CBOE vol, CFTC COT, and crypto derivatives.
+**Phase 3 (group schemas) is done** (`docs/schemas/`), and **Phase 5 Wave 1 is
+underway**: a **data-sourcing plan** (`docs/data-sources.md`) maps the owner's
+two-model strategy + coverage to sources/groups/licensing with a build order, and
+**FRED has landed locally** — `series` storage, the `FredIngestor`, a curated
+26-series government macro spine, group-aware `backfill`/`daily_update`, and a
+BOM-robust `secrets/fred.env` loader. All 26 series (~50k rows) are in the local
+lake. **NEXT (resume point): build `sync.publish_series`** (mirror
+`sync.publish_bars` — overwrite series to R2, keep local) so FRED is durable +
+queryable server-lessly, **then the VPS deploy** (key + seed + nightly refresh).
+After that: CBOE vol, CFTC COT, crypto derivatives (Wave 1 #2-4).
 
 ---
 
