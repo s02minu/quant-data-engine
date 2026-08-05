@@ -11,8 +11,8 @@ used in ``test_sync`` and ``test_stream_collector``.
 import pandas as pd
 import pytest
 
+import qde.ingest.yfinance as yf_mod
 import qde.loaders.http as http_mod
-import qde.loaders.yfinance_loader as yf_mod
 
 
 class FakeResponse:

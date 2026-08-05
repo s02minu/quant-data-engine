@@ -39,9 +39,11 @@ kraken / yfinance once each, folding in the scattered `SYMBOL_MAP` (now
 `SourceSpec.symbols`, canonical→native) and the Phase 2 licensing decision
 (`redistributable` / `license_note` per source — yfinance is code-only). The
 registry generates the `dim_sources` catalogue and is a faithful superset of the
-lake (all 8 seeded series declared, plus 5 intended-but-unseeded). Next in Phase 4:
-`BaseIngestor` ABC + migrate the three loaders onto it, then wire the registry into
-the backfill / daily-update CLIs.
+lake (all 8 seeded series declared, plus 5 intended-but-unseeded). Step 2 landed
+too: the `qde.ingest` package — a `BaseIngestor` ABC plus binance/kraken/yfinance
+subclasses — replaces the hand-written loaders with no behavior change (byte-for-byte
+identical output, proven), and `load_ohlcv` is now registry-driven. Next in Phase 4:
+wire the registry into the backfill / daily-update CLIs.
 
 ---
 
@@ -196,10 +198,20 @@ classification lives on each `SourceSpec` where the publishing job will read it.
       (`tests/test_registry.py`, 8 tests): faithful superset of the seeded lake.
 - [x] `dim_sources` generated from the registry — `dim_sources()` renders the
       specs as the catalogue table (one row per source, incl. the licensing gate).
-- [ ] `BaseIngestor` ABC holding retry, pagination, partitioning, writes
-- [ ] Migrate Binance / Kraken / yfinance onto the pattern
+- [x] `BaseIngestor` ABC (`qde.ingest.base`) — holds the shared machinery once:
+      symbol translation (via the spec), the cursor pagination loop, and the
+      empty-result → `NoNewData` contract. A source implements only `first_cursor`
+      / `fetch_page` / `normalize`. Retry/backoff stays in `qde.loaders.http`.
+- [x] Migrate Binance / Kraken / yfinance onto the pattern — the three loaders are
+      now `BaseIngestor` subclasses in `qde.ingest`; the old hand-written modules
+      are removed (kept in git history). `load_ohlcv` resolves source + symbol from
+      the registry, then delegates to `get_ingestor(source)`. **No behavior change,
+      proven**: old-vs-new produce byte-for-byte identical frames on the same
+      canned payloads for all three sources; full suite 85 green.
 - [ ] Wire the registry into the backfill / daily-update CLIs (symbols + DQ
       thresholds sourced from the little book; seed unseeded series from a row)
+- [ ] Follow-ups: README repo-structure tree + `notebooks/demo.ipynb` still name
+      the deleted `*_loader.py` / `symbols.py` modules; refresh when convenient.
 
 ## Phase 5 — Source expansion
 
