@@ -47,15 +47,15 @@ plus a small ingestor class.
 **Phase 3 (group schemas) is done** (`docs/schemas/`), and **Phase 5 Wave 1 is
 underway**: a **data-sourcing plan** (`docs/data-sources.md`) maps the owner's
 two-model strategy + coverage to sources/groups/licensing with a build order, and
-**FRED has landed locally and now publishes to R2** — `series` storage, the
+**FRED has landed locally and is fully deployed** — `series` storage, the
 `FredIngestor`, a curated 26-series government macro spine, group-aware
 `backfill`/`daily_update`, a BOM-robust `secrets/fred.env` loader, and
 `sync.publish_series` (overwrite-and-keep, mirror of `publish_bars`, wired into
-`qde.sync`'s `__main__`). All 26 series (~50k rows) are in the local lake.
-**NEXT (resume point): the VPS deploy** — copy `FRED_API_KEY` to the VPS, seed
-there, and let the nightly `maintain.sh` refresh + publish it (the sync already
-runs `publish_series`, so no cron change is needed). After that: CBOE vol, CFTC
-COT, crypto derivatives (Wave 1 #2-4).
+`qde.sync`'s `__main__`). **FRED is live on the VPS**: 26 series in R2, refreshed +
+published nightly (via a read-only `./secrets` mount so the batch containers get the
+key), queryable server-lessly from any client with `qde.lake` `FROM series`.
+**NEXT (resume point): Wave 1 #2 — the volatility complex** (VIX/VVIX/SKEW EOD from
+CBOE, `series`). Then CFTC COT (#3), crypto derivatives (#4).
 
 ---
 
@@ -257,7 +257,7 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       idempotent writer + watermark are factored (`_upsert_frame` / `_watermark`),
       shared with bars (behavior unchanged). `query()` now serves a `series` view
       too and pins the session TZ to UTC. Tested (`tests/test_series_storage.py`).
-- [~] FRED macro series (`series`) — **ingestor + CLIs done; all 26 seeded locally.**
+- [x] FRED macro series (`series`) — **DEPLOYED: 26 series live in R2, nightly refresh working.**
       `qde.ingest.fred.FredIngestor` (offset pagination, `"."` → `NaN` row-kept),
       registered, with a curated 26-series **government-only** (redistributable)
       macro spine on a `series` `SourceSpec`. `backfill` and `daily_update` now
@@ -275,9 +275,18 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       same `FROM series` SQL runs against the local lake and R2. Tested offline
       (publish: 6 cases incl. the metric partition + empty-group no-op; lake: glob
       defaults/narrowing + view registration); full suite 116 green.
-      **Pending for production:** VPS deploy — copy `FRED_API_KEY` to the VPS, seed
-      there, nightly refresh + publish (already wired into `maintain.sh`'s
-      `daily_update` + `sync`, so no cron change needed).
+      **Deployed to the VPS (2026-08-05).** `secrets/fred.env` placed on the box
+      (deploy-owned, 600); the box was 16 commits behind, so a clean fast-forward
+      brought the whole registry/ingest/series/publish stack current, image rebuilt,
+      collector restarted. Seeded there via the CLI (`series=26 total_rows=50295`),
+      published to R2 (`publish_series_complete published=26 failed=0`), and verified
+      queryable **from the laptop over R2** (`qde.lake` `FROM series` → 26 series,
+      50,295 rows, fresh). One deploy fix landed: the batch containers had no way to
+      see the key (`secrets/` was unmounted and `daily_update` got no `-e`), so a
+      read-only `./secrets:/app/secrets:ro` mount was added to `docker-compose.yml`
+      (commit `44b557c`); the BOM-robust loader reads it at `/app/secrets/fred.env`.
+      Verified the nightly path finds the key with no `-e` (`daily_update_complete
+      updated=34 failed=0`, all 26 FRED series "already up to date").
 - [ ] Volatility complex: VIX/VVIX/SKEW EOD from CBOE (`series`) — Wave 1 #2
 - [ ] CFTC COT positioning (`series`) — Wave 1 #3
 - [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4
