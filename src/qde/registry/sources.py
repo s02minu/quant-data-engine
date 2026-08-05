@@ -32,10 +32,11 @@ _OHLCV_NO_NULLS: dict[str, float] = {
 # intentionally excluded because they are not redistributable (see the spec's
 # license_note and docs/data-sources.md §4).
 _FRED_SERIES: list[str] = [
-    # growth / activity
+    # growth / activity / consumer
     "GDPC1",  # real GDP
     "INDPRO",  # industrial production
     "HOUST",  # housing starts
+    "RSAFS",  # advance retail sales (consumer demand)
     # inflation
     "CPIAUCSL",  # CPI, all items
     "CPILFESL",  # core CPI
@@ -45,12 +46,15 @@ _FRED_SERIES: list[str] = [
     "UNRATE",  # unemployment rate
     "PAYEMS",  # nonfarm payrolls
     "ICSA",  # initial jobless claims
-    # rates / curve
+    # rates / curve / funding
     "FEDFUNDS",  # effective fed funds rate
+    "SOFR",  # secured overnight financing rate (modern funding benchmark)
+    "DGS3MO",  # 3m Treasury (front of the curve)
     "DGS2",  # 2y Treasury
     "DGS10",  # 10y Treasury
     "DGS30",  # 30y Treasury
     "T10Y2Y",  # 10y-2y spread
+    "T10Y3M",  # 10y-3m spread (classic recession signal)
     "DFII10",  # 10y TIPS (real yield)
     "T10YIE",  # 10y breakeven inflation
     # money / liquidity plumbing
