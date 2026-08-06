@@ -21,8 +21,8 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
-| 9 | Data quality | In progress (registry-driven freshness + null checks live) |
-| 10 | Observability | In progress (Discord health alerts live) |
+| 9 | Data quality | In progress (registry-driven freshness + null checks live on VPS) |
+| 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
 | 11 | CI/CD | Not started |
 | 12 | Catalogue and publishing | Not started |
 
