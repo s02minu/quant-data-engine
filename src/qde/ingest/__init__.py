@@ -9,6 +9,7 @@ from qde.ingest.base import BaseIngestor, RawPage
 from qde.ingest.binance import BinanceIngestor
 from qde.ingest.binance_futures import BinanceFuturesIngestor
 from qde.ingest.cboe import CboeIngestor
+from qde.ingest.ccxt_bars import CcxtIngestor
 from qde.ingest.cftc import CftcIngestor
 from qde.ingest.fred import FredIngestor
 from qde.ingest.kraken import KrakenIngestor
@@ -27,6 +28,11 @@ _INGESTORS: dict[str, type[BaseIngestor]] = {
     "cboe": CboeIngestor,
     "cftc": CftcIngestor,
     "binancefut": BinanceFuturesIngestor,
+    # ccxt-backed spot exchanges (source name == ccxt exchange id).
+    "coinbase": CcxtIngestor,
+    "bybit": CcxtIngestor,
+    "okx": CcxtIngestor,
+    "kucoin": CcxtIngestor,
 }
 
 

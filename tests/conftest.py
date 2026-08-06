@@ -232,6 +232,41 @@ def _funding_rows():
     ]
 
 
+def _ccxt_candles():
+    """Three daily candles in ccxt's [ts_ms, o, h, l, c, v] shape (2024-01-01..03)."""
+    return [
+        [1704067200000, 42000.0, 43000.0, 41500.0, 42750.0, 1000.0],
+        [1704153600000, 42750.0, 45500.0, 42600.0, 44900.0, 1200.0],
+        [1704240000000, 44900.0, 45200.0, 43800.0, 44100.0, 900.0],
+    ]
+
+
+class FakeExchange:
+    """Minimal ccxt stand-in: serves canned candles, honoring ``since``/``limit``
+    so the pagination and caught-up (empty) paths are exercised. Records the last
+    requested symbol so a test can prove canonical->venue translation."""
+
+    def __init__(self, candles):
+        self._candles = candles
+        self.last_symbol = None
+
+    def fetch_ohlcv(self, symbol, timeframe="1d", since=None, limit=None):
+        self.last_symbol = symbol
+        rows = [c for c in self._candles if since is None or c[0] >= since]
+        return rows[:limit] if limit else rows
+
+
+@pytest.fixture
+def offline_ccxt(monkeypatch):
+    """Patch the ccxt exchange factory to a FakeExchange, exposed as ``.exchange``
+    so a test can read the recorded symbol. No ccxt import, no network."""
+    import qde.ingest.ccxt_bars as ccxt_mod
+
+    fake = FakeExchange(_ccxt_candles())
+    monkeypatch.setattr(ccxt_mod, "_build_exchange", lambda exchange_id: fake)
+    return fake
+
+
 @pytest.fixture
 def offline_binance_futures(monkeypatch):
     """Serve canned Binance perp funding, honoring startTime/endTime/limit so both

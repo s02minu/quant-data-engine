@@ -17,7 +17,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1: FRED/CBOE/CFTC/Binance-perp done; #5 left) |
+| 5 | Source expansion | In progress (Wave 1 done bar #5; Wave 2 #6 ccxt done) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
@@ -378,7 +378,25 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       public historical REST (`allForceOrders` 404s — a streaming `!forceOrder`
       concern). Funding is the one perp series with clean, complete public history.
 - [ ] Extend microstructure to a 2nd venue — Wave 1 #5
-- [ ] ccxt for unified exchange access (`bars`) — Wave 2
+- [x] **ccxt for unified exchange access (`bars`) — Wave 2 #6.** One shared
+      `qde.ingest.ccxt_bars.CcxtIngestor` drives ccxt's unified `fetch_ohlcv`
+      against any venue, so a new exchange is a registry row, not a module. Added
+      **4 spot venues — coinbase, bybit, okx, kucoin** (each a `bars` `SourceSpec`
+      whose name is the ccxt exchange id; the symbol map turns `BTCUSDT` into the
+      venue's ccxt symbol, `BTC/USDT` or Coinbase's `BTC/USD`). Binance/Kraken keep
+      their bespoke, byte-for-byte-validated ingestors. Pagination walks forward by
+      time and, crucially, **probes past pre-listing windows**: several venues
+      return `[]` for a window before the pair listed rather than clamping to the
+      earliest candle, so the walk skips forward (by a step under any venue's page
+      span) until it finds the listing — an empty page only stops the walk *after*
+      data has started (caught up → `NoNewData`). Purely additive: bars is the
+      original group, so `backfill`/`publish_bars`/the lake view carry the new
+      venues unchanged. `ccxt` added to dependencies. Offline tests (6: shape,
+      symbol translation incl. Coinbase USD, forward pagination, end filter,
+      caught-up→NoNewData); full suite 157 green. **Seeded locally: 30,986 rows**
+      across 12 new series — coinbase 8,887 & okx 8,396 & kucoin 8,234 (history to
+      each venue's listing), bybit 5,469 (from 2021) — cross-venue BTC agrees to
+      ~0.1%. **Not yet published to R2 / deployed** (next).
 - [ ] Economic calendar (`events`) — FRED/ALFRED core free; forecast column code-only
 - [ ] Equities (`bars`) — code-only; corporate actions are the pressure point
 

@@ -106,6 +106,37 @@ _CFTC_MARKETS: dict[str, str] = {
     "ETH": "146021",  # ETHER CASH SETTLED
 }
 
+# ccxt-backed bars exchanges (Wave 2 coverage). ccxt uses *unified* symbols, so the
+# canonical->native map is the same shape for every venue — only the quote asset
+# differs: USDT-quoted venues vs Coinbase, which lists the USD pair. (BTC/USD and
+# BTC/USDT are near-identical for bar coverage; the small USD-vs-stablecoin nuance
+# is accepted so one canonical symbol spans venues.)
+_CCXT_USDT = {"BTCUSDT": "BTC/USDT", "ETHUSDT": "ETH/USDT", "SOLUSDT": "SOL/USDT"}
+_CCXT_USD = {"BTCUSDT": "BTC/USD", "ETHUSDT": "ETH/USD", "SOLUSDT": "SOL/USD"}
+
+
+def _ccxt_spec(name: str, symbols: dict[str, str]) -> "SourceSpec":
+    """A bars SourceSpec for a ccxt exchange (name == ccxt exchange id)."""
+    return SourceSpec(
+        group="bars",
+        name=name,
+        symbols=symbols,
+        intervals=["1d"],
+        # A hint only: ccxt clamps it to each venue's own cap, and the ingestor
+        # paginates by advancing time, not by assuming a full page.
+        max_rows_per_call=1000,
+        rate_limit_per_min=None,  # ccxt's enableRateLimit paces requests per venue
+        expected_daily_rows=1,
+        null_tolerance=_OHLCV_NO_NULLS,
+        redistributable=True,
+        license_note=(
+            f"{name} public spot OHLCV via ccxt; exchange-native market data, "
+            "generally redistributable. Verify the venue's API terms before "
+            "public publishing."
+        ),
+    )
+
+
 _SPECS: list[SourceSpec] = [
     SourceSpec(
         group="bars",
@@ -164,6 +195,12 @@ _SPECS: list[SourceSpec] = [
             "published to the public lake."
         ),
     ),
+    # ccxt-backed spot exchanges (Wave 2): new venues via one shared ingestor.
+    # Kraken/Binance stay on their bespoke, byte-for-byte-validated ingestors.
+    _ccxt_spec("coinbase", _CCXT_USD),
+    _ccxt_spec("bybit", _CCXT_USDT),
+    _ccxt_spec("okx", _CCXT_USDT),
+    _ccxt_spec("kucoin", _CCXT_USDT),
     SourceSpec(
         group="series",
         name="fred",
