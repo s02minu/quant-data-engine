@@ -54,12 +54,13 @@ two-model strategy + coverage to sources/groups/licensing with a build order, an
 `qde.sync`'s `__main__`). **FRED is live on the VPS**: 26 series in R2, refreshed +
 published nightly (via a read-only `./secrets` mount so the batch containers get the
 key), queryable server-lessly from any client with `qde.lake` `FROM series`.
-**Wave 1 #2 — the CBOE volatility complex (VIX/VVIX/SKEW EOD, `series`) has landed
-locally**: `CboeIngestor` + `cboe` `SourceSpec`, seeded 23,519 rows into the local
-lake (queryable via `FROM series`). No key needed (public CDN CSVs); the same
-`publish_series`/`daily_update` machinery already carries it, so publishing to R2 +
-the VPS deploy are the only remaining steps. **NEXT (resume point): publish CBOE to
-R2 + deploy, then Wave 1 #3 — CFTC COT** (`series`), then crypto derivatives (#4).
+**Wave 1 #2 — the CBOE volatility complex (VIX/VVIX/SKEW EOD, `series`) is fully
+deployed**: `CboeIngestor` + `cboe` `SourceSpec`, 23,519 rows live in R2 (26 FRED +
+3 CBOE series now published nightly) and queryable server-lessly via `qde.lake`
+`FROM series`. No key needed (public CDN CSVs); it rode the existing
+`publish_series`/`daily_update` machinery with no new plumbing. **NEXT (resume
+point): Wave 1 #3 — CFTC COT** (`series`, weekly positioning from the Socrata
+public API), then crypto derivatives funding/OI/liquidations (#4).
 
 ---
 
@@ -306,7 +307,13 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       parse, start/end filtering, caught-up→NoNewData, bad-series→ValueError);
       full suite 123 green. **Seeded locally: 23,519 rows** — VIX 9,244 & SKEW
       9,199 (from 1990), VVIX 5,076 (from 2006), all through 2026-08-05,
-      queryable via `FROM series`. **Not yet published to R2 / deployed** (next).
+      queryable via `FROM series`. **Deployed to the VPS (2026-08-06)**: clean
+      fast-forward to `3739f08`, image rebuilt (no collector restart — batch-only
+      change), seeded on the box (`series=3 total_rows=23519`), published to R2
+      (`publish_series_complete published=29 failed=0` — 26 FRED + 3 CBOE), and
+      verified **queryable from the laptop over R2** via `qde.lake` `FROM series`.
+      No secret needed (public CDN), so simpler than FRED's deploy; the nightly
+      `daily_update` now advances the CBOE watermarks and re-publishes.
 - [ ] CFTC COT positioning (`series`) — Wave 1 #3
 - [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4
 - [ ] Extend microstructure to a 2nd venue — Wave 1 #5
