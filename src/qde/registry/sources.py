@@ -73,6 +73,39 @@ _FRED_SERIES: list[str] = [
 # underlying options data are not). Each is `{SYMBOL}_History.csv`.
 _CBOE_SERIES: list[str] = ["VIX", "VVIX", "SKEW"]
 
+# Curated CFTC COT positioning markets (`series`, multi-metric): a friendly ticker
+# -> the CFTC contract market code the Socrata TFF dataset keys on. The strategy's
+# positioning inputs (docs/data-sources.md §2/§3.1): equity index, the Treasury
+# curve + funding, the dollar and FX majors, VIX, and the two CME crypto markets.
+# Codes verified against the live TFF futures-only universe (gpe5-46if). `FF` and
+# `VIX` are deliberately distinct series_ids from the FRED/CBOE ones — they are
+# futures *positioning*, source-scoped, not the rate/level of the same name.
+_CFTC_MARKETS: dict[str, str] = {
+    # equity index
+    "ES": "13874A",  # E-MINI S&P 500
+    "NQ": "209742",  # NASDAQ MINI
+    "RTY": "239742",  # RUSSELL E-MINI
+    # rates / curve / funding
+    "UST2Y": "042601",  # UST 2Y NOTE
+    "UST5Y": "044601",  # UST 5Y NOTE
+    "UST10Y": "043602",  # UST 10Y NOTE
+    "USTBOND": "020601",  # UST BOND (the long bond)
+    "FF": "045601",  # FED FUNDS
+    # dollar + FX majors
+    "DXY": "098662",  # ICE USD INDEX
+    "EUR": "099741",  # EURO FX
+    "JPY": "097741",  # JAPANESE YEN
+    "GBP": "096742",  # BRITISH POUND
+    "CHF": "092741",  # SWISS FRANC
+    "AUD": "232741",  # AUSTRALIAN DOLLAR
+    "CAD": "090741",  # CANADIAN DOLLAR
+    # volatility
+    "VIX": "1170E1",  # VIX FUTURES
+    # crypto (CME)
+    "BTC": "133741",  # BITCOIN
+    "ETH": "146021",  # ETHER CASH SETTLED
+}
+
 _SPECS: list[SourceSpec] = [
     SourceSpec(
         group="bars",
@@ -173,6 +206,30 @@ _SPECS: list[SourceSpec] = [
             "published as free CSVs on the CBOE CDN. EOD index levels are "
             "generally redistributable; the real-time feed and the underlying "
             "options data are NOT. Re-verify CBOE's terms before public publishing."
+        ),
+    ),
+    SourceSpec(
+        group="series",
+        name="cftc",
+        # Friendly ticker -> CFTC contract market code (a real canonical->native map,
+        # unlike FRED/CBOE's identity maps): the lake stores series_id=ES, the API
+        # is queried by code 13874A.
+        symbols=_CFTC_MARKETS,
+        max_rows_per_call=50000,  # Socrata's per-request row cap
+        rate_limit_per_min=None,  # anonymous Socrata throttle; weekly volume is tiny
+        # COT is weekly (Tue report, Fri release), not daily. The `series` machinery
+        # is frequency-agnostic; there is no `frequency` field on the spec yet, so
+        # `expected_daily_rows` stays at its default and the weekly cadence is a DQ
+        # concern for Phase 9 (freshness), not an ingestion parameter.
+        # Positioning counts are stored per metric under the `value` column; a null
+        # is a "not reported" marker (a thin/!new market), tolerated like FRED's.
+        null_tolerance={"value": 1.0},
+        redistributable=True,
+        license_note=(
+            "CFTC Commitments of Traders — Traders in Financial Futures (TFF), "
+            "futures-only — from the CFTC public reporting Socrata API. "
+            "U.S.-government public-domain data; redistributable. Stored as "
+            "multi-metric positioning (trader-category long/short + open interest)."
         ),
     ),
 ]

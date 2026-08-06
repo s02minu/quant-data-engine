@@ -80,22 +80,29 @@ def bars_glob(
 
 
 def series_glob(
-    source: str = "*", series_id: str = "*", bucket: str | None = None
+    source: str = "*",
+    series_id: str = "*",
+    metric: str | None = None,
+    bucket: str | None = None,
 ) -> str:
-    """Build an r2:// glob selecting scalar series.
+    """Build an r2:// glob selecting scalar series at a single partition depth.
 
     The series twin of ``bars_glob``. Series are grouped by shape, not partitioned
     by date -- one file per (source, series_id) -- so the keys are source and
-    series_id. The trailing ``**`` absorbs the optional ``metric=`` partition that
-    multi-scalar sources add (a perp's ``funding_rate`` vs ``open_interest``) while
-    still matching single-scalar sources like FRED, whose file sits one level
-    shallower. Each argument narrows a key; the default "*" matches all.
+    series_id. Multi-scalar sources add a ``metric=`` level (a perp's
+    ``funding_rate`` vs ``open_interest``; CFTC COT's trader categories).
+
+    ``metric`` selects the depth: ``None`` (default) globs the *flat* single-value
+    files (FRED, CBOE); a value (``"*"`` for all) globs the *metric* partition.
+    The two depths are globbed separately on purpose -- DuckDB rejects a single
+    glob spanning both hive depths, so ``query`` unions them (see there). Each
+    argument narrows a key; the default "*" matches all.
     """
     bucket = bucket or os.environ.get("QDE_R2_BUCKET", "qde-lake")
-    return (
-        f"r2://{bucket}/bronze/group=series/source={source}/"
-        f"series_id={series_id}/**/*.parquet"
-    )
+    base = f"r2://{bucket}/bronze/group=series/source={source}/series_id={series_id}/"
+    if metric is None:
+        return base + "series.parquet"  # flat: FRED, CBOE
+    return base + f"metric={metric}/series.parquet"  # metric partition: COT, perps
 
 
 _MICROSTRUCTURE_KINDS = ("trades", "depth", "book_ticker", "snapshot", "gaps", "session")
@@ -124,14 +131,20 @@ def query(sql: str) -> pd.DataFrame:
     )
 
     # A ``series`` view mirrors the local ``storage.query`` so the same SQL runs
-    # against R2 and the local lake. Guarded like the kinds below: before the FRED
-    # deploy lands series in R2 the glob is empty, so skip the view rather than
-    # break every query.
-    with contextlib.suppress(Exception):
-        con.execute(
-            f"CREATE OR REPLACE VIEW series AS "
-            f"SELECT * FROM read_parquet('{series_glob()}', hive_partitioning=true)"
-        )
+    # against R2 and the local lake. Series live at a *mixed* partition depth --
+    # flat single-value files (FRED, CBOE) plus multi-metric ``metric=`` partitions
+    # (CFTC COT, perps) -- and DuckDB rejects a single glob spanning both, so union
+    # the two depths with UNION ALL BY NAME (metric=NULL on the flat side). Each
+    # side is probed independently: an empty glob raises, so a depth with no files
+    # yet (e.g. no metric sources before COT lands) is simply skipped, and before
+    # any series reach R2 the view is skipped entirely rather than breaking queries.
+    reads = []
+    for glob in (series_glob(), series_glob(metric="*")):
+        with contextlib.suppress(Exception):
+            con.execute(f"SELECT 1 FROM read_parquet('{glob}', hive_partitioning=true) LIMIT 1")
+            reads.append(f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true)")
+    if reads:
+        con.execute("CREATE OR REPLACE VIEW series AS " + " UNION ALL BY NAME ".join(reads))
 
     for kind in _MICROSTRUCTURE_KINDS:
         try:

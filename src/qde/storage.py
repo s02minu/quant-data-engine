@@ -289,15 +289,30 @@ def query(sql: str, base_dir: str = "data") -> pd.DataFrame:
     # is deterministic across machines (a data platform serves clients anywhere).
     con.sql("SET TimeZone='UTC'")
 
-    for group in ("bars", "series"):
-        root = Path(base_dir) / "bronze" / f"group={group}"
-        if not any(root.glob("**/*.parquet")):
-            continue
-        glob = (root / "**" / "*.parquet").as_posix()
+    bronze = Path(base_dir) / "bronze"
+
+    # bars: a uniform partition depth (source/symbol/interval), so one glob.
+    bars_root = bronze / "group=bars"
+    if any(bars_root.glob("**/*.parquet")):
+        glob = (bars_root / "**" / "*.parquet").as_posix()
         con.sql(
-            f"CREATE OR REPLACE VIEW {group} AS "
+            "CREATE OR REPLACE VIEW bars AS "
             f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true)"
         )
+
+    # series: a *mixed* partition depth. Single-value sources (FRED, CBOE) sit at
+    # source/series_id/series.parquet; multi-metric sources (CFTC COT, perps) add
+    # a metric= level (docs/schemas/series.md). DuckDB rejects mixed hive depth
+    # under one glob ("Hive partition mismatch"), so union a flat glob with a
+    # metric glob and let UNION ALL BY NAME fill metric=NULL for the flat side.
+    series_root = bronze / "group=series"
+    reads = [
+        f"SELECT * FROM read_parquet('{(series_root / depth).as_posix()}', hive_partitioning=true)"
+        for depth in ("*/*/series.parquet", "*/*/*/series.parquet")
+        if any(series_root.glob(depth))
+    ]
+    if reads:
+        con.sql("CREATE OR REPLACE VIEW series AS " + " UNION ALL BY NAME ".join(reads))
 
     return con.sql(sql).df()
 
@@ -371,8 +386,52 @@ def series_watermark(
 
     The high-water mark for incremental loading, read straight from the stored
     rows (twin of ``bars_watermark``).
+
+    For a multi-metric series (CFTC COT, perps) there is no flat
+    ``series_id/series.parquet`` -- the data lives under ``metric=`` partitions.
+    When no ``metric`` is given and the flat file is absent, the watermark is
+    taken across the metric partitions: every metric of a market shares the same
+    report dates, so their max is the series' high-water mark. This lets the
+    per-series incremental update advance a multi-metric source with one fetch.
     """
-    return _watermark(_series_path(series_id, source, base_dir, metric))
+    path = _series_path(series_id, source, base_dir, metric)
+    wm = _watermark(path)
+    if wm is not None or metric is not None:
+        return wm
+
+    # No flat file and no metric requested: this may be a multi-metric series.
+    parent = path.parent  # .../series_id=<id>/
+    if not parent.exists():
+        return None
+    marks = [_watermark(p) for p in parent.glob("metric=*/series.parquet")]
+    present = [m for m in marks if m is not None]
+    return max(present) if present else None
+
+
+def upsert_series_frame(
+    df: pd.DataFrame, series_id: str, source: str, base_dir: str = "data"
+) -> int:
+    """Upsert a series frame that is either single-value or multi-metric.
+
+    The bridge between an ingestor's returned frame and the ``series`` storage.
+    A frame carrying the single column ``value`` is one scalar series (FRED,
+    CBOE) and is written flat. Any other columns are treated as **metrics** --
+    one file per column under a ``metric=`` partition -- which is the multi-scalar
+    shape (CFTC COT's trader-category positions, a perp's funding/OI). The metric
+    name is simply the column name, so an ingestor declares its metrics by naming
+    its columns. Every write goes through the same idempotent ``upsert_series``.
+
+    Returns:
+        int: total rows written across all metric files (or the single file).
+    """
+    if list(df.columns) == ["value"]:
+        return upsert_series(df, series_id, source, base_dir)
+
+    total = 0
+    for metric in df.columns:
+        one = df[[metric]].rename(columns={metric: "value"})
+        total += upsert_series(one, series_id, source, base_dir, metric=str(metric))
+    return total
 
 
 def upsert_series(
@@ -413,6 +472,12 @@ def update_series(
     bad key, an API outage) is counted as a failure rather than mistaken for
     up-to-date. Twin of ``update_ohlcv``.
 
+    Works for single-value and multi-metric sources alike: one fetch returns the
+    whole frame (a single ``value`` column, or one column per metric), and
+    ``upsert_series_frame`` writes it flat or splits it across ``metric=``
+    partitions. A multi-metric market's metrics share the same report dates, so a
+    single watermark and a single fetch keep them all current.
+
     Note: this advances the latest-value series; it does not re-pull revisions to
     already-stored dates (macro data gets revised). Refreshing revisions is a
     full backfill, or the vintaged/ALFRED variant (see docs/schemas/series.md).
@@ -442,7 +507,7 @@ def update_series(
         print(f"{series_id} already up to date through {watermark.date()}")
         return
 
-    upsert_series(df_new, series_id, source, base_dir, metric)
+    upsert_series_frame(df_new, series_id, source, base_dir)
 
 
 def list_series(base_dir: str = "data") -> pd.DataFrame:

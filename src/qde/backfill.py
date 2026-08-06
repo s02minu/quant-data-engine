@@ -32,7 +32,12 @@ from qde.ingest import get_ingestor
 from qde.loaders import load_ohlcv
 from qde.log import configure, get_logger
 from qde.registry import declared_series
-from qde.storage import list_bars_series, list_series, upsert_bars, upsert_series
+from qde.storage import (
+    list_bars_series,
+    list_series,
+    upsert_bars,
+    upsert_series_frame,
+)
 
 log = get_logger(__name__)
 
@@ -209,7 +214,7 @@ def backfill_series_group(
     for s_source, s_series_id in series:
         try:
             df = get_ingestor(s_source).load(s_series_id, start, end)
-            rows = upsert_series(df, s_series_id, s_source, base_dir)
+            rows = upsert_series_frame(df, s_series_id, s_source, base_dir)
         except Exception as exc:
             log.warning(
                 "backfill_failed",

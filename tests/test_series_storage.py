@@ -8,12 +8,18 @@ from qde.storage import (
     query,
     series_watermark,
     upsert_series,
+    upsert_series_frame,
 )
 
 
 def _series(dates, values):
     idx = pd.DatetimeIndex(pd.to_datetime(list(dates), utc=True), name="date")
     return pd.DataFrame({"value": list(values)}, index=idx)
+
+
+def _wide(dates, **metrics):
+    idx = pd.DatetimeIndex(pd.to_datetime(list(dates), utc=True), name="date")
+    return pd.DataFrame({m: list(v) for m, v in metrics.items()}, index=idx)
 
 
 def test_upsert_roundtrips_and_counts(tmp_path):
@@ -79,3 +85,67 @@ def test_metric_partition_separates_scalars(tmp_path):
         base_dir=base,
     )
     assert list(out["metric"]) == ["funding_rate", "open_interest"]
+
+
+def test_upsert_series_frame_single_value_writes_flat(tmp_path):
+    # A one-column 'value' frame (FRED/CBOE) is stored flat, no metric partition.
+    base = str(tmp_path)
+    flat = _series(["2024-01-01", "2024-01-02"], [1.0, 2.0])
+    n = upsert_series_frame(flat, "DGS10", "fred", base)
+    assert n == 2
+    assert _series_path("DGS10", "fred", base).exists()  # flat file, no metric=
+
+
+def test_upsert_series_frame_splits_wide_into_metrics(tmp_path):
+    # A wide frame (COT shape) writes one file per column under a metric partition.
+    base = str(tmp_path)
+    df = _wide(
+        ["2024-01-02", "2024-01-09"],
+        dealer_long=[100, 110],
+        dealer_short=[200, 210],
+        open_interest=[9000, 9100],
+    )
+    total = upsert_series_frame(df, "ES", "cftc", base)
+    assert total == 6  # 3 metrics x 2 dates
+    for m in ("dealer_long", "dealer_short", "open_interest"):
+        assert _series_path("ES", "cftc", base, metric=m).exists()
+
+    out = query(
+        "SELECT metric, value FROM series WHERE series_id='ES' AND date='2024-01-09' "
+        "ORDER BY metric",
+        base_dir=base,
+    )
+    assert list(zip(out["metric"], out["value"], strict=True)) == [
+        ("dealer_long", 110.0),
+        ("dealer_short", 210.0),
+        ("open_interest", 9100.0),
+    ]
+
+
+def test_series_watermark_spans_metric_partitions(tmp_path):
+    # A multi-metric series has no flat file; its watermark is the max across the
+    # metric partitions (all metrics of a market share the same report dates).
+    base = str(tmp_path)
+    df = _wide(
+        ["2024-01-02", "2024-01-09"], dealer_long=[100, 110], open_interest=[9000, 9100]
+    )
+    upsert_series_frame(df, "ES", "cftc", base)
+    assert series_watermark("ES", "cftc", base) == pd.Timestamp("2024-01-09", tz="UTC")
+
+
+def test_query_unions_flat_and_metric_series(tmp_path):
+    # The mixed-depth case: a flat FRED series and a multi-metric COT series in the
+    # SAME lake must both surface through one `series` view (metric NULL on the flat
+    # side). A single glob over both depths raises "Hive partition mismatch".
+    base = str(tmp_path)
+    upsert_series(_series(["2024-01-01"], [4.0]), "DGS10", "fred", base_dir=base)
+    upsert_series_frame(
+        _wide(["2024-01-02"], dealer_long=[100], open_interest=[9000]), "ES", "cftc", base
+    )
+
+    out = query("SELECT source, series_id, metric, value FROM series", base_dir=base)
+    got = {(r.source, r.series_id, r.metric, r.value) for r in out.itertuples(index=False)}
+    assert ("cftc", "ES", "dealer_long", 100.0) in got
+    assert ("cftc", "ES", "open_interest", 9000.0) in got
+    fred = next(r for r in out.itertuples(index=False) if r.source == "fred")
+    assert fred.value == 4.0 and pd.isna(fred.metric)  # flat side: metric filled NULL

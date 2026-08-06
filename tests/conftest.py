@@ -173,3 +173,46 @@ def offline_cboe(monkeypatch):
         return FakeResponse(text=_CBOE_CSVS[symbol])
 
     monkeypatch.setattr(http_mod.requests, "get", fake_get)
+
+
+def _cot_rows():
+    """Three weekly TFF rows in Socrata's shape (string values). The last row
+    omits the leveraged-funds long field, exercising the missing-value -> NaN
+    path; the position values differ per column so a test can prove the
+    raw-column -> metric mapping is not scrambled."""
+    base = {
+        "dealer_positions_long_all": "100",
+        "dealer_positions_short_all": "110",
+        "asset_mgr_positions_long": "200",
+        "asset_mgr_positions_short": "210",
+        "lev_money_positions_long": "300",
+        "lev_money_positions_short": "310",
+        "other_rept_positions_long": "400",
+        "other_rept_positions_short": "410",
+        "nonrept_positions_long_all": "500",
+        "nonrept_positions_short_all": "510",
+        "open_interest_all": "9000",
+    }
+    r1 = {"report_date_as_yyyy_mm_dd": "2024-01-02T00:00:00.000", **base}
+    r2 = {"report_date_as_yyyy_mm_dd": "2024-01-09T00:00:00.000", **base}
+    r3 = {"report_date_as_yyyy_mm_dd": "2024-01-16T00:00:00.000", **base}
+    del r3["lev_money_positions_long"]  # missing category -> NaN, row kept
+    return [r1, r2, r3]
+
+
+@pytest.fixture
+def offline_cftc(monkeypatch):
+    """Serve canned CFTC COT rows, honoring the SoQL ``>= 'date'`` filter so a
+    caught-up incremental pull returns an empty page (-> NoNewData). No API key —
+    the Socrata endpoint is public."""
+    import re
+
+    def fake_get(url, params):
+        rows = _cot_rows()
+        match = re.search(r">= '([0-9-]+)T", params["$where"])
+        if match:
+            start = match.group(1)
+            rows = [r for r in rows if r["report_date_as_yyyy_mm_dd"][:10] >= start]
+        return FakeResponse(payload=rows)
+
+    monkeypatch.setattr(http_mod.requests, "get", fake_get)

@@ -17,7 +17,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1: FRED + CBOE done) |
+| 5 | Source expansion | In progress (Wave 1: FRED + CBOE + CFTC done) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
@@ -55,12 +55,15 @@ two-model strategy + coverage to sources/groups/licensing with a build order, an
 published nightly (via a read-only `./secrets` mount so the batch containers get the
 key), queryable server-lessly from any client with `qde.lake` `FROM series`.
 **Wave 1 #2 — the CBOE volatility complex (VIX/VVIX/SKEW EOD, `series`) is fully
-deployed**: `CboeIngestor` + `cboe` `SourceSpec`, 23,519 rows live in R2 (26 FRED +
-3 CBOE series now published nightly) and queryable server-lessly via `qde.lake`
-`FROM series`. No key needed (public CDN CSVs); it rode the existing
-`publish_series`/`daily_update` machinery with no new plumbing. **NEXT (resume
-point): Wave 1 #3 — CFTC COT** (`series`, weekly positioning from the Socrata
-public API), then crypto derivatives funding/OI/liquidations (#4).
+deployed**: 23,519 rows live in R2, queryable server-lessly via `qde.lake`.
+**Wave 1 #3 — CFTC COT positioning (`series`, multi-metric) has landed locally**:
+`CftcIngestor` + `cftc` `SourceSpec` (18 markets, TFF futures-only), 187,253 rows
+in the local lake across the schema's new `metric=` partitions. This is the first
+multi-metric source, so it forced a real (backward-compatible) infra change — the
+`series` view now unions the flat and metric partition depths (DuckDB rejects a
+single glob over both). **NEXT (resume point): publish CFTC to R2 + deploy, then
+Wave 1 #4 — crypto derivatives** (funding/OI/liquidations, the same `series`
+multi-metric shape COT just proved).
 
 ---
 
@@ -314,7 +317,30 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       verified **queryable from the laptop over R2** via `qde.lake` `FROM series`.
       No secret needed (public CDN), so simpler than FRED's deploy; the nightly
       `daily_update` now advances the CBOE watermarks and re-publishes.
-- [ ] CFTC COT positioning (`series`) — Wave 1 #3
+- [x] **CFTC COT positioning (`series`, multi-metric) — Wave 1 #3.** The first
+      source to use the schema's **`metric` partition**: `qde.ingest.cftc.CftcIngestor`
+      pulls the CFTC public-reporting Socrata API (Traders in Financial Futures,
+      futures-only, dataset `gpe5-46if`) for a curated 18-market positioning spine
+      (equity index, the Treasury curve + funding, the dollar + FX majors, VIX, and
+      CME BTC/ETH), each on a `cftc` `SourceSpec` whose symbol map is a real
+      canonical→native map (friendly ticker `ES` → CFTC code `13874A`). `load`
+      returns a **wide** frame — one column per trader-category metric (dealer /
+      asset-mgr / leveraged / other / nonreportable long+short, plus open interest,
+      11 in all) — which the new `storage.upsert_series_frame` splits into one
+      `metric=` file per column, preserving the universal `(date, value)` contract
+      per metric. SoQL filters by market+date server-side, so a caught-up pull is an
+      empty page → `NoNewData` (like FRED). **Infra change COT forced:** DuckDB
+      rejects a single glob spanning mixed hive depth ("Hive partition mismatch"),
+      so the `series` view — in both `storage.query` and `qde.lake` — now **unions a
+      flat glob (FRED/CBOE) with a metric glob (COT/perps) via `UNION ALL BY NAME`**
+      (metric=NULL on the flat side); `series_watermark` gained a cross-metric scan
+      (a market's metrics share report dates) and `update_series` routes through
+      `upsert_series_frame` so one weekly fetch advances all metrics. Offline tests
+      (ingestor 5; storage +4 incl. the mixed-depth union; lake +2); full suite 134
+      green. **Seeded locally: 187,253 rows** across 18 markets × 11 metrics (history
+      to 2006; RTY/BTC/ETH shorter), through the 2026-07-28 report, queryable via
+      `FROM series WHERE source='cftc'` alongside FRED/CBOE. **Not yet published to
+      R2 / deployed** (next).
 - [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4
 - [ ] Extend microstructure to a 2nd venue — Wave 1 #5
 - [ ] ccxt for unified exchange access (`bars`) — Wave 2
