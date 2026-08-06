@@ -17,7 +17,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | Not started |
+| 5 | Source expansion | In progress (Wave 1: FRED + CBOE done) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
@@ -54,8 +54,12 @@ two-model strategy + coverage to sources/groups/licensing with a build order, an
 `qde.sync`'s `__main__`). **FRED is live on the VPS**: 26 series in R2, refreshed +
 published nightly (via a read-only `./secrets` mount so the batch containers get the
 key), queryable server-lessly from any client with `qde.lake` `FROM series`.
-**NEXT (resume point): Wave 1 #2 — the volatility complex** (VIX/VVIX/SKEW EOD from
-CBOE, `series`). Then CFTC COT (#3), crypto derivatives (#4).
+**Wave 1 #2 — the CBOE volatility complex (VIX/VVIX/SKEW EOD, `series`) has landed
+locally**: `CboeIngestor` + `cboe` `SourceSpec`, seeded 23,519 rows into the local
+lake (queryable via `FROM series`). No key needed (public CDN CSVs); the same
+`publish_series`/`daily_update` machinery already carries it, so publishing to R2 +
+the VPS deploy are the only remaining steps. **NEXT (resume point): publish CBOE to
+R2 + deploy, then Wave 1 #3 — CFTC COT** (`series`), then crypto derivatives (#4).
 
 ---
 
@@ -287,7 +291,22 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       (commit `44b557c`); the BOM-robust loader reads it at `/app/secrets/fred.env`.
       Verified the nightly path finds the key with no `-e` (`daily_update_complete
       updated=34 failed=0`, all 26 FRED series "already up to date").
-- [ ] Volatility complex: VIX/VVIX/SKEW EOD from CBOE (`series`) — Wave 1 #2
+- [x] **Volatility complex: VIX/VVIX/SKEW EOD from CBOE (`series`) — Wave 1 #2.**
+      `qde.ingest.cboe.CboeIngestor` on a `series` `SourceSpec` (`name="cboe"`,
+      identity symbol map). CBOE's CDN serves each index's *whole* history as one
+      CSV (`{SYMBOL}_History.csv`) with no date parameter, so the ingestor
+      downloads the file and narrows to `[start, end]` client-side; a caught-up
+      slice is empty → `NoNewData`, reproducing FRED's "already up to date"
+      signal for the incremental `update_series` path. One uniform rule handles
+      the two CSV shapes (VIX carries OHLC, VVIX/SKEW a single value column):
+      **date = first column, EOD level = last column** (CLOSE for VIX). No API
+      key — the CSVs are public; `redistributable=True` for EOD levels (real-time
+      feed + options data are not; re-verify before publishing). Offline tests
+      (`tests/test_cboe_ingestor.py`, 7: shape, CLOSE-not-OPEN, single-column
+      parse, start/end filtering, caught-up→NoNewData, bad-series→ValueError);
+      full suite 123 green. **Seeded locally: 23,519 rows** — VIX 9,244 & SKEW
+      9,199 (from 1990), VVIX 5,076 (from 2006), all through 2026-08-05,
+      queryable via `FROM series`. **Not yet published to R2 / deployed** (next).
 - [ ] CFTC COT positioning (`series`) — Wave 1 #3
 - [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4
 - [ ] Extend microstructure to a 2nd venue — Wave 1 #5

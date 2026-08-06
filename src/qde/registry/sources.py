@@ -66,6 +66,13 @@ _FRED_SERIES: list[str] = [
     "DTWEXBGS",  # trade-weighted USD (broad)
 ]
 
+# The CBOE volatility complex for the `series` group: end-of-day levels for the
+# VIX (equity implied vol), VVIX (vol-of-vol) and SKEW (tail-risk) indices —
+# Model-1 volatility inputs (docs/data-sources.md §3.1). Served as public CSVs on
+# the CBOE CDN; EOD index *levels* are redistributable (the real-time feed and the
+# underlying options data are not). Each is `{SYMBOL}_History.csv`.
+_CBOE_SERIES: list[str] = ["VIX", "VVIX", "SKEW"]
+
 _SPECS: list[SourceSpec] = [
     SourceSpec(
         group="bars",
@@ -145,6 +152,27 @@ _SPECS: list[SourceSpec] = [
             "redistributable. NOTE: FRED also hosts third-party series (ICE, "
             "S&P/Case-Shiller) that are NOT redistributable; only government "
             "series are curated here. Re-verify per series before public publishing."
+        ),
+    ),
+    SourceSpec(
+        group="series",
+        name="cboe",
+        # CBOE index tickers are already the project-canonical identifier — identity map.
+        symbols={sid: sid for sid in _CBOE_SERIES},
+        # `intervals` is unused for `series` (frequency is a per-series property,
+        # not a pull parameter). Left at the default.
+        max_rows_per_call=None,  # the CDN serves the whole history in one CSV
+        rate_limit_per_min=None,  # static CDN files; no documented request budget
+        # An index level is present on every trading day, so a missing `value`
+        # would be a real defect (a parse failure or a dropped print), not a
+        # tolerated gap the way FRED's not-yet-published "." is — tolerate none.
+        null_tolerance={"value": 0.0},
+        redistributable=True,
+        license_note=(
+            "CBOE end-of-day volatility index levels (VIX / VVIX / SKEW), "
+            "published as free CSVs on the CBOE CDN. EOD index levels are "
+            "generally redistributable; the real-time feed and the underlying "
+            "options data are NOT. Re-verify CBOE's terms before public publishing."
         ),
     ),
 ]

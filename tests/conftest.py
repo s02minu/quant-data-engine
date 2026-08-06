@@ -132,3 +132,44 @@ def offline_fred(monkeypatch):
         return FakeResponse(payload=_fred_observations())
 
     monkeypatch.setattr(http_mod.requests, "get", fake_get)
+
+
+# CBOE volatility-index CSVs, keyed by ticker. VIX carries OHLC (value is the
+# last column, CLOSE, which differs from OPEN so a test can prove the right
+# column is picked); VVIX/SKEW carry a single value column. Dates are MM/DD/YYYY.
+_CBOE_CSVS = {
+    "VIX": (
+        "DATE,OPEN,HIGH,LOW,CLOSE\n"
+        "01/02/2024,12.000000,13.000000,11.500000,12.500000\n"
+        "01/03/2024,12.500000,14.000000,12.100000,13.750000\n"
+        "01/04/2024,13.750000,15.200000,13.600000,14.900000\n"
+    ),
+    "VVIX": (
+        "DATE,VVIX\n"
+        "01/02/2024,80.000000\n"
+        "01/03/2024,82.500000\n"
+        "01/04/2024,85.100000\n"
+    ),
+    "SKEW": (
+        "DATE,SKEW\n"
+        "01/02/2024,120.000000\n"
+        "01/03/2024,121.500000\n"
+        "01/04/2024,119.900000\n"
+    ),
+}
+
+
+@pytest.fixture
+def offline_cboe(monkeypatch):
+    """Serve a canned CBOE index CSV chosen by the URL's ``{SYMBOL}_History.csv``;
+    an unknown index returns a 404 as the CDN does. No API key — the CSVs are
+    public. The symbol is parsed from the filename so ``VIX`` is not mistaken for
+    the ``VVIX`` file (``VIX_History.csv`` is a substring of ``VVIX_History.csv``)."""
+
+    def fake_get(url, params):
+        symbol = url.rsplit("/", 1)[-1].split("_")[0]
+        if symbol not in _CBOE_CSVS:
+            return FakeResponse(status_code=404, text="Not Found")
+        return FakeResponse(text=_CBOE_CSVS[symbol])
+
+    monkeypatch.setattr(http_mod.requests, "get", fake_get)
