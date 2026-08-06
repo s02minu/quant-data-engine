@@ -17,7 +17,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1: FRED + CBOE + CFTC done) |
+| 5 | Source expansion | In progress (Wave 1: FRED/CBOE/CFTC/Binance-perp done; #5 left) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
@@ -61,9 +61,13 @@ deployed**: 23,519 rows live in R2, queryable server-lessly via `qde.lake`.
 live in R2 (227 series files now published nightly) and queryable server-lessly
 via `qde.lake`. As the first multi-metric source it forced a real (backward-
 compatible) infra change — the `series` view now unions the flat and metric
-partition depths (DuckDB rejects a single glob over both). **NEXT (resume point):
-Wave 1 #4 — crypto derivatives** (funding/OI/liquidations, the same `series`
-multi-metric shape COT just proved).
+partition depths (DuckDB rejects a single glob over both). **Wave 1 #4 — Binance
+perp funding (`series`, multi-metric) has landed locally**: `BinanceFuturesIngestor`
++ `binancefut` `SourceSpec`, 42,874 rows (funding_rate + mark_price per 8h
+settlement, since the 2019 listing), reusing COT's machinery unchanged; OI and
+liquidations are scoped out (no usable public REST history — see the checklist).
+**NEXT (resume point): publish binancefut to R2 + deploy, then Wave 1 #5 — extend
+microstructure to a 2nd venue** (Coinbase/Bybit), the last Wave 1 item.
 
 ---
 
@@ -347,7 +351,25 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       works over httpfs, all three series sources coexisting in one `series` view.
       No secret (public Socrata); the nightly `daily_update` now advances the 18
       COT markets weekly and re-publishes.
-- [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4
+- [x] **Crypto derivatives: Binance perp funding (`series`, multi-metric) — Wave 1 #4.**
+      `qde.ingest.binance_futures.BinanceFuturesIngestor` pulls Binance USD-M
+      perpetual funding history (public `fapi.binance.com/fapi/v1/fundingRate`) as a
+      multi-metric series — per 8h settlement the `funding_rate` and settlement
+      `mark_price` — reusing COT's machinery verbatim (`upsert_series_frame` +
+      the mixed-depth union view). A new `binancefut` `series` `SourceSpec` (BTC/ETH/
+      SOLUSDT, exchange-native → redistributable, no key), distinct from the spot
+      `binance` bars source (one spec = one group). Time-cursor pagination mirrors
+      the spot klines ingestor (page from last settlement + 1ms; short page stops);
+      the endpoint filters by `startTime`, so a caught-up pull is empty →
+      `NoNewData`. Offline tests (4: wide shape, value/NaN-markprice, multi-page
+      pagination, caught-up→NoNewData); full suite 138 green. **Seeded locally:
+      42,874 rows** (BTC 15,136 / ETH 14,668 / SOL 13,070 = settlements×2 metrics,
+      history to the 2019 perp listing), queryable via `FROM series
+      WHERE source='binancefut'` beside FRED/CBOE/CFTC. **Not yet published to R2 /
+      deployed** (next). **Scoped out, with reason:** open interest has only ~30d of
+      REST history (a forward-snapshot job, not a backfill) and liquidations have no
+      public historical REST (`allForceOrders` 404s — a streaming `!forceOrder`
+      concern). Funding is the one perp series with clean, complete public history.
 - [ ] Extend microstructure to a 2nd venue — Wave 1 #5
 - [ ] ccxt for unified exchange access (`bars`) — Wave 2
 - [ ] Economic calendar (`events`) — FRED/ALFRED core free; forecast column code-only

@@ -232,6 +232,28 @@ _SPECS: list[SourceSpec] = [
             "multi-metric positioning (trader-category long/short + open interest)."
         ),
     ),
+    SourceSpec(
+        group="series",
+        name="binancefut",
+        # Binance USD-M perps use the project-canonical spelling — identity map.
+        # This is the derivatives feed, distinct from the spot `binance` bars source.
+        symbols={"BTCUSDT": "BTCUSDT", "ETHUSDT": "ETHUSDT", "SOLUSDT": "SOLUSDT"},
+        max_rows_per_call=1000,  # the fundingRate endpoint's page cap
+        rate_limit_per_min=1200,  # fapi request-weight budget; a funding call is cheap
+        # Funding settles every 8h -> 3 rows/day per metric (a DQ hint; not enforced
+        # until Phase 9). mark_price is NaN for the earliest settlements, so tolerate
+        # value nulls like FRED rather than flag them as a defect.
+        expected_daily_rows=3,
+        null_tolerance={"value": 1.0},
+        redistributable=True,
+        license_note=(
+            "Binance USD-M perpetual funding rate + settlement mark price "
+            "(public fapi REST); exchange-native and generally redistributable. "
+            "Open interest (~30d REST history) and liquidations (no public REST, "
+            "streaming only) are deliberately not included here — see the ingestor. "
+            "Verify Binance API terms before public publishing."
+        ),
+    ),
 ]
 
 # Registry indexed by source name for O(1) lookup. Names are unique by construction.

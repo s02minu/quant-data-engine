@@ -7,6 +7,7 @@ a source name to a ready-to-use ingestor via the registry.
 
 from qde.ingest.base import BaseIngestor, RawPage
 from qde.ingest.binance import BinanceIngestor
+from qde.ingest.binance_futures import BinanceFuturesIngestor
 from qde.ingest.cboe import CboeIngestor
 from qde.ingest.cftc import CftcIngestor
 from qde.ingest.fred import FredIngestor
@@ -25,6 +26,7 @@ _INGESTORS: dict[str, type[BaseIngestor]] = {
     "fred": FredIngestor,
     "cboe": CboeIngestor,
     "cftc": CftcIngestor,
+    "binancefut": BinanceFuturesIngestor,
 }
 
 

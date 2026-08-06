@@ -216,3 +216,34 @@ def offline_cftc(monkeypatch):
         return FakeResponse(payload=rows)
 
     monkeypatch.setattr(http_mod.requests, "get", fake_get)
+
+
+def _funding_rows():
+    """Three 8-hourly Binance perp funding settlements (2024-01-01 00/08/16h). The
+    first omits markPrice (empty string, as the earliest real history does) -> NaN;
+    the funding rates differ so a column-mapping mistake would surface."""
+    def row(ms, rate, mark):
+        return {"symbol": "BTCUSDT", "fundingTime": ms, "fundingRate": rate, "markPrice": mark}
+
+    return [
+        row(1704067200000, "0.0001", ""),  # 2024-01-01 00:00, markPrice missing -> NaN
+        row(1704096000000, "0.0002", "42000.0"),  # 08:00
+        row(1704124800000, "-0.0003", "42500.0"),  # 16:00
+    ]
+
+
+@pytest.fixture
+def offline_binance_futures(monkeypatch):
+    """Serve canned Binance perp funding, honoring startTime/endTime/limit so both
+    the caught-up (-> NoNewData) and the multi-page pagination paths are exercised
+    against the same fake. No API key — the fapi endpoint is public."""
+
+    def fake_get(url, params):
+        rows = [
+            r
+            for r in _funding_rows()
+            if params["startTime"] <= r["fundingTime"] <= params["endTime"]
+        ]
+        return FakeResponse(payload=rows[: params["limit"]])
+
+    monkeypatch.setattr(http_mod.requests, "get", fake_get)
