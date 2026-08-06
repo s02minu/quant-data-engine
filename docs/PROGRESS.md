@@ -396,7 +396,11 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       caught-up→NoNewData); full suite 157 green. **Seeded locally: 30,986 rows**
       across 12 new series — coinbase 8,887 & okx 8,396 & kucoin 8,234 (history to
       each venue's listing), bybit 5,469 (from 2021) — cross-venue BTC agrees to
-      ~0.1%. **Not yet published to R2 / deployed** (next).
+      ~0.1%. **Deployed to the VPS (2026-08-07)**: ff to `c78c1de`, image rebuilt
+      (ccxt dependency), all 4 venues reachable from the EU box, seeded there
+      (30,986 rows), published to R2 (`publish_bars_complete published=20` — 8 +
+      12 new), verified **queryable from the laptop over R2** (7 venues in `bars`).
+      The nightly `daily_update` now advances all 12 via the same watermark path.
 - [ ] Economic calendar (`events`) — FRED/ALFRED core free; forecast column code-only
 - [ ] Equities (`bars`) — code-only; corporate actions are the pressure point
 
