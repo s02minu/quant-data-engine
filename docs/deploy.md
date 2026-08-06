@@ -19,9 +19,14 @@ Three steps, all as one-off `docker compose run --rm collector …` containers:
 
 1. **Bars + series update** — `python -m qde.daily_update`: watermark-driven
    incremental pull of every stored bar *and* scalar series, then rebuilds
-   `quality_summary.csv`. The series half (FRED) needs `FRED_API_KEY`; the entry
-   point loads it from `secrets/fred.env`, which reaches the container via the
-   read-only `./secrets` mount (see below).
+   `quality_summary.csv`, then runs the **data-quality pass** (`qde.checks`:
+   registry-driven freshness + null-tolerance checks over every seeded series) and,
+   if there is a fetch failure or a DQ violation, posts a **health alert** to a
+   Discord webhook (`qde.alert`). The series half (FRED) needs `FRED_API_KEY`; the
+   entry point loads it — and the optional `QDE_DISCORD_WEBHOOK` — from
+   `secrets/*.env`, which reach the container via the read-only `./secrets` mount
+   (see below). The job still exits 0 even on a DQ violation, so a stale series
+   never blocks the compact/sync that follow — the alert is what surfaces it.
 2. **Compaction** — `python -m qde.compact`: merges the many small microstructure
    part files in settled partitions.
 3. **Sync** — `python -m qde.sync`: ships settled microstructure to R2 and prunes
@@ -84,6 +89,28 @@ The key reaches the container through the `./secrets` mount, so no `-e` is
 needed. Expect `backfill_complete group=series series=26`. Thereafter the nightly
 `daily_update` advances each series' watermark and `qde.sync` publishes them to
 R2 (`publish_series_complete published=26`).
+
+## Health alerts (optional)
+
+The nightly job posts a Discord alert when a source fails to fetch or a
+data-quality check trips (freshness / null tolerance) — and stays silent
+otherwise. To enable it:
+
+1. In your Discord server: **Server Settings → Integrations → Webhooks → New
+   Webhook**, pick a channel, and **Copy Webhook URL**.
+2. Place it on the VPS as a single line, deploy-owned and `600`, the same way as
+   the FRED key:
+
+   ```bash
+   printf 'QDE_DISCORD_WEBHOOK=%s\n' 'https://discord.com/api/webhooks/…' \
+     > /tmp/discord.env.staged
+   install -o deploy -g deploy -m 600 /tmp/discord.env.staged secrets/discord.env
+   ```
+
+The `./secrets` mount delivers it to the batch container; `daily_update` loads it
+with no `-e` plumbing. Without the file, alerting is a logged no-op and everything
+else runs unchanged. Test it by hand with a run that has something to report, or
+just wait for the next nightly.
 
 ## Verifying
 

@@ -21,8 +21,8 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
-| 9 | Data quality | Not started |
-| 10 | Observability | Not started |
+| 9 | Data quality | In progress (registry-driven freshness + null checks live) |
+| 10 | Observability | In progress (Discord health alerts live) |
 | 11 | CI/CD | Not started |
 | 12 | Catalogue and publishing | Not started |
 
@@ -494,10 +494,23 @@ kinds. Relevant to the retention question in ROADMAP §11.
 
 ## Phase 9 — Data quality
 
-- [ ] Pandera schemas at the bronze boundary, thresholds from the registry
-- [ ] dbt tests: not_null, unique, accepted_values
+- [x] **Registry-driven checks that run every night (`qde.checks`).** Walks the
+      seeded lake and tests each series against the contract its `SourceSpec`
+      already declares — the thresholds that configure the ingestors, now enforced.
+      Two checks: **freshness** (is the series stale?) and **null rate** (does a
+      column breach its `null_tolerance`?). Returns structured `Violation`s;
+      `daily_update` logs them and feeds them to the alert.
+- [x] **Freshness without per-series frequency metadata.** A fixed "N days old"
+      rule is wrong the moment sources differ (daily CBOE, weekly CFTC, 8-hourly
+      funding, monthly/quarterly FRED). Instead staleness is judged against each
+      series' *own* recent spacing (a high percentile × a generous factor), so the
+      check self-calibrates per series. The `3×` factor is deliberate: many series
+      are dated by period *start* but published with a lag (June CPI lands mid-July,
+      dated 06-01), so a ~2-month-old monthly observation is current, not stale —
+      verified it does not false-positive on the live FRED monthly spine.
+- [ ] Pandera schemas at the bronze boundary (row-level contract) — later
+- [ ] dbt tests: not_null, unique, accepted_values — after dbt (Phase 8)
 - [ ] Custom financial tests: OHLC coherence, gap limits, bitemporal ordering
-- [ ] Freshness SLAs per source
 - [ ] Data quality policy documented
 
 ### Microstructure checks
@@ -515,7 +528,15 @@ streaming equivalents:
 
 ## Phase 10 — Observability
 
-- [ ] Failure alerts (Discord webhook)
+- [x] **Failure + staleness alerts (Discord webhook, `qde.alert`).** `daily_update`
+      collects fetch-failure *details* (not just a count) and runs the DQ pass, then
+      posts a compact health summary to a Discord webhook — but only when there is a
+      failure or a violation, so a clean night stays silent (an alert that fires
+      nightly trains you to ignore it). The webhook URL loads from a gitignored
+      `secrets/discord.env` via the same read-only mount as the FRED key; with none
+      set the sender is a logged no-op, so the pipeline is unchanged on a box that
+      hasn't opted in. The nightly exit stays 0 so a DQ issue never blocks the
+      compact/sync in `maintain.sh` — the *alert* is what surfaces it, not a crash.
 - [ ] Metrics over the data: row counts per partition, ingestion lag, error rates
 - [ ] Pipeline-health page
 

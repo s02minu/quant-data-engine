@@ -16,6 +16,7 @@ and the mounted ``/data`` volume on the VPS.
 
 import os
 
+from qde.checks import run_checks
 from qde.env import load_env_file
 from qde.log import configure, get_logger
 from qde.quality import build_quality_summary
@@ -60,13 +61,18 @@ def _log_registry_drift(base_dir: str) -> None:
 
 
 def run(base_dir: str = "data") -> dict:
-    """Update every stored bar and scalar series, then rebuild the quality summary.
+    """Update every stored bar and scalar series, then run the quality checks.
+
+    Collects the *details* of any fetch failure (not just a count) and, after the
+    quality-summary rebuild, runs the registry-driven data-quality pass
+    (``qde.checks``) so freshness/null violations are surfaced alongside failures.
 
     Returns:
-        dict: counts of series updated vs. skipped after a failure.
+        dict: ``updated`` count, ``failed`` count, the ``failures`` details, and
+        the ``violations`` from the quality pass — enough for a caller to alert on.
     """
     updated = 0
-    failed = 0
+    failures: list[dict] = []
 
     bars = list_bars_series(base_dir)
     for symbol, source, interval in zip(
@@ -75,6 +81,14 @@ def run(base_dir: str = "data") -> dict:
         try:
             update_ohlcv(symbol, source=source, interval=interval, base_dir=base_dir)
         except Exception as exc:
+            failures.append(
+                {
+                    "group": "bars",
+                    "label": f"{source}/{symbol}/{interval}",
+                    "error": type(exc).__name__,
+                    "detail": str(exc),
+                }
+            )
             log.warning(
                 "update_failed",
                 group="bars",
@@ -84,7 +98,6 @@ def run(base_dir: str = "data") -> dict:
                 error=type(exc).__name__,
                 detail=str(exc),
             )
-            failed += 1
             continue
 
         updated += 1
@@ -95,6 +108,14 @@ def run(base_dir: str = "data") -> dict:
         try:
             update_series(series_id, source=source, base_dir=base_dir)
         except Exception as exc:
+            failures.append(
+                {
+                    "group": "series",
+                    "label": f"{source}/{series_id}",
+                    "error": type(exc).__name__,
+                    "detail": str(exc),
+                }
+            )
             log.warning(
                 "update_failed",
                 group="series",
@@ -103,7 +124,6 @@ def run(base_dir: str = "data") -> dict:
                 error=type(exc).__name__,
                 detail=str(exc),
             )
-            failed += 1
             continue
 
         updated += 1
@@ -111,16 +131,58 @@ def run(base_dir: str = "data") -> dict:
 
     _log_registry_drift(base_dir)
     build_quality_summary(base_dir)
-    return {"updated": updated, "failed": failed}
+
+    # Data-quality pass: freshness + null tolerance against each source's registry
+    # contract. Read-only; a violation is logged here and surfaced by main()'s
+    # alert, never fatal (a stale series must not block the compact/sync that
+    # follows in maintain.sh).
+    violations = run_checks(base_dir)
+    for v in violations:
+        log.warning(
+            "dq_violation",
+            group=v.group,
+            series=v.label(),
+            check=v.check,
+            severity=v.severity,
+            detail=v.detail,
+        )
+
+    return {
+        "updated": updated,
+        "failed": len(failures),
+        "failures": failures,
+        "violations": violations,
+    }
 
 
 def main() -> None:
     configure()
     # Load any series-source key (FRED) so the series update can run; a value
-    # already exported (or set on the VPS) still wins.
+    # already exported (or set on the VPS) still wins. The optional Discord webhook
+    # for health alerts loads the same way (no-op if the file is absent).
     load_env_file("secrets/fred.env")
-    summary = run(os.getenv("QDE_BASE_DIR", "data"))
-    log.info("daily_update_complete", updated=summary["updated"], failed=summary["failed"])
+    load_env_file("secrets/discord.env")
+
+    base_dir = os.getenv("QDE_BASE_DIR", "data")
+    summary = run(base_dir)
+    log.info(
+        "daily_update_complete",
+        updated=summary["updated"],
+        failed=summary["failed"],
+        violations=len(summary["violations"]),
+    )
+
+    # Surface problems: alert only when there is a fetch failure or a DQ violation,
+    # so a clean night stays silent. The exit stays 0 regardless, so maintain.sh
+    # proceeds to compact + sync.
+    if summary["failures"] or summary["violations"]:
+        from qde.alert import format_health, send_discord
+
+        send_discord(
+            format_health(
+                summary["updated"], summary["failures"], summary["violations"], base_dir=base_dir
+            )
+        )
 
 
 if __name__ == "__main__":

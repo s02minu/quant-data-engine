@@ -30,7 +30,7 @@ def test_run_updates_series_and_writes_summary(tmp_path, offline_binance):
 
     summary = run(str(tmp_path))
 
-    assert summary == {"updated": 1, "failed": 0}
+    assert summary["updated"] == 1 and summary["failed"] == 0
     assert (Path(tmp_path) / "quality_summary.csv").exists()
 
 
@@ -49,7 +49,7 @@ def test_run_counts_no_new_data_as_updated(tmp_path, monkeypatch):
 
     summary = run(str(tmp_path))
 
-    assert summary == {"updated": 1, "failed": 0}
+    assert summary["updated"] == 1 and summary["failed"] == 0
     assert (Path(tmp_path) / "quality_summary.csv").exists()
 
 
@@ -68,7 +68,10 @@ def test_run_counts_loader_error_as_failed(tmp_path, monkeypatch):
 
     summary = run(str(tmp_path))
 
-    assert summary == {"updated": 0, "failed": 1}
+    assert summary["updated"] == 0 and summary["failed"] == 1
+    # The failure detail (not just a count) is captured for alerting.
+    assert summary["failures"][0]["label"] == "binance/BTCUSDT/1d"
+    assert "Invalid symbol" in summary["failures"][0]["detail"]
     assert (Path(tmp_path) / "quality_summary.csv").exists()
 
 
@@ -83,7 +86,7 @@ def test_run_updates_a_seeded_series(tmp_path, offline_fred):
 
     summary = run(str(tmp_path))
 
-    assert summary == {"updated": 1, "failed": 0}
+    assert summary["updated"] == 1 and summary["failed"] == 0
     assert (Path(tmp_path) / "quality_summary.csv").exists()
 
 
@@ -101,5 +104,5 @@ def test_run_skips_a_failing_series(tmp_path, monkeypatch):
 
     summary = run(str(tmp_path))
 
-    assert summary == {"updated": 0, "failed": 1}
+    assert summary["updated"] == 0 and summary["failed"] == 1
     assert (Path(tmp_path) / "quality_summary.csv").exists()
