@@ -56,12 +56,12 @@ published nightly (via a read-only `./secrets` mount so the batch containers get
 key), queryable server-lessly from any client with `qde.lake` `FROM series`.
 **Wave 1 #2 — the CBOE volatility complex (VIX/VVIX/SKEW EOD, `series`) is fully
 deployed**: 23,519 rows live in R2, queryable server-lessly via `qde.lake`.
-**Wave 1 #3 — CFTC COT positioning (`series`, multi-metric) has landed locally**:
+**Wave 1 #3 — CFTC COT positioning (`series`, multi-metric) is fully deployed**:
 `CftcIngestor` + `cftc` `SourceSpec` (18 markets, TFF futures-only), 187,253 rows
-in the local lake across the schema's new `metric=` partitions. This is the first
-multi-metric source, so it forced a real (backward-compatible) infra change — the
-`series` view now unions the flat and metric partition depths (DuckDB rejects a
-single glob over both). **NEXT (resume point): publish CFTC to R2 + deploy, then
+live in R2 (227 series files now published nightly) and queryable server-lessly
+via `qde.lake`. As the first multi-metric source it forced a real (backward-
+compatible) infra change — the `series` view now unions the flat and metric
+partition depths (DuckDB rejects a single glob over both). **NEXT (resume point):
 Wave 1 #4 — crypto derivatives** (funding/OI/liquidations, the same `series`
 multi-metric shape COT just proved).
 
@@ -339,8 +339,14 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       (ingestor 5; storage +4 incl. the mixed-depth union; lake +2); full suite 134
       green. **Seeded locally: 187,253 rows** across 18 markets × 11 metrics (history
       to 2006; RTY/BTC/ETH shorter), through the 2026-07-28 report, queryable via
-      `FROM series WHERE source='cftc'` alongside FRED/CBOE. **Not yet published to
-      R2 / deployed** (next).
+      `FROM series WHERE source='cftc'` alongside FRED/CBOE. **Deployed to the VPS
+      (2026-08-06)**: ff to `9a1717b`, image rebuilt (the view fix touches
+      storage/lake), seeded on the box (18 markets, 187,253 rows), published to R2
+      (`publish_series_complete published=227` — 26 FRED + 3 CBOE + 198 CFTC), and
+      verified **queryable from the laptop over R2** — the mixed-depth union view
+      works over httpfs, all three series sources coexisting in one `series` view.
+      No secret (public Socrata); the nightly `daily_update` now advances the 18
+      COT markets weekly and re-publishes.
 - [ ] Crypto derivatives: funding / OI / liquidations (`series`) — Wave 1 #4
 - [ ] Extend microstructure to a 2nd venue — Wave 1 #5
 - [ ] ccxt for unified exchange access (`bars`) — Wave 2
