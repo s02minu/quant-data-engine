@@ -4,6 +4,7 @@ services:
     image: qde-collector
     restart: unless-stopped
     environment:
+      QDE_SOURCE: binance
       QDE_BASE_DIR: /data
       QDE_SYMBOLS: BTCUSDT,ETHUSDT,SOLUSDT
       QDE_KINDS: trades,depth,book_ticker
@@ -15,4 +16,21 @@ services:
       # the nightly cron refreshes the series group without extra plumbing. The
       # BOM-robust loader tolerates a PowerShell-written file; missing files no-op.
       - ./secrets:/app/secrets:ro
+    stop_grace_period: 30s
+
+  # Second microstructure venue: Coinbase's public feed, same collector image
+  # driven by a different venue adapter (QDE_SOURCE). Writes to the SAME /data
+  # lake -- the source= partition keeps it separate from Binance, so the one
+  # nightly compact+sync ships both venues. No secrets mount: the feed is public.
+  collector-coinbase:
+    build: .
+    image: qde-collector
+    restart: unless-stopped
+    environment:
+      QDE_SOURCE: coinbase
+      QDE_BASE_DIR: /data
+      QDE_SYMBOLS: BTCUSDT,ETHUSDT,SOLUSDT
+      QDE_KINDS: trades,depth,book_ticker
+    volumes:
+      - ./data:/data
     stop_grace_period: 30s

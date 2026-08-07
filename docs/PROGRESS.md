@@ -17,7 +17,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1 done bar #5; Wave 2 #6 ccxt done) |
+| 5 | Source expansion | In progress (Wave 1 #5 Coinbase code-done, deploying; Wave 2 #6 ccxt done) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
@@ -66,9 +66,12 @@ perp funding (`series`, multi-metric) is fully deployed**: `BinanceFuturesIngest
 + `binancefut` `SourceSpec`, 42,874 rows live in R2 (233 series files now published
 nightly), reusing COT's machinery unchanged (purely additive — no storage/lake
 changes); OI and liquidations are scoped out (no usable public REST history — see
-the checklist). **NEXT (resume point): Wave 1 #5 — extend microstructure to a 2nd
-venue** (Coinbase/Bybit), the last Wave 1 item, and the only non-`series` one (a new
-WS collector on the existing streaming pattern).
+the checklist). **Wave 1 #5 — 2nd microstructure venue (Coinbase) is code-complete
++ live-verified locally**: the collector gained a `VenueAdapter` seam (Binance
+behavior-unchanged, `CoinbaseAdapter` added). **NEXT (resume point): deploy
+`collector-coinbase` to the VPS** (ff, rebuild, `up -d`; verify Coinbase reachable
+from the EU box + files land in R2), then a schema/doc pass for the per-venue
+microstructure shape.
 
 ---
 
@@ -377,7 +380,45 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       REST history (a forward-snapshot job, not a backfill) and liquidations have no
       public historical REST (`allForceOrders` 404s — a streaming `!forceOrder`
       concern). Funding is the one perp series with clean, complete public history.
-- [ ] Extend microstructure to a 2nd venue — Wave 1 #5
+- [~] **Extend microstructure to a 2nd venue: Coinbase (`microstructure`) — Wave 1 #5.**
+      **Code complete + live-verified locally; VPS deploy pending.** The streaming
+      collector was refactored behind a **`VenueAdapter` seam** (`qde.stream.venues`),
+      mirroring the batch `BaseIngestor` split: the loop keeps everything
+      venue-neutral (buffering, timed flush, reconnect/backoff, sequence-gap
+      tracking, session markers, bronze layout) and each venue supplies an adapter
+      (`native_symbol` / `ws_url` / `subscribe_frames` / `max_frame_bytes` /
+      `rest_snapshots` / `route`). Binance moved onto the seam **behavior-unchanged**
+      (`config.stream_names` + `parsers` untouched; the 20 stream tests stayed
+      green). The new `CoinbaseAdapter` speaks Coinbase Exchange's public, no-auth
+      feed (`wss://ws-feed.exchange.coinbase.com`) — channels `matches`→trades,
+      `level2_batch`→depth (the full `level2` now needs auth), `ticker`→book_ticker,
+      plus `heartbeat`. **Three protocol differences it absorbs, all live-confirmed
+      by probe:** (1) subscription is a post-connect frame, not a URL; (2) the order
+      book anchors **inline** (a >1 MiB full snapshot on every connect — trips the
+      `websockets` default 1 MiB frame limit, so `max_frame_bytes` is raised to
+      16 MiB — so the REST-snapshot loop is a no-op for Coinbase); (3) `l2update`
+      diffs carry **no update id**, so per-message depth continuity is skipped (the
+      gap check tolerates the missing ids) and depth re-anchors from the inline
+      snapshot, while trades stay contiguous by `trade_id`, ticker orders by
+      `sequence`, and `heartbeat` (captured as its own kind, `last_trade_id` +
+      `sequence`) is the quiet-market liveness beacon. Symbols map to canonical
+      `BTCUSDT` (Coinbase `BTC-USD` → same partition as Binance, `source=`
+      distinguishes the USD/USDT book — the basis signal), same convention the bars
+      layer uses. Bronze stays per-venue faithful (Coinbase sends string prices +
+      ISO-8601 times; kept as sent, silver reconciles). Offline tests
+      (`tests/test_stream_coinbase.py`, 15, built from live-captured payloads: symbol
+      map, each parser, route dispatch + ack-ignore + error-raise, subscribe channel
+      mapping, unsequenced-depth tolerance, trade-id gap, full-collector capture to
+      bronze); full suite **172 green**, ruff + mypy clean. **Live-verified locally**
+      via the real `python -m qde.stream` (QDE_SOURCE=coinbase): all six kinds
+      captured to bronze under `source=coinbase` — trades (trade_id contiguous, 0
+      gaps), depth, book_ticker, the 45k-level inline snapshot, heartbeat, session —
+      Coinbase BTC/USD mid queried back beside Binance in one `symbol=BTCUSDT`
+      partition. A `collector-coinbase` service was added to `docker-compose.yml`
+      (same image, different `QDE_SOURCE`, shared `/data` lake so the one nightly
+      compact+sync ships both venues; no secrets mount — public feed). **Remaining:
+      deploy to the VPS** (ff, rebuild, `up -d collector-coinbase`; verify Coinbase
+      reachable from the EU box + files land in R2), then schema/doc pass.
 - [x] **ccxt for unified exchange access (`bars`) — Wave 2 #6.** One shared
       `qde.ingest.ccxt_bars.CcxtIngestor` drives ccxt's unified `fetch_ohlcv`
       against any venue, so a new exchange is a registry row, not a module. Added
