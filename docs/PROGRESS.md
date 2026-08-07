@@ -402,7 +402,14 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       12 new), verified **queryable from the laptop over R2** (7 venues in `bars`).
       The nightly `daily_update` now advances all 12 via the same watermark path.
 - [ ] Economic calendar (`events`) — FRED/ALFRED core free; forecast column code-only
-- [ ] Equities (`bars`) — code-only; corporate actions are the pressure point
+- [ ] Equities (`bars`) — code-only; corporate actions are the pressure point.
+      **Wave 2 #7, deferred (2026-08-07).** yfinance already covers equities
+      (code-only, deployed). **Stooq is out** — it now serves a JavaScript
+      proof-of-work bot challenge (`/__verify`), so an automated ingestor would be
+      bypassing bot-detection (declined) and fragile regardless. The clean code-only
+      path is **Tiingo** (documented REST EOD API), which needs a free API key like
+      FRED — build + live-verify it once a key is available (`secrets/tiingo.env`),
+      `redistributable=False` so it stays code-only.
 
 ## Phase 6 — Streaming and backfills *(current)*
 
