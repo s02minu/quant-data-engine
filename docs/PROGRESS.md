@@ -644,13 +644,20 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
       `Path` chains) for readability and lint already passes. README carries the
       status badge.
       **The floor moved 3.11 → 3.12** (matches the `python:3.12-slim` Docker image;
-      3.11 was never actually run). Two first-run failures forced it, both from
-      installing latest deps fresh: (1) **numpy 2.5+ requires Python ≥3.12 and its
-      stub uses PEP-695 `type X =` syntax**, which mypy rejects unless
-      `python_version >= "3.12"` — so `pyproject` now pins mypy/ruff target to 3.12;
-      (2) the phantom 3.11 job pulled an older numpy that broke a test. Verified the
-      fix cross-version: mypy clean under 3.12 with numpy 2.5.1, and the full suite
-      green on a clean 3.13 venv (proxy for the 3.12 job) and on 3.14.
+      3.11 was never actually run). The first runs surfaced two real, unrelated
+      issues: **(1) mypy** — numpy 2.5+ requires Python ≥3.12 and its stub uses
+      PEP-695 `type X =` syntax, which mypy rejects unless `python_version >= "3.12"`,
+      so `pyproject` pins mypy/ruff target to 3.12. **(2) pytest** — three
+      `test_storage.py` tests (`save`/`load`/`update`) hit **`api.binance.com` live**
+      because they used `save_ohlcv`/`update_ohlcv` without the `offline_binance`
+      fixture. They passed from the EU dev machine but Binance **geo-blocks GitHub's
+      US-based runners** — the same US-IP restriction the whole project's EU VPS
+      exists to dodge. Fixed to mock the fetch (fixture / `storage.load_ohlcv` patch),
+      like the other loader tests. **Durable rule: the suite must be fully offline;
+      the `offline_*` fixtures are per-test opt-in, so any new test touching
+      `load_ohlcv`/`save_ohlcv`/`update_ohlcv` must mock the network or it will pass
+      locally and fail in CI.** Verified with a `docker run --network none` full-suite
+      pass (181) on Linux 3.12, plus mypy clean under 3.12 with numpy 2.5.1.
 - [ ] dbt build against sample data in CI — after dbt (Phase 8)
 - [ ] Deploy on merge
 

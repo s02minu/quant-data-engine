@@ -28,8 +28,10 @@ def _sample_bars(dates, close=1.5):
     )
 
 
-# Assert the called file exists on disk
-def test_save_create_file(tmp_path):
+# Assert the saved file exists on disk. offline_binance mocks the klines fetch so
+# save_ohlcv exercises the fetch->save path without touching the live API — these
+# tests otherwise reached api.binance.com and only passed from a non-US IP.
+def test_save_create_file(offline_binance, tmp_path):
     path = save_ohlcv(
         symbol="BTCUSDT",
         source="binance",
@@ -40,7 +42,7 @@ def test_save_create_file(tmp_path):
     assert Path(path).exists()
 
 
-def test_load_reads_saved_file(tmp_path):
+def test_load_reads_saved_file(offline_binance, tmp_path):
     # Save first
     save_ohlcv(
         "BTCUSDT", source="binance", start="2024-01-01", end="2024-01-05", base_dir=str(tmp_path)
@@ -53,19 +55,21 @@ def test_load_reads_saved_file(tmp_path):
     assert list(df.columns) == ["open", "high", "low", "close", "volume"]
 
 
-def test_update_add_new_data(tmp_path):
-    # Save a small initial dataset
-    save_ohlcv(
-        "BTCUSDT", source="binance", start="2024-01-01", end="2024-01-05", base_dir=str(tmp_path)
+def test_update_add_new_data(tmp_path, monkeypatch):
+    # Seed two days, then have the loader return later days; the watermark-driven
+    # update should fetch past the last stored date and grow the series. The loader
+    # is mocked (like the other update tests) so this never hits the live API.
+    upsert_bars(
+        _sample_bars(["2024-01-01", "2024-01-02"]), "BTCUSDT", "binance", base_dir=str(tmp_path)
     )
-
-    # Check initial row count
     df_before = load_ohlcv_local("BTCUSDT", source="binance", base_dir=str(tmp_path))
 
-    # Update - should fetch data after Jan 5
+    def newer(*args, **kwargs):
+        return _sample_bars(["2024-01-03", "2024-01-04"])
+
+    monkeypatch.setattr(storage, "load_ohlcv", newer)
     update_ohlcv("BTCUSDT", source="binance", base_dir=str(tmp_path))
 
-    # Check row count grew
     df_after = load_ohlcv_local("BTCUSDT", source="binance", base_dir=str(tmp_path))
     assert len(df_after) > len(df_before)
 
