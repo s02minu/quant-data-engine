@@ -6,9 +6,11 @@ how `qde.ingest.get_ingestor` resolves a batch source from the registry.
 
 from qde.stream.venues.base import VenueAdapter
 from qde.stream.venues.binance import BinanceAdapter
+from qde.stream.venues.coinbase import CoinbaseAdapter
 
 _ADAPTERS: dict[str, type[VenueAdapter]] = {
     BinanceAdapter.name: BinanceAdapter,
+    CoinbaseAdapter.name: CoinbaseAdapter,
 }
 
 

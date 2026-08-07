@@ -139,7 +139,12 @@ class SequenceTracker:
             current = row["trade_id"]
             expected_start = current
         elif kind == "depth":
-            # The chain runs final_update_id -> next first_update_id.
+            # The chain runs final_update_id -> next first_update_id. Venues
+            # whose diff stream carries no per-message update id (Coinbase's
+            # level2_batch) cannot be checked this way; they re-anchor from the
+            # inline snapshot on reconnect and lean on the heartbeat instead.
+            if "final_update_id" not in row:
+                return None
             current = row["final_update_id"]
             expected_start = row["first_update_id"]
         elif kind == "book_ticker":
