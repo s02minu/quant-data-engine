@@ -23,7 +23,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 8 | Transformations with dbt | Not started |
 | 9 | Data quality | In progress (freshness + null checks live on VPS; microstructure checks added) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
-| 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.11×3.14) |
+| 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.12×3.14) |
 | 12 | Catalogue and publishing | Not started |
 
 **Current focus:** Phase 6 is complete and the platform is fully deployed. The
@@ -636,12 +636,21 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
 
 - [x] **CI on every push to main + every PR: ruff, mypy, pytest.** GitHub Actions
       (`.github/workflows/ci.yml`) runs the same three gates as local dev across a
-      Python `3.11` (the `requires-python` floor) × `3.14` (the dev runtime) matrix,
-      installing via `pip install -e ".[dev]"` with pip caching. The suite is fully
-      offline (network mocked in `tests/conftest.py`), so CI needs no secrets. Gates
-      on `ruff check` (lint) + `mypy` + `pytest` — deliberately *not* `ruff format
-      --check`, since the repo hand-formats some constructs (multi-line `Path` chains)
-      for readability and lint already passes. README carries the status badge.
+      Python **`3.12`** (the Docker image / pyproject floor) **× `3.14`** (the dev
+      runtime) matrix, installing via `pip install -e ".[dev]"` with pip caching. The
+      suite is fully offline (network mocked in `tests/conftest.py`), so CI needs no
+      secrets. Gates on `ruff check` (lint) + `mypy` + `pytest` — deliberately *not*
+      `ruff format --check`, since the repo hand-formats some constructs (multi-line
+      `Path` chains) for readability and lint already passes. README carries the
+      status badge.
+      **The floor moved 3.11 → 3.12** (matches the `python:3.12-slim` Docker image;
+      3.11 was never actually run). Two first-run failures forced it, both from
+      installing latest deps fresh: (1) **numpy 2.5+ requires Python ≥3.12 and its
+      stub uses PEP-695 `type X =` syntax**, which mypy rejects unless
+      `python_version >= "3.12"` — so `pyproject` now pins mypy/ruff target to 3.12;
+      (2) the phantom 3.11 job pulled an older numpy that broke a test. Verified the
+      fix cross-version: mypy clean under 3.12 with numpy 2.5.1, and the full suite
+      green on a clean 3.13 venv (proxy for the 3.12 job) and on 3.14.
 - [ ] dbt build against sample data in CI — after dbt (Phase 8)
 - [ ] Deploy on merge
 

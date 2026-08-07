@@ -19,8 +19,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Floor from pyproject (requires-python >=3.11) and the dev runtime (3.14).
-        python-version: ["3.11", "3.14"]
+        # The Docker image runs 3.12 (see Dockerfile); dev runs 3.14. numpy 2.5+
+        # requires >=3.12, which is also the pyproject floor.
+        python-version: ["3.12", "3.14"]
     name: py${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "qde"
 version = "0.1.0"
 description = "Quant data engine - market data infrastructure."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "pandas",
     "requests",
@@ -33,7 +33,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 extend-exclude = ["notebooks", ".venv"]
 
 [tool.ruff.lint]
@@ -41,7 +41,7 @@ extend-exclude = ["notebooks", ".venv"]
 select = ["E", "W", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 files = ["src"]
 # Third-party libs (pandas, duckdb, boto3, ...) ship no stubs here; don't flood
 # on those. Tighten module-by-module later as hints are added.
