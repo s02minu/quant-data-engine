@@ -23,7 +23,9 @@ The checks are read-only and return a list of :class:`Violation`; surfacing them
 (logs, a Discord alert) is the caller's job (see ``qde.daily_update`` / ``qde.alert``).
 """
 
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -48,11 +50,11 @@ _CADENCE_WINDOW = 30
 class Violation:
     """One failed data-quality check, ready to log or render into an alert."""
 
-    group: str  # "bars" | "series"
+    group: str  # "bars" | "series" | "microstructure"
     source: str
-    series_id: str  # symbol (bars) or series_id (series)
-    metric: str | None  # the metric partition, or None
-    check: str  # "freshness" | "nulls"
+    series_id: str  # symbol (bars/microstructure) or series_id (series)
+    metric: str | None  # metric partition (series) or kind (microstructure), or None
+    check: str  # "freshness" | "nulls" | "activity" | "gaps" | "crossed_book"
     severity: str  # "error" | "warn"
     detail: str
 
@@ -180,5 +182,159 @@ def run_checks(base_dir: str = "data", now: pd.Timestamp | None = None) -> list[
 
         for _column, message in _null_details(df, _tolerance(source)):
             violations.append(Violation("bars", source, symbol, None, "nulls", "error", message))
+
+    return violations
+
+
+# --- microstructure (streamed) checks --------------------------------------
+
+# A live pair should produce both a trade tape and a top-of-book stream; the
+# absence of either on a settled day means the feed was down or partial.
+_MICRO_REQUIRED_KINDS = ("trades", "book_ticker")
+
+# Gap-record reasons, mirroring qde.stream.gaps. Kept as literals so the batch
+# DQ path need not import the websocket collector stack; they are a stored-data
+# contract (the values written into kind=gaps), stable regardless of the names.
+_GAP_SEQUENCE_JUMP = "sequence_jump"
+_GAP_RECONNECT = "reconnect"
+
+
+def _crossed_book_counts(root: Path, day_str: str) -> dict[tuple[str, str], tuple[int, int, int]]:
+    """Count crossed books and negative sizes per (source, symbol) for one day.
+
+    book_ticker is the chattiest kind (thousands of small part files a day), so
+    this scans it with DuckDB in one streaming pass per source rather than
+    reading every file into pandas — flat memory, and far faster. ``TRY_CAST``
+    tolerates the string-typed prices the bronze layer keeps; ``union_by_name``
+    absorbs a venue adding columns. Per-source globs (grouping by the file's own
+    ``symbol`` column) avoid the hive-partition/column-name clash that a single
+    ``symbol=`` hive glob would hit, since the rows already carry ``symbol``.
+    Any read error yields no counts — a DQ pass must never crash the nightly.
+    """
+    import duckdb
+
+    out: dict[tuple[str, str], tuple[int, int, int]] = {}
+    con = duckdb.connect()
+    try:
+        for source_dir in sorted(root.glob("source=*")):
+            source = source_dir.name.split("=", 1)[1]
+            glob = (
+                source_dir / f"kind=book_ticker/symbol=*/date={day_str}/*.parquet"
+            ).as_posix().replace("'", "''")
+            sql = f"""
+                SELECT symbol,
+                       count(*) FILTER (WHERE TRY_CAST(bid_price AS DOUBLE)
+                                            > TRY_CAST(ask_price AS DOUBLE)) AS crossed,
+                       count(*) FILTER (WHERE TRY_CAST(bid_qty AS DOUBLE) < 0
+                                           OR TRY_CAST(ask_qty AS DOUBLE) < 0) AS neg,
+                       count(*) AS total
+                FROM read_parquet('{glob}', union_by_name=true)
+                GROUP BY symbol
+            """
+            try:
+                rows = con.execute(sql).fetchall()
+            except duckdb.Error:  # no book_ticker files for this source/day
+                continue
+            for symbol, crossed, neg, total in rows:
+                out[(source, symbol)] = (int(crossed), int(neg), int(total))
+    finally:
+        con.close()
+    return out
+
+
+def run_microstructure_checks(
+    base_dir: str = "data", day: date | None = None, now: pd.Timestamp | None = None
+) -> list[Violation]:
+    """Data-quality checks over one settled day of streamed microstructure.
+
+    The bars/series checks are freshness-shaped; tick data needs different ones.
+    This runs over a single *settled* day (yesterday UTC by default — today's
+    partition is still being written, and on the VPS yesterday's is still local
+    when the nightly runs, before the compact+sync ships it):
+
+    - **activity** — each active (source, symbol) produced both a trade tape and
+      a top-of-book stream; a missing one flags a silent or partial feed.
+    - **gaps** — surfaces the gap records the collector wrote live (a hole in the
+      tape is invisible in row counts alone). A sequence jump is missed data
+      (error); a reconnect is a known outage window (warn).
+    - **crossed_book** — a book with bid > ask, or a negative size, is a data
+      defect rather than a market state (error).
+
+    Read-only; returns :class:`Violation`s for the caller to log/alert on. Absent
+    microstructure (e.g. on the laptop) yields an empty list.
+    """
+    if day is None:
+        ref = now if now is not None else pd.Timestamp.now(tz="UTC")
+        day = (ref - pd.Timedelta(days=1)).date()
+    day_str = day.isoformat()
+
+    root = Path(base_dir) / "bronze" / "group=microstructure"
+    if not root.exists():
+        return []
+
+    # Which (source, symbol) produced which kinds on the day. Directory presence
+    # is enough: flush() skips empty buffers, so a part file always has >=1 row.
+    present: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for date_dir in root.glob(f"source=*/kind=*/symbol=*/date={day_str}"):
+        keys = _partition_keys(date_dir, root)
+        present[(keys.get("source", ""), keys.get("symbol", ""))].add(keys.get("kind", ""))
+
+    if not present:
+        return []
+
+    violations: list[Violation] = []
+
+    # 1) Feed activity.
+    for (source, symbol), kinds in sorted(present.items()):
+        for required in _MICRO_REQUIRED_KINDS:
+            if required not in kinds:
+                violations.append(
+                    Violation(
+                        "microstructure", source, symbol, required, "activity", "warn",
+                        f"no {required} data on {day_str} (feed silent or partial?)",
+                    )
+                )
+
+    # 2) Continuity: surface the live-detected gap records.
+    for (source, symbol), kinds in sorted(present.items()):
+        if "gaps" not in kinds:
+            continue
+        frames = [
+            pd.read_parquet(p, engine="pyarrow")  # type: ignore[call-overload]
+            for p in root.glob(
+                f"source={source}/kind=gaps/symbol={symbol}/date={day_str}/part-*.parquet"
+            )
+        ]
+        if not frames:
+            continue
+        g = pd.concat(frames, ignore_index=True)
+        reasons = g["reason"] if "reason" in g.columns else pd.Series(dtype=str)
+        jumps = int((reasons == _GAP_SEQUENCE_JUMP).sum())
+        recons = int((reasons == _GAP_RECONNECT).sum())
+        missed = int(pd.to_numeric(g.get("missing_count"), errors="coerce").fillna(0).sum())
+        severity = "error" if jumps else "warn"
+        violations.append(
+            Violation(
+                "microstructure", source, symbol, None, "gaps", severity,
+                f"{len(g)} gap record(s) on {day_str}: {jumps} sequence-jump "
+                f"(~{missed} msgs missed), {recons} reconnect",
+            )
+        )
+
+    # 3) Book sanity.
+    book_counts = _crossed_book_counts(root, day_str)
+    for (source, symbol), (crossed, neg, total) in sorted(book_counts.items()):
+        problems = []
+        if crossed:
+            problems.append(f"{crossed} crossed (bid>ask)")
+        if neg:
+            problems.append(f"{neg} negative size")
+        if problems:
+            violations.append(
+                Violation(
+                    "microstructure", source, symbol, "book_ticker", "crossed_book", "error",
+                    f"{', '.join(problems)} of {total} quotes on {day_str}",
+                )
+            )
 
     return violations

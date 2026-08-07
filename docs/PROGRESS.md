@@ -21,7 +21,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
-| 9 | Data quality | In progress (registry-driven freshness + null checks live on VPS) |
+| 9 | Data quality | In progress (freshness + null checks live on VPS; microstructure checks added) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
 | 11 | CI/CD | Not started |
 | 12 | Catalogue and publishing | Not started |
@@ -592,15 +592,31 @@ kinds. Relevant to the retention question in ROADMAP §11.
 ### Microstructure checks
 
 The existing checks are bars-shaped and do not carry over to tick data. The
-streaming equivalents:
+streaming equivalents now run nightly via `checks.run_microstructure_checks`, wired
+into `daily_update` beside the bars/series pass and surfaced through the *same*
+`Violation` + Discord alert (group=`microstructure`, so no alert change). Runs over
+the last **settled** day (yesterday UTC — today's partition is still being written;
+on the VPS yesterday's is still local before the compact+sync). Validated live on
+the box: the DuckDB book scan cleared **2.35M** Binance BTC quotes in 1.4s, 0
+crossed / 0 negative / 0 gaps across ~4.3M quotes.
 
-- [ ] Sequence continuity per kind (`trade_id` contiguous, `update_id` increasing)
-- [ ] Message rate per kind/symbol — a silent feed is indistinguishable from a
-      quiet market without this
-- [ ] Latency percentiles (p50/p99), noting the clock-skew caveat
-- [ ] Crossed-book check (bid >= ask) and non-negative sizes
-- [ ] Rows per partition per day, and part-file counts (small-files watch)
-- [ ] Surface gap records from `kind=gaps` in the quality dashboard
+- [x] **Sequence continuity** — the collector already detects it *live* (writes
+      `kind=gaps`); the nightly check **surfaces** those records (below).
+- [~] Message rate per kind/symbol — the **activity** check covers the silent/
+      partial-feed case (an active pair missing its trade tape or top-of-book is
+      flagged); full per-kind rate baselining is still open.
+- [ ] Latency percentiles (p50/p99), noting the clock-skew caveat — deferred (more
+      a Phase-10 metric than a pass/fail check; Coinbase's ISO vs Binance's ms time
+      needs per-venue handling).
+- [x] **Crossed-book (bid > ask) and non-negative sizes** — DuckDB streaming scan
+      per source (book_ticker is the chattiest kind, millions of rows/day), string
+      prices via `TRY_CAST`, `union_by_name` across venues; a defect is error-level.
+- [ ] Rows per partition per day, and part-file counts (small-files watch) —
+      deferred (part-file counts are a post-compaction concern; the check runs
+      pre-compaction).
+- [x] **Surface gap records from `kind=gaps`** — per (source, symbol): a
+      `sequence_jump` is missed data (error, with an estimated missed-message
+      count), a `reconnect` is a known outage window (warn).
 
 ## Phase 10 — Observability
 

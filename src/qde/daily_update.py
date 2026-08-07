@@ -16,7 +16,7 @@ and the mounted ``/data`` volume on the VPS.
 
 import os
 
-from qde.checks import run_checks
+from qde.checks import run_checks, run_microstructure_checks
 from qde.env import load_env_file
 from qde.log import configure, get_logger
 from qde.quality import build_quality_summary
@@ -133,10 +133,12 @@ def run(base_dir: str = "data") -> dict:
     build_quality_summary(base_dir)
 
     # Data-quality pass: freshness + null tolerance against each source's registry
-    # contract. Read-only; a violation is logged here and surfaced by main()'s
-    # alert, never fatal (a stale series must not block the compact/sync that
-    # follows in maintain.sh).
+    # contract, plus the streamed-microstructure checks (feed activity, live gap
+    # records, crossed books) over the last settled day. Read-only; a violation is
+    # logged here and surfaced by main()'s alert, never fatal (a DQ issue must not
+    # block the compact/sync that follows in maintain.sh).
     violations = run_checks(base_dir)
+    violations += run_microstructure_checks(base_dir)
     for v in violations:
         log.warning(
             "dq_violation",
