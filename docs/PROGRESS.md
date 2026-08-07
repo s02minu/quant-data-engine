@@ -416,9 +416,15 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       Coinbase BTC/USD mid queried back beside Binance in one `symbol=BTCUSDT`
       partition. A `collector-coinbase` service was added to `docker-compose.yml`
       (same image, different `QDE_SOURCE`, shared `/data` lake so the one nightly
-      compact+sync ships both venues; no secrets mount — public feed). **Remaining:
-      deploy to the VPS** (ff, rebuild, `up -d collector-coinbase`; verify Coinbase
-      reachable from the EU box + files land in R2), then schema/doc pass.
+      compact+sync ships both venues; no secrets mount — public feed).
+      **Deployed to the VPS (2026-08-07):** ff, rebuilt, `up -d`; both `collector`
+      (binance) + `collector-coinbase` running, capturing all kinds × 3 symbols
+      (verified via SSH). The two prod risks cleared — the >1 MiB inline snapshots
+      come through the raised `max_frame_bytes` on the EU box (one snapshot per
+      symbol), and Coinbase is reachable from Hetzner EU (no IP gate like Binance).
+      **Remaining:** verify R2 `source=coinbase` after the first nightly sync
+      (00:30 UTC 08-08 — same source-agnostic ship-and-prune path as Binance), then
+      a schema/doc pass for the per-venue shape.
 - [x] **ccxt for unified exchange access (`bars`) — Wave 2 #6.** One shared
       `qde.ingest.ccxt_bars.CcxtIngestor` drives ccxt's unified `fetch_ohlcv`
       against any venue, so a new exchange is a registry row, not a module. Added
