@@ -1,5 +1,7 @@
 ## quant-data-engine
 
+[![CI](https://github.com/s02minu/quant-data-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/s02minu/quant-data-engine/actions/workflows/ci.yml)
+
 Financial data platform that ingests, stores, and serves market data — batch OHLCV and live crypto microstructure — as a queryable Parquet lakehouse on Cloudflare R2.
 
 **Status:** Running in production — autonomous ingestion, cloud storage, and direct querying.  

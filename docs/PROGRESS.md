@@ -23,7 +23,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 8 | Transformations with dbt | Not started |
 | 9 | Data quality | In progress (freshness + null checks live on VPS; microstructure checks added) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
-| 11 | CI/CD | Not started |
+| 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.11×3.14) |
 | 12 | Catalogue and publishing | Not started |
 
 **Current focus:** Phase 6 is complete and the platform is fully deployed. The
@@ -634,8 +634,15 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
 
 ## Phase 11 — CI/CD
 
-- [ ] CI on every PR: ruff, mypy, pytest
-- [ ] dbt build against sample data in CI
+- [x] **CI on every push to main + every PR: ruff, mypy, pytest.** GitHub Actions
+      (`.github/workflows/ci.yml`) runs the same three gates as local dev across a
+      Python `3.11` (the `requires-python` floor) × `3.14` (the dev runtime) matrix,
+      installing via `pip install -e ".[dev]"` with pip caching. The suite is fully
+      offline (network mocked in `tests/conftest.py`), so CI needs no secrets. Gates
+      on `ruff check` (lint) + `mypy` + `pytest` — deliberately *not* `ruff format
+      --check`, since the repo hand-formats some constructs (multi-line `Path` chains)
+      for readability and lint already passes. README carries the status badge.
+- [ ] dbt build against sample data in CI — after dbt (Phase 8)
 - [ ] Deploy on merge
 
 ## Phase 12 — Catalogue and publishing
