@@ -1,4 +1,10 @@
-"""Websocket capture loop for Binance streams."""
+"""Venue-neutral websocket capture loop.
+
+The exchange-specific dialect — stream naming, message decoding, and how the
+order book is anchored — lives behind a `VenueAdapter` (see `qde.stream.venues`).
+This loop owns only what every venue shares: buffering, timed flush, reconnect
+with backoff, sequence-gap tracking, session markers, and the bronze layout.
+"""
 
 import asyncio
 import json
@@ -9,7 +15,6 @@ import pandas as pd
 import websockets
 from websockets.exceptions import WebSocketException
 
-from qde.loaders.http import get_with_requests
 from qde.log import configure, get_logger
 from qde.stream.config import StreamConfig
 from qde.stream.gaps import (
@@ -19,8 +24,9 @@ from qde.stream.gaps import (
     reconnect_gap,
     session_record,
 )
-from qde.stream.parsers import now_ms, parse_depth_snapshot, parse_message
+from qde.stream.parsers import now_ms
 from qde.stream.paths import bronze_path
+from qde.stream.venues import get_adapter
 
 log = get_logger(__name__)
 
@@ -31,16 +37,20 @@ SESSION_SYMBOL = "_all"
 
 
 class StreamCollector:
-    """Captures Binance streams to the bronze layer.
+    """Captures an exchange's streams to the bronze layer.
 
-    Connects to the configured streams, parses each message, buffers rows by
-    (kind, symbol), and flushes micro-batches to partitioned Parquet. Survives
-    disconnects with backoff, records sequence gaps and session boundaries, and
-    periodically anchors the diff-depth stream with REST snapshots.
+    Connects via the configured venue adapter, decodes each message through it,
+    buffers rows by (kind, symbol), and flushes micro-batches to partitioned
+    Parquet. Survives disconnects with backoff, records sequence gaps and
+    session boundaries, and — for venues that need it — periodically anchors the
+    diff-depth stream with REST snapshots.
     """
 
     def __init__(self, config: StreamConfig):
         self.config = config
+        # The venue adapter holds everything exchange-specific; the loop below
+        # is dialect-free. `config.source` selects it (default "binance").
+        self.adapter = get_adapter(config.source)
         self.count = 0
         # Rows wait here between flushes. Keyed by (kind, symbol) because that
         # pair identifies one bronze partition, so a buffer maps to one file.
@@ -48,18 +58,6 @@ class StreamCollector:
         self.sequences = SequenceTracker()
         self.gap_count = 0
         self._disconnected_at: int | None = None
-
-    def _combined_url(self) -> str:
-        """Build the combined-stream URL for all configured subscriptions.
-
-        Binance exposes many streams over one connection via the combined
-        endpoint: /stream?streams=<a>/<b>/<c>. Messages then arrive wrapped as
-        {"stream": <name>, "data": <payload>}.
-        """
-        # All subscriptions are multiplexed onto one connection; each incoming
-        # message is then tagged with its origin in the "stream" field.
-        streams = "/".join(self.config.stream_names())
-        return f"{self.config.ws_base_url}/stream?streams={streams}"
 
     async def run(self, max_messages: int | None = None) -> None:
         """Open the connection and read messages until stopped.
@@ -69,7 +67,7 @@ class StreamCollector:
                 indefinitely (the real capture mode); a small number is handy
                 for a bounded demo.
         """
-        url = self._combined_url()
+        url = self.adapter.ws_url(self.config)
 
         # Marks the boundary a restart would otherwise leave silent: any data
         # before it belongs to a prior session, and the span since that session
@@ -88,15 +86,23 @@ class StreamCollector:
             # Outer loop: a dropped connection is expected, not exceptional.
             while True:
                 try:
-                    # opens the connection and guarantees the connection is cleanly closed
-                    async with websockets.connect(url) as ws:
+                    # opens the connection and guarantees the connection is cleanly closed.
+                    # max_size follows the venue: Coinbase's inline book snapshot is
+                    # >1 MiB and would trip the websockets default frame limit.
+                    async with websockets.connect(url, max_size=self.adapter.max_frame_bytes) as ws:
+                        # Some venues (Coinbase) subscribe with a frame after
+                        # connecting; Binance encodes it in the URL, so this is empty.
+                        for frame in self.adapter.subscribe_frames(self.config):
+                            await ws.send(json.dumps(frame))
+
                         self._on_connected()
                         backoff = 1  # reset only after a connection succeeds
 
                         # Anchor this connection before consuming its deltas.
                         # The socket is already open and buffering, so no diffs
                         # are lost while the snapshot is fetched; any that
-                        # predate last_update_id are discarded on replay.
+                        # predate last_update_id are discarded on replay. A no-op
+                        # for venues that deliver the snapshot inline.
                         await self._snapshot_all()
 
                         # Yields one message per push and pauses in between without
@@ -131,9 +137,16 @@ class StreamCollector:
             self.flush()
 
     def _handle(self, message: dict, received_at: int) -> None:
-        """Parse one message, buffer it, and check sequence continuity."""
+        """Decode one message, buffer it, and check sequence continuity.
+
+        A message the adapter does not capture (a subscription acknowledgement,
+        say) decodes to None and is counted but not buffered.
+        """
         self.count += 1
-        kind, row = parse_message(message["stream"], message["data"], received_at)
+        routed = self.adapter.route(message, received_at)
+        if routed is None:
+            return
+        kind, row = routed
         symbol = row["symbol"]
         self.buffers[(kind, symbol)].append(row)
 
@@ -211,33 +224,25 @@ class StreamCollector:
             await asyncio.sleep(self.config.flush_seconds)
             self.flush()
 
-    def _fetch_snapshot(self, symbol: str) -> dict:
-        """Fetch one order-book snapshot over REST.
-
-        Blocking, and deliberately so: it reuses the retry helper the batch
-        loaders already use rather than duplicating that logic. The caller
-        runs it off the event loop.
-        """
-        response = get_with_requests(
-            f"{self.config.rest_base_url}/api/v3/depth",
-            params={"symbol": symbol, "limit": self.config.snapshot_depth},
-        )
-        return parse_depth_snapshot(response.json(), symbol, now_ms())
-
     async def _snapshot_all(self) -> None:
-        """Buffer an order-book snapshot for every configured symbol.
+        """Buffer a REST order-book snapshot for every configured symbol.
 
-        A failed snapshot is logged and skipped: it costs an anchor point, but
-        it must never take down a capture that is still receiving live data.
+        Only for venues whose diff stream needs a separately fetched anchor
+        (Binance); venues that deliver the snapshot inline over the socket
+        (Coinbase) return `rest_snapshots=False` and skip this entirely. A
+        failed snapshot is logged and skipped: it costs an anchor point, but it
+        must never take down a capture that is still receiving live data.
         """
-        if "depth" not in self.config.kinds:
+        if not self.adapter.rest_snapshots or "depth" not in self.config.kinds:
             return
 
         for symbol in self.config.symbols:
             try:
                 # to_thread keeps the blocking HTTP call off the event loop, so
                 # the socket keeps draining while the request is in flight.
-                row = await asyncio.to_thread(self._fetch_snapshot, symbol)
+                row = await asyncio.to_thread(
+                    self.adapter.fetch_snapshot, self.config, symbol, now_ms()
+                )
             except Exception as exc:
                 log.warning(
                     "snapshot_failed", symbol=symbol, error=type(exc).__name__, detail=str(exc)

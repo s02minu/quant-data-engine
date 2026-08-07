@@ -56,7 +56,8 @@ def _fake_connect(scripts):
     """Return a connect() that plays one script per call, holding the last."""
     state = {"i": 0}
 
-    def connect(url):
+    def connect(url, **kwargs):
+        # **kwargs absorbs max_size, which the collector now passes per venue.
         script = scripts[min(state["i"], len(scripts) - 1)]
         state["i"] += 1
         return _FakeConn(*script)
