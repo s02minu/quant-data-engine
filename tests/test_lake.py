@@ -2,16 +2,18 @@ from qde.lake import bars_glob, bronze_glob, series_glob
 
 
 def test_bronze_glob_defaults_to_all_partitions(monkeypatch):
+    # Default source is "*", so the microstructure lake spans every venue (the
+    # cross-venue basis needs Binance and Coinbase in one view), not just Binance.
     monkeypatch.setenv("QDE_R2_BUCKET", "qde-lake")
     assert bronze_glob() == (
-        "r2://qde-lake/bronze/group=microstructure/source=binance/kind=*/symbol=*/date=*/*.parquet"
+        "r2://qde-lake/bronze/group=microstructure/source=*/kind=*/symbol=*/date=*/*.parquet"
     )
 
 
 def test_bronze_glob_narrows_by_partition(monkeypatch):
     monkeypatch.setenv("QDE_R2_BUCKET", "qde-lake")
-    glob = bronze_glob(kind="trades", symbol="BTCUSDT", date="2026-07-25")
-    assert "kind=trades/symbol=BTCUSDT/date=2026-07-25" in glob
+    glob = bronze_glob(source="coinbase", kind="trades", symbol="BTCUSDT", date="2026-07-25")
+    assert "source=coinbase/kind=trades/symbol=BTCUSDT/date=2026-07-25" in glob
 
 
 def test_bronze_glob_bucket_override():

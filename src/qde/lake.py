@@ -48,16 +48,26 @@ def open_lake() -> duckdb.DuckDBPyConnection:
 
 
 def bronze_glob(
-    kind: str = "*", symbol: str = "*", date: str = "*", bucket: str | None = None
+    source: str = "*",
+    kind: str = "*",
+    symbol: str = "*",
+    date: str = "*",
+    bucket: str | None = None,
 ) -> str:
-    """Build a r2:// glob selecting bronze partitions.
+    """Build a r2:// glob selecting bronze microstructure partitions.
 
     Each argument narrows a partition key; the default "*" matches all. A
-    narrower glob prunes to fewer files, so DuckDB transfers less.
+    narrower glob prunes to fewer files, so DuckDB transfers less. ``source``
+    leads (mirroring ``bars_glob``/``series_glob``) so the microstructure lake
+    spans venues: Binance and Coinbase share a ``symbol=`` partition, with
+    ``source=`` distinguishing the USD/USDT book -- the cross-venue basis signal.
+    A read over the multi-venue glob must pass ``union_by_name=true`` because the
+    per-venue bronze schemas differ (Coinbase carries extra ticker columns and
+    string/ISO-8601 fields), which is what the ``query`` views do.
     """
     bucket = bucket or os.environ.get("QDE_R2_BUCKET", "qde-lake")
     return (
-        f"r2://{bucket}/bronze/group=microstructure/source=binance/"
+        f"r2://{bucket}/bronze/group=microstructure/source={source}/"
         f"kind={kind}/symbol={symbol}/date={date}/*.parquet"
     )
 
@@ -149,8 +159,8 @@ def query(sql: str) -> pd.DataFrame:
     for kind in _MICROSTRUCTURE_KINDS:
         try:
             con.execute(
-                f"CREATE OR REPLACE VIEW {kind} AS "
-                f"SELECT * FROM read_parquet('{bronze_glob(kind=kind)}', hive_partitioning=true)"
+                f"CREATE OR REPLACE VIEW {kind} AS SELECT * FROM read_parquet("
+                f"'{bronze_glob(kind=kind)}', hive_partitioning=true, union_by_name=true)"
             )
         except Exception:
             # A kind with no data yet has no files to glob; skip its view rather
@@ -176,10 +186,10 @@ if __name__ == "__main__":
     glob = bronze_glob()
     result = con.execute(
         f"""
-        SELECT kind, symbol, count(*) AS rows
-        FROM read_parquet('{glob}', hive_partitioning = true)
-        GROUP BY kind, symbol
-        ORDER BY kind, symbol
+        SELECT source, kind, symbol, count(*) AS rows
+        FROM read_parquet('{glob}', hive_partitioning = true, union_by_name = true)
+        GROUP BY source, kind, symbol
+        ORDER BY source, kind, symbol
         """
     ).df()
     print(result.to_string(index=False))

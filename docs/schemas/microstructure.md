@@ -20,17 +20,25 @@ partition.
 bronze/group=microstructure/source=<source>/kind=<kind>/symbol=<symbol>/date=<YYYY-MM-DD>/part-<stamp>.parquet
 ```
 
-- `source` — exchange, e.g. `binance`. Partition key.
+- `source` — exchange, e.g. `binance` or `coinbase`. Partition key. **Multiple
+  venues capture the same `symbol` into the same partition tree**, with `source`
+  distinguishing the book — Binance BTC/USDT (offshore, stablecoin) vs Coinbase
+  BTC/USD (US, fiat) — which is exactly the cross-venue basis/lead-lag signal (see
+  [`qde.analytics`](../../src/qde/analytics.py)).
 - `kind` — message kind (below). Partition key.
-- `symbol` — canonical symbol. Partition key.
+- `symbol` — canonical symbol (e.g. `BTCUSDT`), same across venues. Partition key.
 - `date` — UTC date of the flush. Partition key (the high-volume group *does*
   date-partition).
 
 ## Kinds and their columns
 
 Every row carries `symbol` and `received_at` (local arrival time, epoch ms) — the
-one field the exchange never sends, stamped live so feed latency
-(`received_at − event_time`) is recoverable.
+one field the exchange never sends, stamped live by our collector on the **same
+clock for every venue**, so feed latency (`received_at − event_time`) is
+recoverable *and* two venues are alignable free of exchange clock-skew (the basis
+of the cross-venue analytics).
+
+### Binance (`source=binance`)
 
 | `kind` | Columns (beyond `symbol`, `received_at`) | Continuity key |
 |---|---|---|
@@ -39,15 +47,52 @@ one field the exchange never sends, stamped live so feed latency
 | `book_ticker` | `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `update_id` | `update_id` (ordering only) |
 | `snapshot` | `last_update_id`, `bids`, `asks` | anchors the depth stream |
 | `gaps` | detected sequence gaps | — |
-| `session` | start/stop markers | bounds restart downtime |
+| `session` | start/stop markers (`symbol=_all`) | bounds restart downtime |
 
 `bids`/`asks` are preserved as lists of `[price, quantity]` string pairs; the book
-is reconstructed downstream from these deltas anchored on the periodic `snapshot`.
+is reconstructed downstream from these deltas anchored on the periodic REST
+`snapshot`.
+
+### Coinbase (`source=coinbase`)
+
+The bronze contract is **per-venue faithful**: Coinbase sends prices/sizes as
+strings and every timestamp as an **ISO-8601 string** (not epoch ms), so its rows
+are kept exactly as sent and its columns differ from Binance's. The silver layer
+casts and reconciles per source. (See [`qde.stream.venues.coinbase`](../../src/qde/stream/venues/coinbase.py).)
+
+| `kind` | Columns (beyond `symbol`, `received_at`) | Continuity key |
+|---|---|---|
+| `trades` | `trade_id`, `price`, `quantity`, `side`, `trade_time`, `sequence` | `trade_id` (contiguous) |
+| `depth` | `changes` (`[side, price, size]` triples), `event_time` | *unsequenced* — no update id |
+| `book_ticker` | `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `update_id`, plus last-trade `price`, `last_size`, `trade_id`, `side`, `event_time` | `update_id` (= per-product `sequence`, ordering only) |
+| `snapshot` | `bids`, `asks`, `snapshot_time` | anchors the depth stream (inline, no id) |
+| `heartbeat` | `last_trade_id`, `sequence`, `heartbeat_time` | once/sec liveness beacon |
+| `gaps` | detected gaps (reconnects; no sequence jumps for depth) | — |
+| `session` | start/stop markers (`symbol=_all`) | bounds restart downtime |
+
+Three structural differences from Binance, each a deliberate venue fidelity choice:
+
+- **`book_ticker` is trade-coupled.** Coinbase's top-of-book comes from the `ticker`
+  channel, which emits once per trade — so `book_ticker` row count equals `trades`
+  row count, and it carries the last-trade fields inline. Binance's `book_ticker`
+  fires on every best-bid/ask *size* change (decoupled from trades, ~20× chattier).
+- **`depth` is a `changes` diff with no update id** (unsequenced), and the book
+  anchors from an **inline** `snapshot` on every (re)connect rather than a REST
+  pull. So per-message depth continuity is not checkable; depth re-anchors on
+  reconnect, and `heartbeat` covers the quiet-market liveness case.
+- **`heartbeat`** is a Coinbase-only kind (no Binance equivalent).
+
+Because the per-venue schemas differ, a query spanning both venues reads with
+`union_by_name=true` (missing columns fill NULL) — which `qde.lake`'s microstructure
+views do, so `SELECT ... FROM book_ticker WHERE source IN ('binance','coinbase')`
+just works.
 
 ## Why the shape differs
 
-`book_ticker` fires on every change to the best bid/ask size, so it is the chattiest
-kind (~0.5–1 GB/day for 3 symbols × all kinds, ~27k files/day). This volume is why
-the group is strictly scoped (a small symbol set) and why retention is the one place
-the "house everything" ambition does **not** apply — see [`../data-sources.md`](../data-sources.md)
-and ROADMAP §5.2 / §11.
+On Binance, `book_ticker` fires on every change to the best bid/ask size, so it is
+the chattiest kind (~0.5–1 GB/day for 3 symbols × all kinds, ~27k files/day).
+Coinbase's trade-coupled `ticker` makes its `book_ticker` far smaller (one row per
+trade, not per size change), so the second venue adds proportionally little volume.
+This is why the group is strictly scoped (a small symbol set) and why retention is
+the one place the "house everything" ambition does **not** apply — see
+[`../data-sources.md`](../data-sources.md) and ROADMAP §5.2 / §11.

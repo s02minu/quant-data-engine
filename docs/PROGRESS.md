@@ -17,7 +17,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1 #5 Coinbase code-done, deploying; Wave 2 #6 ccxt done) |
+| 5 | Source expansion | In progress (Wave 1 #5 Coinbase DONE, R2-confirmed; Wave 2 #6 ccxt done) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
@@ -380,8 +380,9 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       REST history (a forward-snapshot job, not a backfill) and liquidations have no
       public historical REST (`allForceOrders` 404s — a streaming `!forceOrder`
       concern). Funding is the one perp series with clean, complete public history.
-- [~] **Extend microstructure to a 2nd venue: Coinbase (`microstructure`) — Wave 1 #5.**
-      **Code complete + live-verified locally; VPS deploy pending.** The streaming
+- [x] **Extend microstructure to a 2nd venue: Coinbase (`microstructure`) — Wave 1 #5.**
+      **DONE — deployed to the VPS and R2-confirmed 2026-08-08** (both venues query
+      back from the laptop over R2; see the tail of this item). The streaming
       collector was refactored behind a **`VenueAdapter` seam** (`qde.stream.venues`),
       mirroring the batch `BaseIngestor` split: the loop keeps everything
       venue-neutral (buffering, timed flush, reconnect/backoff, sequence-gap
@@ -422,9 +423,25 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       (verified via SSH). The two prod risks cleared — the >1 MiB inline snapshots
       come through the raised `max_frame_bytes` on the EU box (one snapshot per
       symbol), and Coinbase is reachable from Hetzner EU (no IP gate like Binance).
-      **Remaining:** verify R2 `source=coinbase` after the first nightly sync
-      (00:30 UTC 08-08 — same source-agnostic ship-and-prune path as Binance), then
-      a schema/doc pass for the per-venue shape.
+      **R2 confirmed 2026-08-08:** the 00:30 UTC sync shipped Coinbase's 08-07
+      partition (all kinds, incl. `heartbeat`; gaps all benign reconnects), queried
+      back beside Binance via `qde.lake`. The schema/doc pass is done
+      (`docs/schemas/microstructure.md` now has per-venue Binance/Coinbase kind
+      tables). This unblocked the **first consumer** — `qde.analytics` cross-venue
+      basis + lead-lag (see below).
+
+- [x] **First consumer — cross-venue basis + lead-lag (`qde.analytics`).** The first
+      module that *reads* the lake for a signal, targeting the wedge: Binance BTC/USDT
+      vs Coinbase BTC/USD. Resamples `book_ticker` to one mid per time bucket in
+      DuckDB (`arg_max(mid, received_at)`; aligns on our same-clock `received_at`, so
+      no exchange skew), then computes the **basis** (bps) and **lead-lag** (lagged
+      return cross-correlation) in tested pandas. Required generalizing
+      `qde.lake.bronze_glob` off its hardcoded `source=binance` (now `source=*`) with
+      `union_by_name` microstructure views spanning the differing per-venue schemas.
+      Live on 08-07: a steady **~6.5 bp USDT premium** across BTC/ETH/SOL (Coinbase
+      richer 0% of the day); lead-lag simultaneous (Coinbase's trade-coupled ticker
+      cadence caps sub-second resolution — the honest limit). Offline tests
+      (`tests/test_analytics.py`), suite green.
 - [x] **ccxt for unified exchange access (`bars`) — Wave 2 #6.** One shared
       `qde.ingest.ccxt_bars.CcxtIngestor` drives ccxt's unified `fetch_ohlcv`
       against any venue, so a new exchange is a registry row, not a module. Added
