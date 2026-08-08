@@ -223,6 +223,15 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
     unknown/delisted symbol, an API error -- propagates so callers can count it
     as a failure rather than mistake a dead series for an up-to-date one.
 
+    No bar can exist for a day that has not started yet, so if the watermark is
+    already at or past today (UTC) the next-day start would land in the future --
+    skipped as the same benign already-current case, *without* a network call.
+    This matters beyond saving a request: some venues (observed on Coinbase)
+    reject a future ``start`` outright rather than returning an empty page like
+    the rest, which would otherwise surface as a spurious daily-update failure
+    whenever this function runs more than once on the same UTC day (e.g. a manual
+    re-run after the nightly cron already advanced the watermark to today).
+
     Args:
         symbol (str): a ticker symbol.
         source (str): the source.
@@ -245,10 +254,14 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
 
     # Fetch from the day after the watermark: the last stored bar is already
     # held, and re-fetching it would only be deduplicated away.
-    next_day = str((watermark + pd.Timedelta(days=1)).date())
+    next_day = watermark + pd.Timedelta(days=1)
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    if next_day > today:
+        print(f"{symbol} already up to date through {watermark.date()}")
+        return
 
     try:
-        df_new = load_ohlcv(symbol, start=next_day, interval=interval, source=source)
+        df_new = load_ohlcv(symbol, start=str(next_day.date()), interval=interval, source=source)
     except NoNewData:
         # NoNewData means a successful fetch returned zero rows: for an
         # incremental pull that just means the series is already current. Only

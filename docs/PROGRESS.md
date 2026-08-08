@@ -626,9 +626,27 @@ SQL runs either place. `scripts/maintain.sh` gained a non-fatal `dbt build` step
 between the bronze update and the sync. Verified locally: `dbt build` green (17 nodes),
 gold written for all 20 bar series across 7 venues — BTC daily returns ±1–3%, realized
 vol ~1.3–1.7%/day, ATR/volume-z sane; Python suite **216 green**, ruff + mypy clean.
-**DEPLOY PENDING** — rebuild the VPS image (now installs `.[transform]`), run
-`maintain.sh` (or the `dbt build` + `sync` steps), verify `FROM fct_bars_daily` from
-the laptop over R2.
+**Deployed 2026-08-08**, and it caught two real issues on first contact with the
+full VPS data (both fixed same-day):
+1. **`assert_ohlc_coherent` genuinely failed (5 rows)** — all `yfinance` (SPY/TLT),
+   `close` differing from `high`/`low` by ~1e-14 absolute / ~1e-16 relative:
+   floating-point noise from yfinance's dividend adjustment, not real defects (a
+   true defect is off by cents, ~1e-4 relative or worse). Fixed with a relative
+   tolerance (`1e-6 * close`) in the test rather than a strict `<`/`>`.
+2. **`update_ohlcv` could request a future start date** — if a venue already has
+   a same-day preliminary bar (watermark = today), a second run the same UTC day
+   computes `next_day = tomorrow` and fetches it; most venues just return empty,
+   but Coinbase's REST API hard-rejects a future `start`, surfacing as a spurious
+   `update_failed`. Fixed with a guard in `qde.storage.update_ohlcv`: skip the
+   fetch (no network call) whenever the next day is not yet elapsed — no bar can
+   exist for a day that hasn't started. Applies to every bars source, not just
+   Coinbase.
+
+Both verified: `dbt build` 17/17 green including the coherence test; a new
+offline test (`test_update_skips_fetch_when_watermark_is_already_today`) asserts
+the loader is never called in that case. Full suite **217 green**. `publish_gold`
+confirmed live in R2 (`publish_gold_complete published=2`); `fct_bars_daily` and
+`dim_sources` queryable from the laptop over R2.
 
 - [x] dbt-core + dbt-duckdb project (`transform/`, in-repo profile)
 - [x] Staging model (silver) — `stg_bars` view over the bronze bars glob

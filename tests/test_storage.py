@@ -92,6 +92,26 @@ def test_update_no_new_data_is_up_to_date(tmp_path, monkeypatch):
     assert len(out) == 2
 
 
+def test_update_skips_fetch_when_watermark_is_already_today(tmp_path, monkeypatch):
+    # Seed a bar dated "today" (UTC) -- e.g. a venue that already publishes a
+    # same-day preliminary candle. The next incremental start would be tomorrow,
+    # which cannot exist yet: the update must skip the fetch entirely rather than
+    # call the loader, since some venues (Coinbase, observed live) hard-reject a
+    # future start instead of returning empty like the rest.
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    upsert_bars(_sample_bars([str(today.date())]), "BTCUSDT", "coinbase", base_dir=str(tmp_path))
+
+    def boom(*args, **kwargs):
+        raise AssertionError("loader must not be called when the watermark is already today")
+
+    monkeypatch.setattr(storage, "load_ohlcv", boom)
+
+    update_ohlcv("BTCUSDT", source="coinbase", base_dir=str(tmp_path))  # must not raise
+
+    out = load_ohlcv_local("BTCUSDT", "coinbase", base_dir=str(tmp_path))
+    assert len(out) == 1  # untouched
+
+
 def test_update_propagates_real_loader_error(tmp_path, monkeypatch):
     # A real failure (an API error, a delisted symbol) is a plain ValueError and
     # must propagate -- not be swallowed as "already up to date".
