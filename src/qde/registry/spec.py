@@ -53,6 +53,11 @@ class SourceSpec(BaseModel):
             refuses to write a ``False`` source into the public bucket.
         license_note: Human-readable reason behind ``redistributable`` — the
             licence or terms that decide it. Surfaced in the catalogue.
+        calendar: For the ``events`` group only — the named calendar its releases
+            land in (``bronze/group=events/source=/calendar=<calendar>/``), e.g.
+            ``us_macro``. A calendar is one file holding many series' events, so
+            unrelated event streams stay separate. ``None`` for the other groups,
+            which are not partitioned by calendar.
     """
 
     group: str
@@ -66,6 +71,7 @@ class SourceSpec(BaseModel):
     freshness_sla_minutes: int = 24 * 60 + 60  # a daily bar, plus an hour of slack
     redistributable: bool = True
     license_note: str = ""
+    calendar: str | None = None
 
     @field_validator("symbols")
     @classmethod

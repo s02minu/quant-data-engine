@@ -1,7 +1,8 @@
-"""Daily batch refresh of the lake (bars + series).
+"""Daily batch refresh of the lake (bars + series + events).
 
 Discovers every stored bar and scalar series from the lake's partition metadata,
-brings each current with a watermark-driven incremental update, then rebuilds the
+brings each current with a watermark-driven incremental update, full-refreshes the
+registry's events calendars (release history, which revises), then rebuilds the
 quality summary CSV. One series failing (a delisted symbol, a source outage, a
 missing key) is logged and skipped so it never aborts the rest of the nightly run.
 
@@ -16,19 +17,28 @@ and the mounted ``/data`` volume on the VPS.
 
 import os
 
-from qde.checks import run_checks, run_microstructure_checks
+from qde.checks import run_checks, run_events_checks, run_microstructure_checks
 from qde.env import load_env_file
+from qde.loaders import NoNewData
 from qde.log import configure, get_logger
 from qde.quality import build_quality_summary
-from qde.registry import declared_series
+from qde.registry import SOURCES, declared_series
 from qde.storage import (
     list_bars_series,
+    list_events,
     list_series,
+    update_events,
     update_ohlcv,
     update_series,
 )
 
 log = get_logger(__name__)
+
+# Nightly events refresh re-pulls the release calendar from the genuine-revision
+# (ALFRED) era rather than a watermark: a revision is a new row for an already-
+# stored period, so a watermark-advancing pull would miss it. The upsert is
+# idempotent and the calendars are tiny, so a full re-pull each night is cheap.
+EVENTS_REFRESH_START = "2000-01-01"
 
 
 def _log_registry_drift(base_dir: str) -> None:
@@ -129,6 +139,43 @@ def run(base_dir: str = "data") -> dict:
         updated += 1
         log.info("updated", group="series", series_id=series_id, source=source)
 
+    # --- events group: full-refresh each *seeded* release calendar ---
+    # Lake-discovery-driven like bars/series above (a calendar the lake hasn't
+    # seeded is qde.backfill's job, not the nightly's), then registry-driven within
+    # each: the calendar's source spec lists which series to refresh. Full-refresh,
+    # not watermark-advanced, so revisions to already-stored periods are captured.
+    calendars = list_events(base_dir)
+    for source, calendar in zip(calendars["source"], calendars["calendar"], strict=True):
+        spec = SOURCES.get(source)
+        if spec is None:
+            continue  # a calendar in the lake whose source is no longer registered
+        for series_id in spec.canonical_symbols:
+            try:
+                update_events(series_id, source, calendar, EVENTS_REFRESH_START, base_dir)
+            except NoNewData:
+                continue  # nothing in range; benignly skip (mirrors bars/series)
+            except Exception as exc:
+                failures.append(
+                    {
+                        "group": "events",
+                        "label": f"{source}/{series_id}",
+                        "error": type(exc).__name__,
+                        "detail": str(exc),
+                    }
+                )
+                log.warning(
+                    "update_failed",
+                    group="events",
+                    series_id=series_id,
+                    source=source,
+                    error=type(exc).__name__,
+                    detail=str(exc),
+                )
+                continue
+
+            updated += 1
+            log.info("updated", group="events", series_id=series_id, source=source)
+
     _log_registry_drift(base_dir)
     build_quality_summary(base_dir)
 
@@ -138,6 +185,7 @@ def run(base_dir: str = "data") -> dict:
     # logged here and surfaced by main()'s alert, never fatal (a DQ issue must not
     # block the compact/sync that follows in maintain.sh).
     violations = run_checks(base_dir)
+    violations += run_events_checks(base_dir)
     violations += run_microstructure_checks(base_dir)
     for v in violations:
         log.warning(

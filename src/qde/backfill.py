@@ -12,9 +12,11 @@ explicitly on the command line, enumerated from the source registry with
 ``--from-registry`` (the declared/intended set, so a series that is not yet in
 the lake can be seeded), or discovered from what is already in the lake.
 
-Works across groups: ``--group bars`` (default) or ``--group series``. For the
-series group ``--symbol`` is the series id (e.g. ``DGS10``) and a FRED key is
-loaded from ``secrets/fred.env`` if not already exported.
+Works across groups: ``--group bars`` (default), ``--group series``, or
+``--group events``. For the series group ``--symbol`` is the series id (e.g.
+``DGS10``); the events group re-pulls each source's full release calendar (no
+``--symbol``). Both the series and events groups load a FRED key from
+``secrets/fred.env`` if not already exported.
 
 Example:
     python -m qde.backfill --source binance --symbol BTCUSDT --from 2020-01-01
@@ -23,19 +25,21 @@ Example:
     python -m qde.backfill --from 2020-01-01                    # every bar series in the lake
     python -m qde.backfill --group series --from-registry --from 2010-01-01   # all declared series
     python -m qde.backfill --group series --source fred --symbol DGS10 --from 2010-01-01
+    python -m qde.backfill --group events --from 2000-01-01     # the US macro release calendar
 """
 
 import os
 
 from qde.env import load_env_file
 from qde.ingest import get_ingestor
-from qde.loaders import load_ohlcv
+from qde.loaders import NoNewData, load_ohlcv
 from qde.log import configure, get_logger
-from qde.registry import declared_series
+from qde.registry import all_specs, declared_series
 from qde.storage import (
     list_bars_series,
     list_series,
     upsert_bars,
+    upsert_events,
     upsert_series_frame,
 )
 
@@ -43,6 +47,7 @@ log = get_logger(__name__)
 
 Series = tuple[str, str, str]  # (symbol, source, interval)  -- bars
 SeriesId = tuple[str, str]  # (source, series_id)            -- series group
+EventSeries = tuple[str, str]  # (source, series_id)         -- events group
 
 
 def backfill_series(
@@ -232,6 +237,72 @@ def backfill_series_group(
     return results
 
 
+# --- events group -----------------------------------------------------------
+#
+# The bitemporal-calendar twin. Unlike bars/series, an events backfill re-pulls
+# the *full* vintage history of each series (a revision is a new row for an
+# existing event, so a watermark-advancing incremental would miss revisions to
+# already-stored periods) and folds them into the source's calendar file. The
+# re-pull is idempotent (upsert_events dedups on (event_id, revision_seq)) and the
+# calendar is tiny, so a full refresh is both correct and cheap -- it is also what
+# the nightly update runs (qde.daily_update).
+
+
+def backfill_events_group(
+    start: str,
+    end: str | None = None,
+    source: str | None = None,
+    base_dir: str = "data",
+) -> dict[EventSeries, int]:
+    """Backfill every events-source's release calendar over ``[start, end]``.
+
+    Enumerates the registry's ``events`` sources (optionally narrowed to one
+    ``source``) and, for each, loads the full vintage history of every series it
+    declares and upserts it into that source's calendar file. ``start`` bounds the
+    *reference period* (which figures), not the vintage -- every revision of an
+    in-range period is captured. One failing series is logged and skipped;
+    ``NoNewData`` (a series with nothing in range) is treated as benignly empty.
+
+    Returns:
+        dict[EventSeries, int]: resulting calendar row count after each series was
+        merged, keyed by ``(source, series_id)``.
+    """
+    specs = [
+        s for s in all_specs() if s.group == "events" and (source is None or s.name == source)
+    ]
+    if not specs:
+        log.warning("backfill_no_series", group="events", source=source)
+        return {}
+
+    results: dict[EventSeries, int] = {}
+    for spec in specs:
+        calendar = spec.calendar or spec.name
+        ingestor = get_ingestor(spec.name)
+        for series_id in spec.canonical_symbols:
+            try:
+                df = ingestor.load(series_id, start, end)
+                rows = upsert_events(df, spec.name, calendar, base_dir)
+            except NoNewData:
+                continue  # no releases in range for this series; nothing to store
+            except Exception as exc:
+                log.warning(
+                    "backfill_failed",
+                    group="events",
+                    source=spec.name,
+                    series_id=series_id,
+                    error=type(exc).__name__,
+                    detail=str(exc),
+                )
+                continue
+
+            results[(spec.name, series_id)] = rows
+            log.info(
+                "backfilled", group="events", source=spec.name, series_id=series_id, rows=rows
+            )
+
+    return results
+
+
 def main() -> None:
     import argparse
 
@@ -242,7 +313,7 @@ def main() -> None:
     parser.add_argument(
         "--group",
         default="bars",
-        choices=["bars", "series"],
+        choices=["bars", "series", "events"],
         help="data group to backfill",
     )
     parser.add_argument("--source", help="restrict to one source, e.g. binance or fred")
@@ -277,7 +348,7 @@ def main() -> None:
             base_dir=args.base_dir,
             use_registry=args.use_registry,
         )
-    else:  # series
+    elif args.group == "series":
         # A series source (FRED) needs its API key; load it from the gitignored
         # secrets file if not already exported.
         load_env_file("secrets/fred.env")
@@ -288,6 +359,15 @@ def main() -> None:
             series_id=args.symbol,  # --symbol is the series id for the series group
             base_dir=args.base_dir,
             use_registry=args.use_registry,
+        )
+    else:  # events
+        # The events calendar is FRED/ALFRED-backed, so it needs the same key.
+        load_env_file("secrets/fred.env")
+        results = backfill_events_group(
+            start=args.start,
+            end=args.end,
+            source=args.source,
+            base_dir=args.base_dir,
         )
 
     log.info(

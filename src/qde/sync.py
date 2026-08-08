@@ -202,6 +202,56 @@ def publish_series(base_dir: str, bucket: str, client) -> dict:
     return {"published": published, "bytes": total_bytes, "failed": failed}
 
 
+def publish_events(base_dir: str, bucket: str, client) -> dict:
+    """Mirror the events lake to `bucket`, overwriting; never prune locally.
+
+    Twin of ``publish_series``. An events calendar is a single ``events.parquet``
+    the nightly job rewrites (a new revision is a new row) and still needs locally,
+    so it is republished each run with overwrite and the local copy is kept. Only
+    the root and glob differ from bars/series; the publish protocol is identical.
+
+    Args:
+        base_dir: Root of the local lake (bronze lives under it).
+        bucket: Target R2 bucket name.
+        client: An S3-compatible client (boto3 or a stand-in for tests).
+
+    Returns:
+        Summary with files published, bytes uploaded, and failures.
+    """
+    base = Path(base_dir)
+    events_root = base / "bronze" / "group=events"
+    if not events_root.exists():
+        return {"published": 0, "bytes": 0, "failed": 0}
+
+    published = 0
+    total_bytes = 0
+    failed = 0
+
+    for file in sorted(events_root.rglob("events.parquet")):
+        key = file.relative_to(base).as_posix()
+        local_size = file.stat().st_size
+
+        try:
+            client.upload_file(str(file), bucket, key)
+            remote_size = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+        except Exception as exc:
+            log.warning("publish_failed", key=key, error=type(exc).__name__, detail=str(exc))
+            failed += 1
+            continue
+
+        if remote_size != local_size:
+            # The remote copy is not intact; leave the local one and retry next run.
+            log.warning("size_mismatch", key=key, local=local_size, remote=remote_size)
+            failed += 1
+            continue
+
+        published += 1
+        total_bytes += local_size
+        log.info("published", key=key, bytes=local_size)
+
+    return {"published": published, "bytes": total_bytes, "failed": failed}
+
+
 if __name__ == "__main__":
     configure()
     base_dir = os.getenv("QDE_BASE_DIR", "data")
@@ -233,6 +283,15 @@ if __name__ == "__main__":
         published=series["published"],
         bytes=series["bytes"],
         failed=series["failed"],
+    )
+
+    # Events calendar (bitemporal releases): same overwrite-and-keep as series.
+    events = publish_events(base_dir=base_dir, bucket=bucket, client=client)
+    log.info(
+        "publish_events_complete",
+        published=events["published"],
+        bytes=events["bytes"],
+        failed=events["failed"],
     )
 
     # The quality summary the Power BI dashboard reads; publish it too so it is

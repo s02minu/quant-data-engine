@@ -66,6 +66,29 @@ _FRED_SERIES: list[str] = [
     "DTWEXBGS",  # trade-weighted USD (broad)
 ]
 
+# The `events` calendar (bitemporal releases) is built from the *revisable,
+# scheduled* macro prints among the FRED spine — the ones whose value is announced
+# on a release date and then benchmark-revised (docs/schemas/events.md). Daily
+# market rates (DGS*, SOFR) and balance-sheet plumbing are continuous observations,
+# not scheduled-and-revised announcements, so they stay `series`-only and are
+# excluded here. These twelve are the classic economic-calendar releases.
+_FRED_EVENT_SERIES: list[str] = [
+    # inflation
+    "CPIAUCSL",  # CPI, all items
+    "CPILFESL",  # core CPI
+    "PCEPI",  # PCE price index
+    "PCEPILFE",  # core PCE
+    # labour (the jobs report)
+    "PAYEMS",  # nonfarm payrolls
+    "UNRATE",  # unemployment rate
+    "ICSA",  # initial jobless claims (weekly)
+    # growth / activity / consumer
+    "GDPC1",  # real GDP (heavily revised — the bitemporal story at its sharpest)
+    "INDPRO",  # industrial production
+    "RSAFS",  # advance retail sales
+    "HOUST",  # housing starts
+]
+
 # The CBOE volatility complex for the `series` group: end-of-day levels for the
 # VIX (equity implied vol), VVIX (vol-of-vol) and SKEW (tail-risk) indices —
 # Model-1 volatility inputs (docs/data-sources.md §3.1). Served as public CSVs on
@@ -289,6 +312,30 @@ _SPECS: list[SourceSpec] = [
             "Open interest (~30d REST history) and liquidations (no public REST, "
             "streaming only) are deliberately not included here — see the ingestor. "
             "Verify Binance API terms before public publishing."
+        ),
+    ),
+    SourceSpec(
+        group="events",
+        name="fredcal",
+        # Each "symbol" is a FRED series whose scheduled releases + revisions become
+        # events; the map is identity (the FRED series id is the canonical id). This
+        # is the events source, distinct from the `fred` series source (one spec =
+        # one group), and its releases land in the single `us_macro` calendar file.
+        symbols={sid: sid for sid in _FRED_EVENT_SERIES},
+        calendar="us_macro",
+        max_rows_per_call=100000,  # the observations endpoint's page cap
+        rate_limit_per_min=120,  # FRED's documented request budget
+        # Events are not null-checked by run_checks (which walks bars/series); the
+        # events DQ is the bitemporal ordering test (qde.checks.run_events_checks).
+        # A NaN forecast is expected (code-only), and a NaN actual/previous is a
+        # legitimate not-yet-published / first-period marker — none are defects.
+        null_tolerance={},
+        redistributable=True,
+        license_note=(
+            "U.S. macro release calendar built from FRED releases + ALFRED vintages "
+            "(BLS / BEA / Census / Federal Reserve Board) — public domain and "
+            "redistributable. The consensus FORECAST column is proprietary and NOT "
+            "included; it layers on code-only per user (docs/schemas/events.md)."
         ),
     ),
 ]

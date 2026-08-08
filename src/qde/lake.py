@@ -115,6 +115,21 @@ def series_glob(
     return base + f"metric={metric}/series.parquet"  # metric partition: COT, perps
 
 
+def events_glob(source: str = "*", calendar: str = "*", bucket: str | None = None) -> str:
+    """Build an r2:// glob selecting events calendars.
+
+    The events twin of ``bars_glob``. Events are grouped by shape, one file per
+    (source, calendar) -- a calendar holds many series' releases (docs/schemas/
+    events.md) -- so the keys are source and calendar, with no date. Each argument
+    narrows a key; the default "*" matches all.
+    """
+    bucket = bucket or os.environ.get("QDE_R2_BUCKET", "qde-lake")
+    return (
+        f"r2://{bucket}/bronze/group=events/source={source}/"
+        f"calendar={calendar}/events.parquet"
+    )
+
+
 _MICROSTRUCTURE_KINDS = ("trades", "depth", "book_ticker", "snapshot", "gaps", "session")
 
 
@@ -155,6 +170,16 @@ def query(sql: str) -> pd.DataFrame:
             reads.append(f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true)")
     if reads:
         con.execute("CREATE OR REPLACE VIEW series AS " + " UNION ALL BY NAME ".join(reads))
+
+    # An ``events`` view mirrors the local ``storage.query``. Events sit at a uniform
+    # depth (source/calendar), one file per calendar, so a single glob suffices --
+    # no union. Skipped before any calendar reaches R2 (an empty glob raises) rather
+    # than breaking queries.
+    with contextlib.suppress(Exception):
+        con.execute(
+            "CREATE OR REPLACE VIEW events AS "
+            f"SELECT * FROM read_parquet('{events_glob()}', hive_partitioning=true)"
+        )
 
     for kind in _MICROSTRUCTURE_KINDS:
         try:

@@ -46,7 +46,7 @@ bronze/group=events/source=<source>/calendar=<calendar>/events.parquet
 
 | Column | Type | Notes |
 |---|---|---|
-| `event_id` | string | Stable id for *what* is released, e.g. `fred:release=10:CPIAUCSL` or `CPI`. Same across revisions of the same release. |
+| `event_id` | string | Stable id for one release — a specific figure for a specific reference period, `<series_id>:<ref-date>`, e.g. `CPIAUCSL:2024-06-01`. **Same across every revision of that release**, which is what makes it the per-event key the DQ checks group by. |
 | `series_id` | string | The `series` this release feeds, when applicable (`CPIAUCSL`). Nullable for pure events (a rate decision). |
 | `scheduled_ts` | timestamp, UTC | When the release was scheduled. The backtest-safe clock. |
 | `observed_ts` | timestamp, UTC | When this row's value became known (release, or the revision's date). |
@@ -88,3 +88,34 @@ one column free public sources do not provide.
   increases with `revision_seq`.
 - **One initial print** (`revision_seq = 0`) per `event_id`.
 - A `NaN` `forecast` is expected (the free calendar); it is not a defect.
+
+All three are enforced by `qde.checks.run_events_checks`, wired into the nightly
+`daily_update` beside the bars/series/microstructure passes (verified clean on the
+seeded 184k-event calendar).
+
+## As implemented
+
+- **Source `fredcal`, calendar `us_macro`** — a `SourceSpec` (group `events`) over
+  the eleven *revisable, scheduled* macro releases in the FRED spine (CPI/core CPI,
+  PCE/core PCE, payrolls, unemployment, jobless claims, real GDP, industrial
+  production, retail sales, housing starts). Daily market rates (`DGS*`, `SOFR`) and
+  balance-sheet plumbing stay `series`-only — they are continuous observations, not
+  scheduled-and-revised announcements. The ingestor is `qde.ingest.fred_releases`.
+- **One request, the whole grid.** ALFRED returns the full vintage history when the
+  observations endpoint is asked for the entire real-time range; `normalize` folds
+  the `(reference period, vintage)` rows into one event per period, one row per
+  revision.
+- **`scheduled_ts` = the first vintage's `realtime_start`** (the release date).
+  FRED does not cleanly map a scheduled date to a not-yet-published reference
+  period, so the first appearance is the honest release clock — for historical data
+  the scheduled and actual publication coincide. This makes `observed_ts >=
+  scheduled_ts` hold by construction (equality for the initial print).
+- **`previous` = the prior reference period's initial print** — a documented
+  approximation of "the prior period's value at release time"; exact bitemporal
+  previous is derivable but no DQ check depends on it.
+- **ALFRED coverage** begins in the mid-1990s, so the platform seeds from
+  `2000-01-01` (the genuine-revision era); earlier periods would carry a single
+  vintage dated to ALFRED's start rather than a true release. The nightly refresh
+  re-pulls in full (a revision is a new row for an old period, so a watermark-
+  advancing pull would miss it) — cheap because the calendar is tiny and the upsert
+  is idempotent.

@@ -41,18 +41,22 @@ def _bars_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "
     )
 
 
-def _write_frame_atomic(df: pd.DataFrame, path: Path) -> None:
+def _write_frame_atomic(df: pd.DataFrame, path: Path, index: bool = True) -> None:
     """Write a frame to ``path`` via a temp file and an atomic rename.
 
     A direct ``to_parquet`` that is interrupted mid-write leaves a truncated
     file in place, which then breaks every query over the lake. Writing to a
     temp sibling and renaming means the destination only ever holds a complete
     file. Mirrors the temp-then-rename protocol used by ``qde.compact``. Shared
-    by the bars and series writers -- both keep one mutable file per series.
+    by the bars, series, and events writers.
+
+    ``index`` is written for bars/series (their index *is* the meaningful ``date``
+    key) but not for events, whose rows are keyed by ``(event_id, revision_seq)``
+    columns and carry only a positional index worth discarding.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
-    df.to_parquet(tmp, engine="pyarrow")
+    df.to_parquet(tmp, engine="pyarrow", index=index)
     tmp.replace(path)  # os.replace: atomic overwrite on the same filesystem
 
 
@@ -314,6 +318,16 @@ def query(sql: str, base_dir: str = "data") -> pd.DataFrame:
     if reads:
         con.sql("CREATE OR REPLACE VIEW series AS " + " UNION ALL BY NAME ".join(reads))
 
+    # events: a uniform partition depth (source/calendar), one events.parquet per
+    # calendar (docs/schemas/events.md) -- so one glob, like bars.
+    events_root = bronze / "group=events"
+    if any(events_root.glob("**/*.parquet")):
+        glob = (events_root / "**" / "*.parquet").as_posix()
+        con.sql(
+            "CREATE OR REPLACE VIEW events AS "
+            f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true)"
+        )
+
     return con.sql(sql).df()
 
 
@@ -522,5 +536,124 @@ def list_series(base_dir: str = "data") -> pd.DataFrame:
 
     return query(
         "SELECT DISTINCT source, series_id FROM series ORDER BY source, series_id",
+        base_dir=base_dir,
+    )
+
+
+# --- events group (bitemporal scheduled releases) ----------------------------
+#
+# The economic-calendar cousin of bars/series. An event is a scheduled, revisable
+# release (docs/schemas/events.md): sparse and tiny, so one mutable file per
+# *calendar* holds many series' events side by side, with the reference/observed
+# dates as columns rather than partitions (same small-files reasoning as series).
+# Rows are keyed by (event_id, revision_seq) -- one per release and per revision --
+# not by a date index, so the upsert dedups on those columns instead of the index.
+
+
+def _events_path(source: str, calendar: str, base_dir: str = "data") -> Path:
+    """Build the bronze path for one events calendar.
+
+    Hive-partitioned by ``source`` and ``calendar`` -- the keys you filter on.
+    A calendar is a named slice (``us_macro``, ``earnings``) so unrelated event
+    streams live in separate files.
+
+    Args:
+        source (str): the calendar's source, e.g. "fredcal". A partition key.
+        calendar (str): the named calendar, e.g. "us_macro". A partition key.
+        base_dir (str, optional): the lake root. Default: 'data'.
+
+    Returns:
+        Path: Path to the calendar's single Parquet file.
+    """
+    return (
+        Path(base_dir)
+        / "bronze"
+        / "group=events"
+        / f"source={source}"
+        / f"calendar={calendar}"
+        / "events.parquet"
+    )
+
+
+def upsert_events(
+    df: pd.DataFrame, source: str, calendar: str, base_dir: str = "data"
+) -> int:
+    """Merge events into a calendar file idempotently; return the stored row count.
+
+    Rows are keyed by ``(event_id, revision_seq)`` -- one row per release and per
+    revision -- rather than by a date index, so this dedups on those columns
+    (last-write-wins) instead of reusing the index-keyed ``_upsert_frame``. A
+    re-pull of the full vintage history (how the calendar is refreshed, since a
+    revision is a new row for an existing event) therefore converges to exactly
+    one row per (event, revision) instead of accumulating duplicates. Ordered by
+    ``scheduled_ts`` then ``event_id`` then ``revision_seq`` and written atomically.
+
+    Args:
+        df (pd.DataFrame): events to merge, in the schema shape (docs/schemas/events.md).
+        source (str): the calendar source, e.g. "fredcal".
+        calendar (str): the named calendar, e.g. "us_macro".
+        base_dir (str, optional): the lake root. Default: 'data'.
+
+    Returns:
+        int: number of rows in the resulting calendar file.
+    """
+    path = _events_path(source, calendar, base_dir)
+    if path.exists():
+        existing = pd.read_parquet(path, engine="pyarrow")  # type: ignore[call-overload]
+        combined = pd.concat([existing, df], ignore_index=True)
+    else:
+        combined = df.reset_index(drop=True)
+
+    combined = (
+        combined.drop_duplicates(subset=["event_id", "revision_seq"], keep="last")
+        .sort_values(["scheduled_ts", "event_id", "revision_seq"])
+        .reset_index(drop=True)
+    )
+    _write_frame_atomic(combined, path, index=False)
+
+    return len(combined)
+
+
+def update_events(
+    series_id: str,
+    source: str,
+    calendar: str,
+    start: str,
+    base_dir: str = "data",
+) -> int:
+    """Full-refresh one series' release history into its calendar file.
+
+    Unlike ``update_series`` (watermark-advanced), events are re-pulled in *full*
+    from ``start``: a revision is a new ``(event_id, revision_seq)`` row for an
+    already-stored reference period, which a watermark advanced past that period's
+    date would never re-fetch. The re-pull is idempotent (``upsert_events`` dedups)
+    and calendars are tiny, so a full refresh is both correct and cheap.
+
+    Raises:
+        NoNewData: the series returned nothing from ``start`` -- the benign empty
+            case, for the caller to treat as a no-op (mirrors the series/bars
+            update contract).
+        ValueError: a real fetch failure (bad key, API error) propagates.
+    """
+    # Lazy import mirrors update_series -- keeps storage from importing the ingest
+    # package at module load.
+    from qde.ingest import get_ingestor
+
+    df = get_ingestor(source).load(series_id, start)
+    return upsert_events(df, source, calendar, base_dir)
+
+
+def list_events(base_dir: str = "data") -> pd.DataFrame:
+    """List the (source, calendar) calendars present in the events lake.
+
+    Reads partition metadata straight from the lake, so callers never parse
+    filenames. Returns an empty frame when no events have landed yet.
+    """
+    root = Path(base_dir) / "bronze" / "group=events"
+    if not any(root.glob("**/*.parquet")):
+        return pd.DataFrame(columns=["source", "calendar"])
+
+    return query(
+        "SELECT DISTINCT source, calendar FROM events ORDER BY source, calendar",
         base_dir=base_dir,
     )

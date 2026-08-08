@@ -134,6 +134,52 @@ def offline_fred(monkeypatch):
     monkeypatch.setattr(http_mod.requests, "get", fake_get)
 
 
+def _fred_vintages():
+    """ALFRED all-vintages observations for one series across three reference months.
+
+    The revision grid the events ingestor folds into bitemporal rows: months 01 and
+    02 each carry two vintages (initial + one revision); month 03's only vintage is
+    a withheld "." (-> NaN actual, row kept). The realtime_start dates ascend so
+    revision_seq, scheduled_ts (the first vintage), and previous (the prior month's
+    initial) are all determinate. Shared release date 2024-03-15 (month-02 initial
+    == month-01 revision) mirrors how a real release day both prints and revises.
+    """
+    return {
+        "observations": [
+            # reference month 2024-01-01
+            {"realtime_start": "2024-02-15", "realtime_end": "2024-03-14",
+             "date": "2024-01-01", "value": "3.1"},   # initial
+            {"realtime_start": "2024-03-15", "realtime_end": "9999-12-31",
+             "date": "2024-01-01", "value": "3.2"},   # revision 1
+            # reference month 2024-02-01
+            {"realtime_start": "2024-03-15", "realtime_end": "2024-04-14",
+             "date": "2024-02-01", "value": "3.5"},   # initial
+            {"realtime_start": "2024-04-15", "realtime_end": "9999-12-31",
+             "date": "2024-02-01", "value": "3.6"},   # revision 1
+            # reference month 2024-03-01 — withheld initial ("." -> NaN)
+            {"realtime_start": "2024-04-15", "realtime_end": "9999-12-31",
+             "date": "2024-03-01", "value": "."},
+        ]
+    }
+
+
+@pytest.fixture
+def offline_fred_releases(monkeypatch):
+    """Serve canned ALFRED all-vintages observations for the events ingestor; an
+    unknown series id returns a 400 as the API does. A second page (offset > 0)
+    returns nothing so the pagination loop terminates. Sets a dummy FRED_API_KEY."""
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+
+    def fake_get(url, params):
+        if params["series_id"] == "NOTREAL":
+            return FakeResponse(status_code=400, text="Bad Request")
+        if params.get("offset", 0):
+            return FakeResponse(payload={"observations": []})
+        return FakeResponse(payload=_fred_vintages())
+
+    monkeypatch.setattr(http_mod.requests, "get", fake_get)
+
+
 # CBOE volatility-index CSVs, keyed by ticker. VIX carries OHLC (value is the
 # last column, CLOSE, which differs from OPEN so a test can prove the right
 # column is picked); VVIX/SKEW carry a single value column. Dates are MM/DD/YYYY.

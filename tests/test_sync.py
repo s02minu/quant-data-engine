@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from qde.sync import publish_bars, publish_series, sync_bronze
+from qde.sync import publish_bars, publish_events, publish_series, sync_bronze
 
 TODAY = date(2026, 7, 25)
 
@@ -255,6 +255,54 @@ def test_publish_series_no_series_group_is_noop(tmp_path):
     client = FakeS3()
 
     summary = publish_series(str(tmp_path), "qde-lake", client)
+
+    assert summary == {"published": 0, "bytes": 0, "failed": 0}
+    assert len(client.objects) == 0
+
+
+def _write_events(base, source, calendar, rows=3):
+    partition = (
+        Path(base)
+        / "bronze"
+        / "group=events"
+        / f"source={source}"
+        / f"calendar={calendar}"
+    )
+    partition.mkdir(parents=True, exist_ok=True)
+    file = partition / "events.parquet"
+    pd.DataFrame({"actual": range(rows)}).to_parquet(file, index=False)
+    return file
+
+
+def test_publish_events_uploads_keeps_local_and_mirrors_path(tmp_path):
+    f = _write_events(tmp_path, "fredcal", "us_macro")
+    client = FakeS3()
+
+    summary = publish_events(str(tmp_path), "qde-lake", client)
+
+    assert summary["published"] == 1
+    assert f.exists()  # events are mutable (revisions land); local copy is kept
+    (bucket, key), _ = next(iter(client.objects.items()))
+    assert bucket == "qde-lake"
+    assert key == "bronze/group=events/source=fredcal/calendar=us_macro/events.parquet"
+
+
+def test_publish_events_overwrites_each_run(tmp_path):
+    _write_events(tmp_path, "fredcal", "us_macro")
+    client = FakeS3()
+
+    first = publish_events(str(tmp_path), "qde-lake", client)
+    second = publish_events(str(tmp_path), "qde-lake", client)
+
+    assert first["published"] == 1
+    assert second["published"] == 1  # re-published every run, never pruned
+
+
+def test_publish_events_no_events_group_is_noop(tmp_path):
+    _write_bars(tmp_path, "binance", "BTCUSDT")
+    client = FakeS3()
+
+    summary = publish_events(str(tmp_path), "qde-lake", client)
 
     assert summary == {"published": 0, "bytes": 0, "failed": 0}
     assert len(client.objects) == 0

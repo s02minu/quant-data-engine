@@ -17,11 +17,11 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | In progress (per-source fields done) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1 #5 Coinbase DONE, R2-confirmed; Wave 2 #6 ccxt done) |
+| 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; **events calendar done** — 4th group live) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
 | 8 | Transformations with dbt | Not started |
-| 9 | Data quality | In progress (freshness + null checks live on VPS; microstructure checks added) |
+| 9 | Data quality | In progress (freshness + null + microstructure checks live; **bitemporal events check added**) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
 | 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.12×3.14) |
 | 12 | Catalogue and publishing | Not started |
@@ -465,7 +465,38 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       (30,986 rows), published to R2 (`publish_bars_complete published=20` — 8 +
       12 new), verified **queryable from the laptop over R2** (7 venues in `bars`).
       The nightly `daily_update` now advances all 12 via the same watermark path.
-- [ ] Economic calendar (`events`) — FRED/ALFRED core free; forecast column code-only
+- [x] **Economic calendar (`events`) — the bitemporal group, FRED/ALFRED-backed.**
+      The fourth and last group shape, and the one the roadmap calls the platform's
+      most valuable property (ROADMAP §3.4): a *release* calendar that stores **what
+      was known, and when** — killing the lookahead bias a current-value-only table
+      bakes into any backtest. `qde.ingest.fred_releases.FredReleasesIngestor` asks
+      the FRED observations endpoint for the *entire* real-time range, so ALFRED
+      returns the full **vintage grid**; `normalize` folds `(reference period,
+      vintage)` rows into the schema (`docs/schemas/events.md`): one **event** per
+      reference period (`event_id=<series>:<ref-date>`), one **row per revision**
+      (`revision_seq` 0,1,2…), the two clocks (`scheduled_ts` = the first vintage's
+      release date; `observed_ts` = each vintage's date), plus `actual`/`previous`;
+      `forecast` is always `NaN` — the consensus is proprietary, a code-only column
+      (the "two halves" shape at the column level, ROADMAP §6). A new `events` group
+      in storage (one mutable `events.parquet` per `source/calendar`, keyed by
+      `(event_id, revision_seq)` not a date index — `upsert_events`/`update_events`/
+      `list_events` + an `events` view in `storage.query` and `qde.lake`), a
+      `publish_events` mirror in `qde.sync`, and a `fredcal` `SourceSpec` (group
+      `events`, `calendar="us_macro"`, the 11 revisable macro releases — CPI/core,
+      PCE/core, payrolls, unemployment, jobless claims, GDP, IP, retail sales,
+      housing). Wired into `backfill` (`--group events`) and the nightly
+      `daily_update` (**full-refresh**, not watermark-advanced — a revision is a new
+      row for an old period). **The bitemporal DQ check landed** — `run_events_checks`
+      enforces `observed_ts >= scheduled_ts` (the ordering test, ROADMAP §9),
+      contiguous `revision_seq` from 0, and one initial print per event; wired into
+      the nightly beside the other passes. Offline tests (ingestor 10, storage 6,
+      checks 6, publish 3 = 25 new); full suite **212 green**, ruff + mypy clean.
+      **Seeded locally: 184,121 events** across the 11 series in one `us_macro`
+      calendar (from 2000; ALFRED vintage coverage begins mid-1990s), **0 DQ
+      violations**. Textbook demo: real GDP for 2020-Q2 first printed 17,205.8 on
+      2020-07-30, then revised 7× over five years to 19,078.0 (~+11%). **DEPLOY
+      PENDING** — seed on the VPS (`backfill --group events --from 2000-01-01`),
+      publish to R2 (`publish_events`), verify queryable from the laptop.
 - [ ] Equities (`bars`) — code-only; corporate actions are the pressure point.
       **Wave 2 #7, deferred (2026-08-07).** yfinance already covers equities
       (code-only, deployed). **Stooq is out** — it now serves a JavaScript
@@ -603,7 +634,10 @@ kinds. Relevant to the retention question in ROADMAP §11.
       verified it does not false-positive on the live FRED monthly spine.
 - [ ] Pandera schemas at the bronze boundary (row-level contract) — later
 - [ ] dbt tests: not_null, unique, accepted_values — after dbt (Phase 8)
-- [ ] Custom financial tests: OHLC coherence, gap limits, bitemporal ordering
+- [~] Custom financial tests — **the bitemporal ordering test is done**
+      (`run_events_checks`: `observed_ts >= scheduled_ts`, contiguous `revision_seq`,
+      one initial print per event; ROADMAP §9's headline check). OHLC coherence and
+      explicit gap limits still open.
 - [ ] Data quality policy documented
 
 ### Microstructure checks

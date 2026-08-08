@@ -50,11 +50,11 @@ _CADENCE_WINDOW = 30
 class Violation:
     """One failed data-quality check, ready to log or render into an alert."""
 
-    group: str  # "bars" | "series" | "microstructure"
+    group: str  # "bars" | "series" | "events" | "microstructure"
     source: str
-    series_id: str  # symbol (bars/microstructure) or series_id (series)
+    series_id: str  # symbol (bars/microstructure), series_id (series), calendar (events)
     metric: str | None  # metric partition (series) or kind (microstructure), or None
-    check: str  # "freshness" | "nulls" | "activity" | "gaps" | "crossed_book"
+    check: str  # "freshness" | "nulls" | "activity" | "gaps" | "crossed_book" | bitemporal
     severity: str  # "error" | "warn"
     detail: str
 
@@ -182,6 +182,88 @@ def run_checks(base_dir: str = "data", now: pd.Timestamp | None = None) -> list[
 
         for _column, message in _null_details(df, _tolerance(source)):
             violations.append(Violation("bars", source, symbol, None, "nulls", "error", message))
+
+    return violations
+
+
+# --- events (bitemporal calendar) checks ------------------------------------
+
+
+def run_events_checks(base_dir: str = "data") -> list[Violation]:
+    """Validate the bitemporal integrity of every events calendar.
+
+    Freshness/null checks are the wrong shape for a revisable release calendar;
+    what must hold is the *temporal model* (docs/schemas/events.md), and getting it
+    wrong bakes lookahead bias into every backtest that reads the calendar. Three
+    invariants, per calendar file:
+
+    - **bitemporal_order** — ``observed_ts >= scheduled_ts`` for every row: a value
+      cannot become known before its release was scheduled to exist. This is *the*
+      custom financial check the platform is built around (ROADMAP §9), an error.
+    - **initial_print** — exactly one initial print (``revision_seq == 0``) per
+      ``event_id``: a release has one first appearance, revisions come after.
+    - **revision_seq** — the sequence is contiguous from 0 per ``event_id`` (no gap
+      or duplicate), so a revision is never silently dropped or double-counted.
+
+    A forecast/actual/previous ``NaN`` is expected (the free calendar, an
+    unpublished print) and is *not* flagged here. Read-only; absent events (e.g. on
+    a box that has not seeded the calendar) yields an empty list.
+
+    Returns:
+        list[Violation]: one violation per failing invariant per calendar, with an
+        aggregate count in the detail rather than one alert per offending event.
+    """
+    root = Path(base_dir) / "bronze" / "group=events"
+    if not root.exists():
+        return []
+
+    violations: list[Violation] = []
+    for path in sorted(root.rglob("events.parquet")):
+        keys = _partition_keys(path, root)
+        source, calendar = keys.get("source", ""), keys.get("calendar", "")
+        df = pd.read_parquet(path, engine="pyarrow")  # type: ignore[call-overload]
+        if df.empty:
+            continue
+
+        # 1) observed_ts >= scheduled_ts (the bitemporal ordering test).
+        early = int((df["observed_ts"] < df["scheduled_ts"]).sum())
+        if early:
+            violations.append(
+                Violation(
+                    "events", source, calendar, None, "bitemporal_order", "error",
+                    f"{early} row(s) observed before their scheduled release "
+                    f"(observed_ts < scheduled_ts)",
+                )
+            )
+
+        # 2) exactly one initial print (revision_seq == 0) per event_id.
+        initials = df[df["revision_seq"] == 0].groupby("event_id").size()
+        all_events = df["event_id"].nunique()
+        multi = int((initials > 1).sum())
+        none_ = all_events - len(initials)
+        if multi or none_:
+            violations.append(
+                Violation(
+                    "events", source, calendar, None, "initial_print", "error",
+                    f"{multi} event(s) with multiple initial prints, "
+                    f"{none_} with none (expected exactly one revision_seq=0 each)",
+                )
+            )
+
+        # 3) revision_seq contiguous from 0 per event_id (0,1,2,... no gap/dupe).
+        agg = df.groupby("event_id")["revision_seq"].agg(["min", "max", "count", "nunique"])
+        contiguous = (agg["min"] == 0) & (agg["max"] == agg["count"] - 1) & (
+            agg["nunique"] == agg["count"]
+        )
+        broken = int((~contiguous).sum())
+        if broken:
+            violations.append(
+                Violation(
+                    "events", source, calendar, None, "revision_seq", "error",
+                    f"{broken} event(s) with a non-contiguous revision_seq "
+                    "(a gap or duplicate revision)",
+                )
+            )
 
     return violations
 

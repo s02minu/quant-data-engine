@@ -21,18 +21,28 @@ _URL = "https://api.stlouisfed.org/fred/series/observations"
 _PAGE_LIMIT = 100000  # FRED's maximum observations per request
 
 
+def fred_api_key() -> str:
+    """Return the FRED API key from the environment, or raise if it is unset.
+
+    Shared by every FRED-backed ingestor (the ``series`` observations here and
+    the ``events`` release calendar in ``fred_releases``) so the key guard and
+    its message live in one place.
+    """
+    key = os.getenv("FRED_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "FRED_API_KEY is not set. Get a free key at https://fred.stlouisfed.org "
+            "and export it (e.g. a gitignored secrets/fred.env)."
+        )
+    return key
+
+
 class FredIngestor(BaseIngestor):
     """Ingest a FRED series' observations as a scalar ``series``."""
 
     @staticmethod
     def _api_key() -> str:
-        key = os.getenv("FRED_API_KEY")
-        if not key:
-            raise RuntimeError(
-                "FRED_API_KEY is not set. Get a free key at https://fred.stlouisfed.org "
-                "and export it (e.g. a gitignored secrets/fred.env)."
-            )
-        return key
+        return fred_api_key()
 
     def first_cursor(self, symbol: str, start: str, end: str | None, interval: str) -> int:
         return 0  # the observations endpoint pages by integer offset
