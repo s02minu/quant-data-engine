@@ -20,7 +20,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; **events calendar done** — 4th group live) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
-| 8 | Transformations with dbt | Not started |
+| 8 | Transformations with dbt | In progress (**bars vertical slice done** — silver view + gold marts + tests) |
 | 9 | Data quality | In progress (freshness + null + microstructure checks live; **bitemporal events check added**) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
 | 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.12×3.14) |
@@ -491,12 +491,12 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       contiguous `revision_seq` from 0, and one initial print per event; wired into
       the nightly beside the other passes. Offline tests (ingestor 10, storage 6,
       checks 6, publish 3 = 25 new); full suite **212 green**, ruff + mypy clean.
-      **Seeded locally: 184,121 events** across the 11 series in one `us_macro`
-      calendar (from 2000; ALFRED vintage coverage begins mid-1990s), **0 DQ
+      **Seeded: 33,447 vintage rows across 4,358 events** (11 series, one `us_macro`
+      calendar, from 2000; ALFRED vintage coverage begins mid-1990s), **0 DQ
       violations**. Textbook demo: real GDP for 2020-Q2 first printed 17,205.8 on
-      2020-07-30, then revised 7× over five years to 19,078.0 (~+11%). **DEPLOY
-      PENDING** — seed on the VPS (`backfill --group events --from 2000-01-01`),
-      publish to R2 (`publish_events`), verify queryable from the laptop.
+      2020-07-30, then revised 7× over five years to 19,078.0 (~+11%). **DEPLOYED +
+      R2-confirmed 2026-08-08**: seeded on the VPS, `publish_events_complete
+      published=1`, queried back from the laptop over R2 (33,447 rows, `FROM events`).
 - [ ] Equities (`bars`) — code-only; corporate actions are the pressure point.
       **Wave 2 #7, deferred (2026-08-07).** yfinance already covers equities
       (code-only, deployed). **Stooq is out** — it now serves a JavaScript
@@ -611,10 +611,35 @@ kinds. Relevant to the retention question in ROADMAP §11.
 
 ## Phase 8 — Transformations with dbt
 
-- [ ] dbt-core + dbt-duckdb project
-- [ ] Staging models per group x source (silver)
-- [ ] Marts: OHLCV resampling, returns, volatility, microstructure features (gold)
-- [ ] `dbt docs` lineage site
+**Vertical slice on `bars` — the whole bronze→silver→gold→R2→client-query loop
+proven end-to-end (2026-08-08).** A `transform/` dbt-core + dbt-duckdb project
+(added as the `transform` optional-dependency; baked into the VPS image). Design
+choice that shaped it: bronze bars/series/events are *already* deduped + typed by the
+ingestors, so **silver is a thin cleaning view**, and the weight is in **gold**,
+materialized as **Parquet files in the lake** (dbt-duckdb `external`) — the only shape
+consistent with serve-files-not-queries. dbt reads bronze via `read_parquet` under a
+`lake_root` var (`../data` local, `/data` on the VPS), so no R2 creds are needed to
+transform. Consumer-side: `publish_gold` mirrors gold to R2 (twin of
+`publish_bars/series/events`), and `fct_bars_daily`/`dim_sources` views are registered
+in both `storage.query` (local) and `qde.lake` (R2), so the same `FROM fct_bars_daily`
+SQL runs either place. `scripts/maintain.sh` gained a non-fatal `dbt build` step
+between the bronze update and the sync. Verified locally: `dbt build` green (17 nodes),
+gold written for all 20 bar series across 7 venues — BTC daily returns ±1–3%, realized
+vol ~1.3–1.7%/day, ATR/volume-z sane; Python suite **216 green**, ruff + mypy clean.
+**DEPLOY PENDING** — rebuild the VPS image (now installs `.[transform]`), run
+`maintain.sh` (or the `dbt build` + `sync` steps), verify `FROM fct_bars_daily` from
+the laptop over R2.
+
+- [x] dbt-core + dbt-duckdb project (`transform/`, in-repo profile)
+- [x] Staging model (silver) — `stg_bars` view over the bronze bars glob
+- [x] Marts (gold) — `fct_bars_daily` (returns, true range/ATR(14), 20d/30d realized
+      vol, volume z-score) + `dim_sources` (the registry catalogue), materialized as
+      lake Parquet and published to R2
+- [x] dbt tests — built-in (`not_null`/`accepted_values`) + singular tests: **OHLC
+      coherence** (closes a Phase 9 item), key uniqueness, ATR non-negativity
+- [ ] `series`/`events` staging + marts (macro-joined context, surprise) — next repeat
+- [ ] `dbt docs` lineage site (hosting) — follow-on
+- [ ] `dbt build` on a sample lake in CI — follow-on (Phase 11)
 
 ## Phase 9 — Data quality
 
@@ -634,10 +659,11 @@ kinds. Relevant to the retention question in ROADMAP §11.
       verified it does not false-positive on the live FRED monthly spine.
 - [ ] Pandera schemas at the bronze boundary (row-level contract) — later
 - [ ] dbt tests: not_null, unique, accepted_values — after dbt (Phase 8)
-- [~] Custom financial tests — **the bitemporal ordering test is done**
-      (`run_events_checks`: `observed_ts >= scheduled_ts`, contiguous `revision_seq`,
-      one initial print per event; ROADMAP §9's headline check). OHLC coherence and
-      explicit gap limits still open.
+- [~] Custom financial tests — **bitemporal ordering + OHLC coherence done.**
+      Bitemporal: `run_events_checks` (`observed_ts >= scheduled_ts`, contiguous
+      `revision_seq`, one initial print per event; ROADMAP §9's headline check). OHLC
+      coherence: the dbt singular test `assert_ohlc_coherent` over `fct_bars_daily`
+      (high/low are the true max/min). Explicit gap limits still open.
 - [ ] Data quality policy documented
 
 ### Microstructure checks

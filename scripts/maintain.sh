@@ -18,6 +18,18 @@ set +a
 echo "[$(date -u +%FT%TZ)] bars update start"
 docker compose run --rm collector python -m qde.daily_update
 
+echo "[$(date -u +%FT%TZ)] dbt build start"
+# Rebuild the gold marts from the freshly-updated bronze, into the mounted /data
+# lake so the sync below ships them. One container invocation: regenerate the
+# dim_sources seed from the current registry, ensure the gold dirs exist (DuckDB's
+# COPY will not create them), then dbt build. Non-fatal -- a transform problem must
+# not block the sync of bronze/series/events.
+docker compose run --rm collector sh -c '
+  python -c "from qde.registry import dim_sources; dim_sources().to_csv(\"transform/seeds/dim_sources_seed.csv\", index=False)"
+  mkdir -p /data/gold/group=bars/mart=fct_bars_daily /data/gold/dim_sources
+  cd transform && DBT_PROFILES_DIR=. dbt build --vars "lake_root: /data"
+' || echo "[$(date -u +%FT%TZ)] dbt build failed; continuing to sync"
+
 echo "[$(date -u +%FT%TZ)] compaction start"
 # Non-fatal: a compaction problem (e.g. one oversized partition) must not abort
 # the run before sync, or settled data and bars would never reach R2.

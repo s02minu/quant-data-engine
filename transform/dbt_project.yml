@@ -1,0 +1,32 @@
+name: qde_transform
+version: "1.0.0"
+config-version: 2
+
+# The profile lives in this directory (transform/profiles.yml); run dbt with
+# DBT_PROFILES_DIR=. from here, so no ~/.dbt setup is needed.
+profile: qde
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# The lake root the models read bronze from and write gold to. Defaults to the
+# repo's ./data (dbt runs from transform/, so ../data); the VPS nightly overrides
+# it to the container's /data with `--vars 'lake_root: /data'`.
+vars:
+  lake_root: "../data"
+
+models:
+  qde_transform:
+    # Silver: logical cleaning over bronze. Bronze bars are already deduped/typed
+    # by the ingestors, so staging is a thin view -- no storage, computed on demand.
+    staging:
+      +materialized: view
+    # Gold: analytics-ready marts, materialized as Parquet FILES in the lake
+    # (dbt-duckdb `external`), so they publish to R2 and clients query them with
+    # their own DuckDB -- serve files, not queries (ROADMAP 5.1).
+    marts:
+      +materialized: external

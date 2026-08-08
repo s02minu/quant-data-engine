@@ -130,6 +130,27 @@ def events_glob(source: str = "*", calendar: str = "*", bucket: str | None = Non
     )
 
 
+# Gold marts (dbt-materialized Parquet), by view name -> path relative to the
+# bucket root. Each is a single mart file the nightly `dbt build` rewrites and
+# `sync.publish_gold` ships. Extend this as new marts land (series/events gold).
+_GOLD_MARTS = {
+    "fct_bars_daily": "gold/group=bars/mart=fct_bars_daily/*.parquet",
+    "dim_sources": "gold/dim_sources/*.parquet",
+}
+
+
+def gold_glob(mart: str, bucket: str | None = None) -> str:
+    """Build an r2:// glob selecting a named gold mart.
+
+    Gold is the medallion layer above bronze (``gold/`` sibling of ``bronze/``),
+    holding the dbt-materialized analytics marts. Unlike the bronze groups these
+    are named products, so the glob is looked up by mart name (``fct_bars_daily``,
+    ``dim_sources``) rather than built from partition keys.
+    """
+    bucket = bucket or os.environ.get("QDE_R2_BUCKET", "qde-lake")
+    return f"r2://{bucket}/{_GOLD_MARTS[mart]}"
+
+
 _MICROSTRUCTURE_KINDS = ("trades", "depth", "book_ticker", "snapshot", "gaps", "session")
 
 
@@ -180,6 +201,16 @@ def query(sql: str) -> pd.DataFrame:
             "CREATE OR REPLACE VIEW events AS "
             f"SELECT * FROM read_parquet('{events_glob()}', hive_partitioning=true)"
         )
+
+    # Gold marts: one view per dbt mart (fct_bars_daily, dim_sources). Each is
+    # skipped until it reaches R2 (an empty glob raises), so `FROM fct_bars_daily`
+    # runs the same query locally (storage.query) and over R2 once published.
+    for mart in _GOLD_MARTS:
+        with contextlib.suppress(Exception):
+            con.execute(
+                f"CREATE OR REPLACE VIEW {mart} AS "
+                f"SELECT * FROM read_parquet('{gold_glob(mart)}', hive_partitioning=true)"
+            )
 
     for kind in _MICROSTRUCTURE_KINDS:
         try:

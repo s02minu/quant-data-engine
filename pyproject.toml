@@ -27,6 +27,14 @@ dev = [
     "ruff",
     "mypy",
 ]
+# The dbt transformation layer (Phase 8). Kept out of the core deps so a client
+# that only queries the lake stays light, but installed into the VPS image
+# (`pip install .[transform]`) so the nightly can rebuild gold. dbt-duckdb reads
+# bronze Parquet and materializes gold Parquet in-place -- zero warehouse cost.
+transform = [
+    "dbt-core",
+    "dbt-duckdb",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

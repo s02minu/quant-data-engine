@@ -15,24 +15,33 @@ mounted from `./data` on the host (see `docker-compose.yml`).
 
 ## What `maintain.sh` does
 
-Three steps, all as one-off `docker compose run --rm collector …` containers:
+Four steps, all as one-off `docker compose run --rm collector …` containers:
 
-1. **Bars + series update** — `python -m qde.daily_update`: watermark-driven
-   incremental pull of every stored bar *and* scalar series, then rebuilds
+1. **Bars + series + events update** — `python -m qde.daily_update`: watermark-driven
+   incremental pull of every stored bar *and* scalar series, a full-refresh of each
+   seeded events calendar (release history, which revises), then rebuilds
    `quality_summary.csv`, then runs the **data-quality pass** (`qde.checks`:
-   registry-driven freshness + null-tolerance checks over every seeded series) and,
+   registry-driven freshness + null-tolerance checks over every seeded series, plus
+   the bitemporal events check and the microstructure checks) and,
    if there is a fetch failure or a DQ violation, posts a **health alert** to a
    Discord webhook (`qde.alert`). The series half (FRED) needs `FRED_API_KEY`; the
    entry point loads it — and the optional `QDE_DISCORD_WEBHOOK` — from
    `secrets/*.env`, which reach the container via the read-only `./secrets` mount
    (see below). The job still exits 0 even on a DQ violation, so a stale series
    never blocks the compact/sync that follow — the alert is what surfaces it.
-2. **Compaction** — `python -m qde.compact`: merges the many small microstructure
+2. **dbt build (gold)** — rebuilds the gold marts from the freshly-updated bronze
+   into the mounted `/data/gold` lake, in one container invocation: regenerate the
+   `dim_sources` seed from the current registry, `mkdir -p` the gold dirs (DuckDB's
+   `COPY` won't create them), then `cd transform && DBT_PROFILES_DIR=. dbt build
+   --vars 'lake_root: /data'`. Non-fatal — a transform failure must not block the
+   sync of bronze. Needs no secrets (reads/writes local `/data`). See `transform/`.
+3. **Compaction** — `python -m qde.compact`: merges the many small microstructure
    part files in settled partitions.
-3. **Sync** — `python -m qde.sync`: ships settled microstructure to R2 and prunes
+4. **Sync** — `python -m qde.sync`: ships settled microstructure to R2 and prunes
    it locally (`sync_bronze`), mirrors the mutable bars files to R2 with overwrite
    while keeping the local copy (`publish_bars`), does the same for the scalar
-   series (`publish_series`), and publishes `quality_summary.csv`.
+   series (`publish_series`), the events calendar (`publish_events`), and the gold
+   marts (`publish_gold`), and publishes `quality_summary.csv`.
 
 R2 credentials are read from `secrets/r2.env` (gitignored, VPS-only) and passed
 into the sync container with `-e`. Source keys (FRED) live in `secrets/fred.env`
@@ -89,6 +98,28 @@ The key reaches the container through the `./secrets` mount, so no `-e` is
 needed. Expect `backfill_complete group=series series=26`. Thereafter the nightly
 `daily_update` advances each series' watermark and `qde.sync` publishes them to
 R2 (`publish_series_complete published=26`).
+
+## Seeding the events lake (first time only)
+
+The `events` group — the bitemporal U.S. macro release calendar (`docs/schemas/
+events.md`) — is FRED/ALFRED-backed, so it uses the same `secrets/fred.env` key
+already on the box (via the `./secrets` mount). Seed it once, from the
+genuine-revision (ALFRED) era:
+
+```bash
+docker compose run --rm collector python -m qde.backfill \
+  --group events --from 2000-01-01
+```
+
+Expect `backfill_complete group=events series=11 total_rows≈33000` (~4,400 events
+in one `us_macro` calendar file). Thereafter the nightly `daily_update` **full-refreshes**
+the calendar (a revision is a new row for an already-stored period, so unlike
+bars/series this re-pulls in full — cheap, the calendar is tiny) and `qde.sync`
+publishes it to R2 (`publish_events_complete published=1`). It also runs the
+bitemporal DQ check (`observed_ts >= scheduled_ts`, contiguous revisions), which
+alerts via Discord like the others.
+
+Verify from anywhere with the read-only token: `qde.lake` `FROM events`.
 
 ## Health alerts (optional)
 

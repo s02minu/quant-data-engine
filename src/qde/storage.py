@@ -328,6 +328,23 @@ def query(sql: str, base_dir: str = "data") -> pd.DataFrame:
             f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true)"
         )
 
+    # gold: the dbt-materialized marts (a medallion layer above bronze). One view
+    # per mart at its known path, so `FROM fct_bars_daily` runs the same SQL against
+    # the local lake here and against R2 in qde.lake. A mart not built yet is
+    # skipped rather than erroring on an empty glob.
+    gold = Path(base_dir) / "gold"
+    gold_marts = {
+        "fct_bars_daily": gold / "group=bars" / "mart=fct_bars_daily",
+        "dim_sources": gold / "dim_sources",
+    }
+    for mart, mart_dir in gold_marts.items():
+        if any(mart_dir.glob("*.parquet")):
+            mart_glob = (mart_dir / "*.parquet").as_posix()
+            con.sql(
+                f"CREATE OR REPLACE VIEW {mart} AS "
+                f"SELECT * FROM read_parquet('{mart_glob}', hive_partitioning=true)"
+            )
+
     return con.sql(sql).df()
 
 
@@ -641,6 +658,20 @@ def update_events(
 
     df = get_ingestor(source).load(series_id, start)
     return upsert_events(df, source, calendar, base_dir)
+
+
+def count_events(source: str, calendar: str, base_dir: str = "data") -> int:
+    """Return the number of rows in a calendar file, or 0 if it does not exist.
+
+    All of a calendar's series share one ``events.parquet``, so ``upsert_events``
+    returns the *cumulative* file count; a caller that wants the rows a single
+    series contributed reads this before/after (the delta). Cheap — calendars are
+    tiny.
+    """
+    path = _events_path(source, calendar, base_dir)
+    if not path.exists():
+        return 0
+    return len(pd.read_parquet(path, engine="pyarrow"))  # type: ignore[call-overload]
 
 
 def list_events(base_dir: str = "data") -> pd.DataFrame:

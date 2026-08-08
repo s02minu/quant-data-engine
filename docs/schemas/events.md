@@ -91,7 +91,7 @@ one column free public sources do not provide.
 
 All three are enforced by `qde.checks.run_events_checks`, wired into the nightly
 `daily_update` beside the bars/series/microstructure passes (verified clean on the
-seeded 184k-event calendar).
+seeded calendar — 33k vintage rows across ~4,400 events).
 
 ## As implemented
 

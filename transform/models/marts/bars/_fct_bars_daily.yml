@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: fct_bars_daily
+    description: >
+      Gold daily bar features per (source, symbol, date): simple/log returns, true
+      range + ATR(14), 20d/30d daily realized volatility, and a 30d volume z-score.
+      OHLC coherence and ATR non-negativity are asserted by the singular tests in
+      tests/ (assert_ohlc_coherent.sql, assert_atr_non_negative.sql).
+    columns:
+      - name: source
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: date
+        tests: [not_null]
+      - name: close
+        tests: [not_null]

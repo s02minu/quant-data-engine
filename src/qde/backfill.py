@@ -36,6 +36,7 @@ from qde.loaders import NoNewData, load_ohlcv
 from qde.log import configure, get_logger
 from qde.registry import all_specs, declared_series
 from qde.storage import (
+    count_events,
     list_bars_series,
     list_series,
     upsert_bars,
@@ -275,13 +276,21 @@ def backfill_events_group(
         return {}
 
     results: dict[EventSeries, int] = {}
+    # upsert_events returns the *cumulative* calendar row count (all series share one
+    # file), so a series' own contribution is the delta from the running total.
+    # Seed each calendar's base from its current size so a re-run reports the rows
+    # actually added (0 on an idempotent re-pull), not the whole file against series #1.
+    calendar_base: dict[tuple[str, str], int] = {}
     for spec in specs:
         calendar = spec.calendar or spec.name
+        key = (spec.name, calendar)
+        if key not in calendar_base:
+            calendar_base[key] = count_events(spec.name, calendar, base_dir)
         ingestor = get_ingestor(spec.name)
         for series_id in spec.canonical_symbols:
             try:
                 df = ingestor.load(series_id, start, end)
-                rows = upsert_events(df, spec.name, calendar, base_dir)
+                total = upsert_events(df, spec.name, calendar, base_dir)
             except NoNewData:
                 continue  # no releases in range for this series; nothing to store
             except Exception as exc:
@@ -295,9 +304,11 @@ def backfill_events_group(
                 )
                 continue
 
-            results[(spec.name, series_id)] = rows
+            added = total - calendar_base[key]
+            calendar_base[key] = total
+            results[(spec.name, series_id)] = added
             log.info(
-                "backfilled", group="events", source=spec.name, series_id=series_id, rows=rows
+                "backfilled", group="events", source=spec.name, series_id=series_id, rows=added
             )
 
     return results

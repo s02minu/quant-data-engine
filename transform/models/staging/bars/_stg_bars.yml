@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: stg_bars
+    description: >
+      Cleaned, typed daily/interval bars over the bronze bars lake. One row per
+      (source, symbol, interval, date). Uniqueness of that key is asserted by the
+      singular test tests/assert_bars_unique.sql (no external test package needed).
+    columns:
+      - name: source
+        description: Exchange/source the bar came from (partition key).
+        tests: [not_null]
+      - name: symbol
+        description: Canonical symbol, e.g. BTCUSDT (partition key).
+        tests: [not_null]
+      - name: interval
+        description: Bar size; the platform seeds 1d.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["1d"]
+      - name: date
+        tests: [not_null]
+      - name: close
+        description: Close price; never null in a valid bar.
+        tests: [not_null]

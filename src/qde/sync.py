@@ -252,6 +252,58 @@ def publish_events(base_dir: str, bucket: str, client) -> dict:
     return {"published": published, "bytes": total_bytes, "failed": failed}
 
 
+def publish_gold(base_dir: str, bucket: str, client) -> dict:
+    """Mirror the gold lake to `bucket`, overwriting; never prune locally.
+
+    Twin of ``publish_series``/``publish_events``, for the dbt-materialized gold
+    marts (``gold/group=bars/mart=.../data.parquet``, ``gold/dim_sources/...``).
+    Gold is rebuilt in full each night by ``dbt build``, so it is republished with
+    overwrite and the local copy kept. Gold lives under ``gold/`` (a medallion
+    layer sibling of ``bronze/``), not inside ``bronze``, so the root differs; the
+    publish protocol is identical.
+
+    Args:
+        base_dir: Root of the local lake (bronze/ and gold/ live under it).
+        bucket: Target R2 bucket name.
+        client: An S3-compatible client (boto3 or a stand-in for tests).
+
+    Returns:
+        Summary with files published, bytes uploaded, and failures.
+    """
+    base = Path(base_dir)
+    gold_root = base / "gold"
+    if not gold_root.exists():
+        return {"published": 0, "bytes": 0, "failed": 0}
+
+    published = 0
+    total_bytes = 0
+    failed = 0
+
+    for file in sorted(gold_root.rglob("*.parquet")):
+        key = file.relative_to(base).as_posix()
+        local_size = file.stat().st_size
+
+        try:
+            client.upload_file(str(file), bucket, key)
+            remote_size = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+        except Exception as exc:
+            log.warning("publish_failed", key=key, error=type(exc).__name__, detail=str(exc))
+            failed += 1
+            continue
+
+        if remote_size != local_size:
+            # The remote copy is not intact; leave the local one and retry next run.
+            log.warning("size_mismatch", key=key, local=local_size, remote=remote_size)
+            failed += 1
+            continue
+
+        published += 1
+        total_bytes += local_size
+        log.info("published", key=key, bytes=local_size)
+
+    return {"published": published, "bytes": total_bytes, "failed": failed}
+
+
 if __name__ == "__main__":
     configure()
     base_dir = os.getenv("QDE_BASE_DIR", "data")
@@ -292,6 +344,15 @@ if __name__ == "__main__":
         published=events["published"],
         bytes=events["bytes"],
         failed=events["failed"],
+    )
+
+    # Gold marts (dbt-materialized): rebuilt nightly, same overwrite-and-keep.
+    gold = publish_gold(base_dir=base_dir, bucket=bucket, client=client)
+    log.info(
+        "publish_gold_complete",
+        published=gold["published"],
+        bytes=gold["bytes"],
+        failed=gold["failed"],
     )
 
     # The quality summary the Power BI dashboard reads; publish it too so it is

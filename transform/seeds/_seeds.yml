@@ -1,0 +1,11 @@
+version: 2
+
+seeds:
+  - name: dim_sources_seed
+    description: >
+      The source registry projected to a table (qde.registry.dim_sources()).
+      Regenerated before each build so it never drifts from the registry; the
+      dim_sources model materializes it to gold Parquet. Committed so a clean
+      checkout can `dbt build` without running Python first.
+    config:
+      quote_columns: true

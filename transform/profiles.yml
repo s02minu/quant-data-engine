@@ -1,0 +1,15 @@
+# dbt-duckdb profile for the qde transform layer.
+#
+# In-memory DuckDB: staging views live only for the run, gold `external` models are
+# written to Parquet on disk (the lake). Because everything runs in one `dbt build`
+# invocation, downstream refs and tests resolve within the session. Reading local
+# bronze needs no credentials; a future R2 target would add httpfs + an r2 secret.
+qde:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ":memory:"
+      # Render output timestamps in UTC, matching the rest of the platform.
+      settings:
+        timezone: "UTC"
