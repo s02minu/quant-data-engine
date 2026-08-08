@@ -198,6 +198,21 @@ _MICRO_REQUIRED_KINDS = ("trades", "book_ticker")
 _GAP_SEQUENCE_JUMP = "sequence_jump"
 _GAP_RECONNECT = "reconnect"
 
+# The session marker (start/stop liveness) is written under this synthetic symbol
+# (qde.stream.collector.SESSION_SYMBOL), not a real trading pair. Kept as a literal
+# -- like the gap reasons -- so the batch DQ path need not import the collector.
+# The activity check exempts it: an _all partition owes no trade tape / top-of-book.
+_SESSION_SYMBOL = "_all"
+
+# Routine reconnects are expected on a 24/7 feed -- a handful a day (exchange server
+# rotations, brief network blips) -- and each re-anchors from the next snapshot, so
+# by themselves they drop no data and are not actionable. Alerting on them nightly
+# would defeat "silent on a clean night" (an alert that fires every night is one you
+# learn to ignore). They are always recorded in kind=gaps and stay queryable; a
+# nightly *alert* fires only when reconnects are abnormally frequent (a flapping
+# feed) -- or, separately, when any sequence jump drops data. Bias to silence.
+_RECONNECT_WARN_THRESHOLD = 24
+
 
 def _crossed_book_counts(root: Path, day_str: str) -> dict[tuple[str, str], tuple[int, int, int]]:
     """Count crossed books and negative sizes per (source, symbol) for one day.
@@ -284,8 +299,12 @@ def run_microstructure_checks(
 
     violations: list[Violation] = []
 
-    # 1) Feed activity.
+    # 1) Feed activity. The session marker lives under the synthetic _all symbol,
+    # not a trading pair, so it is exempt from the "owes trades + top-of-book" rule
+    # -- otherwise every source false-flags its own session partition as a dead feed.
     for (source, symbol), kinds in sorted(present.items()):
+        if symbol == _SESSION_SYMBOL:
+            continue
         for required in _MICRO_REQUIRED_KINDS:
             if required not in kinds:
                 violations.append(
@@ -312,7 +331,15 @@ def run_microstructure_checks(
         jumps = int((reasons == _GAP_SEQUENCE_JUMP).sum())
         recons = int((reasons == _GAP_RECONNECT).sum())
         missed = int(pd.to_numeric(g.get("missing_count"), errors="coerce").fillna(0).sum())
-        severity = "error" if jumps else "warn"
+        # A sequence jump drops data (error, always surfaced). Reconnects alone are
+        # only worth an alert when abnormally frequent (a flapping feed); a routine
+        # handful stays silent -- still recorded in kind=gaps, just not alert-worthy.
+        if jumps:
+            severity = "error"
+        elif recons > _RECONNECT_WARN_THRESHOLD:
+            severity = "warn"
+        else:
+            continue
         violations.append(
             Violation(
                 "microstructure", source, symbol, None, "gaps", severity,

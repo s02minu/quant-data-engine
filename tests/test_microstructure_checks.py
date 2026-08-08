@@ -117,26 +117,43 @@ def test_sequence_jump_gap_is_an_error(tmp_path):
     assert "1 sequence-jump" in gaps[0].detail and "7 msgs" in gaps[0].detail
 
 
-def test_reconnect_only_gap_is_a_warning(tmp_path):
+def _reconnect_row(symbol="BTCUSDT"):
+    return {
+        "stream_kind": "trades",
+        "symbol": symbol,
+        "reason": "reconnect",
+        "missing_count": None,
+    }
+
+
+def test_routine_reconnects_are_silent(tmp_path):
+    # A handful of reconnects (no data dropped) is expected on a 24/7 feed and must
+    # not fire an alert -- otherwise the nightly is never "clean". Still in kind=gaps.
     _healthy(tmp_path, "coinbase")
-    _write(
-        tmp_path,
-        "coinbase",
-        "gaps",
-        "BTCUSDT",
-        [
-            {
-                "stream_kind": "trades",
-                "symbol": "BTCUSDT",
-                "reason": "reconnect",
-                "missing_count": None,
-            }
-        ],
-    )
+    _write(tmp_path, "coinbase", "gaps", "BTCUSDT", [_reconnect_row() for _ in range(4)])
+    v = run_microstructure_checks(str(tmp_path), day=DAY)
+    assert [x for x in v if x.check == "gaps"] == []
+
+
+def test_many_reconnects_warn(tmp_path):
+    # An abnormally high reconnect count signals a flapping feed -> a warn.
+    from qde.checks import _RECONNECT_WARN_THRESHOLD
+
+    _healthy(tmp_path, "coinbase")
+    n = _RECONNECT_WARN_THRESHOLD + 1
+    _write(tmp_path, "coinbase", "gaps", "BTCUSDT", [_reconnect_row() for _ in range(n)])
     v = run_microstructure_checks(str(tmp_path), day=DAY)
     gaps = [x for x in v if x.check == "gaps"]
     assert len(gaps) == 1 and gaps[0].severity == "warn"
-    assert "1 reconnect" in gaps[0].detail
+    assert f"{n} reconnect" in gaps[0].detail
+
+
+def test_session_partition_not_flagged_as_dead_feed(tmp_path):
+    # The session marker (kind=session, symbol=_all) is not a trading pair, so it
+    # must not trip the activity check for missing trades / book_ticker.
+    _healthy(tmp_path, "binance")
+    _write(tmp_path, "binance", "session", "_all", [{"event": "start", "received_at": 1}])
+    assert run_microstructure_checks(str(tmp_path), day=DAY) == []
 
 
 def test_only_the_target_day_is_checked(tmp_path):
