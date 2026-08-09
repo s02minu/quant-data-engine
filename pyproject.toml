@@ -35,6 +35,17 @@ transform = [
     "dbt-core",
     "dbt-duckdb",
 ]
+# Orchestration (Phase 7): registry-driven Dagster assets over the batch pipeline.
+# Local/dev-only by design (ROADMAP 7 + the 3.7 GB VPS): `dagster dev` shows the
+# asset graph and lineage; the lightweight VPS cron stays the production runner, so
+# this group is NOT installed into the VPS image. The dbt project is surfaced as a
+# single asset that shells out to `dbt build` (see orchestration/), rather than via
+# dagster-dbt -- its transitive dbt-extractor has no Windows wheel and needs a Rust
+# toolchain to build, not worth it for a dev-only tool. Needs `.[transform]` too.
+orchestration = [
+    "dagster",
+    "dagster-webserver",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

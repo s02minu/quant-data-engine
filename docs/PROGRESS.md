@@ -19,7 +19,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 4 | Registry + `BaseIngestor` | Done |
 | 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; **events calendar done** — 4th group live) |
 | 6 | Streaming and backfills | Done |
-| 7 | Orchestration with Dagster | Not started |
+| 7 | Orchestration with Dagster | In progress (**registry-driven asset graph done**, local/dev-only; date-partitioning deferred) |
 | 8 | Transformations with dbt | In progress (**bars + series + events silver→gold done**; docs site + CI build left) |
 | 9 | Data quality | In progress (freshness + null + microstructure checks live; **bitemporal events check added**) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
@@ -605,9 +605,36 @@ kinds. Relevant to the retention question in ROADMAP §11.
 
 ## Phase 7 — Orchestration with Dagster
 
-- [ ] Assets generated from the registry
-- [ ] Partitioned by date, source as a dimension
-- [ ] Schedules, retry policies, freshness checks
+**Registry-driven asset graph, built 2026-08-09 — local/dev-only by design.** A
+`orchestration/definitions.py` Dagster project (added as the `orchestration` optional
+dependency). **Deployment decision (with the owner): path A — Dagster is the
+orchestration/observability *layer*, not the prod runner.** The 3.7 GB VPS keeps its
+lightweight `scripts/maintain.sh` cron (a heavy scheduler + webserver alongside the
+24/7 collectors on that box would be resume-driven and risk OOM); `dagster dev -f
+orchestration/definitions.py` runs locally for the asset graph, lineage, retries, and
+partial re-runs. A two-way door — the same assets could drive prod if the box grows.
+
+- [x] **Assets generated from the registry** — a factory over `all_specs()` emits one
+      `bronze_<source>` asset per non-microstructure `SourceSpec` (12: the 7 bar venues,
+      FRED/CBOE/CFTC/binancefut series, fredcal events). A new source appears in the UI
+      with *no* orchestration code — the little-book payoff (§3.1). Microstructure is
+      excluded on purpose (a streaming collector, not a scheduled asset). Each bronze
+      asset feeds a single `dbt_build` asset (bronze→silver→gold; shells out to `dbt
+      build` rather than `dagster-dbt`, whose `dbt-extractor` needs a Rust toolchain to
+      build on Windows), which feeds a `publish_to_r2` asset (a clean no-op without write
+      creds, so the graph runs end-to-end locally).
+- [x] **Schedules, retry policies, freshness checks** — a `nightly_refresh` job on a
+      `30 0 * * *` UTC schedule (mirroring the cron); a `RetryPolicy` on each bronze
+      asset (transient API blips); and a `FreshnessPolicy` per bronze asset whose window
+      is the spec's `freshness_sla_minutes` — the *same* SLA the DQ checks read (one
+      definition, many consumers). Verified: `dagster definitions validate` clean, and
+      an end-to-end materialize (`bronze_cboe → dbt_build → publish_to_r2`) succeeds
+      (dbt 40/40, publish skipped no-creds). Guarded by `tests/test_orchestration.py`
+      (`importorskip("dagster")` so CI/light installs skip it); full suite **219 green**.
+- [ ] Partitioned by date, source as a dimension — deferred. The batch loaders are
+      watermark-incremental ("advance from last stored date"), not date-materialized,
+      and `qde.backfill` already covers group-level backfills; date-partitioned assets
+      are a nice-to-have layered on later, not needed for the freshness/observability win.
 
 ## Phase 8 — Transformations with dbt
 
