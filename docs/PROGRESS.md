@@ -674,9 +674,13 @@ confirmed live in R2 (`publish_gold_complete published=2`); `fct_bars_daily` and
       to `qde.lake._GOLD_MARTS` (queryable R2 views; `publish_gold`'s recursive glob
       ships them with no code change) and `maintain.sh`'s gold-dir `mkdir`. Verified
       locally: **`dbt build` 40/40 green**, Python suite **217 green**, ruff+mypy clean.
-      **DEPLOY PENDING** — rebuild the VPS image (bakes the new `transform/` models),
-      run `maintain.sh`, verify `FROM fct_events_revisions` / `FROM fct_series_features`
-      from the laptop over R2.
+      **Deployed 2026-08-09** — VPS image rebuilt (new `transform/` models baked in,
+      confirmed present in the image before running), collectors restarted onto it,
+      `dbt build` re-run standalone against real production data: **40/40 PASS**.
+      `publish_gold_complete published=4` (all four marts, 14 MB). **R2-confirmed
+      from the laptop**: `fct_series_features` 304,191 rows; `fct_events_revisions`
+      4,358 rows, GDP 2002-Q2 revised 9,387.9 → 14,460.8 (13 revisions, +54%) —
+      matching the local run exactly.
 - [ ] `dbt docs` lineage site (hosting) — follow-on
 - [ ] `dbt build` on a sample lake in CI — follow-on (Phase 11)
 
