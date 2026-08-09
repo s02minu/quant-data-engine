@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: stg_events
+    description: >
+      Cleaned, typed bitemporal release calendar over the bronze events lake. One
+      row per (event_id, revision_seq) -- a release and each of its revisions --
+      with reference_date derived from the event_id. See docs/schemas/events.md.
+    columns:
+      - name: source
+        description: Calendar source (partition key), e.g. fredcal.
+        tests: [not_null]
+      - name: calendar
+        description: Named calendar (partition key), e.g. us_macro.
+        tests: [not_null]
+      - name: event_id
+        description: Stable id for one release, "<series_id>:<ref-date>".
+        tests: [not_null]
+      - name: reference_date
+        description: The period the released figure describes (parsed from event_id).
+        tests: [not_null]
+      - name: scheduled_ts
+        description: When the release was scheduled (the backtest-safe clock).
+        tests: [not_null]
+      - name: observed_ts
+        description: When this row's value became known (release, or a revision).
+        tests: [not_null]
+      - name: revision_seq
+        description: 0 = initial print; 1,2,... = successive revisions.
+        tests: [not_null]

@@ -20,7 +20,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; **events calendar done** — 4th group live) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | Not started |
-| 8 | Transformations with dbt | In progress (**bars vertical slice done** — silver view + gold marts + tests) |
+| 8 | Transformations with dbt | In progress (**bars + series + events silver→gold done**; docs site + CI build left) |
 | 9 | Data quality | In progress (freshness + null + microstructure checks live; **bitemporal events check added**) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
 | 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.12×3.14) |
@@ -655,7 +655,28 @@ confirmed live in R2 (`publish_gold_complete published=2`); `fct_bars_daily` and
       lake Parquet and published to R2
 - [x] dbt tests — built-in (`not_null`/`accepted_values`) + singular tests: **OHLC
       coherence** (closes a Phase 9 item), key uniqueness, ATR non-negativity
-- [ ] `series`/`events` staging + marts (macro-joined context, surprise) — next repeat
+- [x] **`series` + `events` staging + marts (2026-08-09).** Extends the slice to the
+      two remaining group shapes, so every non-microstructure group now has a
+      silver→gold path. **Silver:** `stg_series` reconciles the mixed partition depth
+      (flat FRED/CBOE + `metric=` CFTC/perps) into one view via a two-glob UNION —
+      the same reconciliation `qde.storage.query`/`qde.lake` do, now done once in dbt;
+      `stg_events` types the calendar and derives `reference_date` from the event_id
+      (`<series_id>:<ref-date>`). **Gold:** `fct_series_features` (level, obs-over-obs
+      change + %, and a surprise z-score of the change over the trailing 12 obs —
+      *observation*-windowed, frequency-agnostic, mirroring the bars mart's refusal to
+      fake calendar normalization; 303,935 rows) and **`fct_events_revisions` — the
+      bitemporal showpiece** (one row per release: initial vs latest value, n_revisions,
+      total/percent revision, days-to-latest; 4,358 rows). Real GDP quarters show 13–14
+      revisions over ~21 years (rebasing + benchmark revisions), exactly the lookahead
+      bias a current-value-only calendar hides. Singular tests: series-key uniqueness,
+      events-mart grain (one row/event_id), and a gold restatement of the bitemporal
+      ordering (`latest_observed_ts >= initial_observed_ts`). Plumbing: both marts added
+      to `qde.lake._GOLD_MARTS` (queryable R2 views; `publish_gold`'s recursive glob
+      ships them with no code change) and `maintain.sh`'s gold-dir `mkdir`. Verified
+      locally: **`dbt build` 40/40 green**, Python suite **217 green**, ruff+mypy clean.
+      **DEPLOY PENDING** — rebuild the VPS image (bakes the new `transform/` models),
+      run `maintain.sh`, verify `FROM fct_events_revisions` / `FROM fct_series_features`
+      from the laptop over R2.
 - [ ] `dbt docs` lineage site (hosting) — follow-on
 - [ ] `dbt build` on a sample lake in CI — follow-on (Phase 11)
 

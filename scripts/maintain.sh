@@ -26,7 +26,10 @@ echo "[$(date -u +%FT%TZ)] dbt build start"
 # not block the sync of bronze/series/events.
 docker compose run --rm collector sh -c '
   python -c "from qde.registry import dim_sources; dim_sources().to_csv(\"transform/seeds/dim_sources_seed.csv\", index=False)"
-  mkdir -p /data/gold/group=bars/mart=fct_bars_daily /data/gold/dim_sources
+  mkdir -p /data/gold/group=bars/mart=fct_bars_daily \
+           /data/gold/group=series/mart=fct_series_features \
+           /data/gold/group=events/mart=fct_events_revisions \
+           /data/gold/dim_sources
   cd transform && DBT_PROFILES_DIR=. dbt build --vars "lake_root: /data"
 ' || echo "[$(date -u +%FT%TZ)] dbt build failed; continuing to sync"
 

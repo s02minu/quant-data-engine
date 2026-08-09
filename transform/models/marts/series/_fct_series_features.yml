@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: fct_series_features
+    description: >
+      Gold per-observation series features: level (value), prior value,
+      observation-over-observation change (absolute and percent), and a z-score of
+      the change over the trailing 12 observations. Frequency-agnostic -- windows
+      are in observations, not calendar time -- so it spans daily/weekly/monthly/
+      quarterly series uniformly. One row per (source, series_id, metric, date).
+    columns:
+      - name: source
+        tests: [not_null]
+      - name: series_id
+        tests: [not_null]
+      - name: date
+        tests: [not_null]
+      - name: value
+        description: The scalar observation (may be NULL where the source withheld it).

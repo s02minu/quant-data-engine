@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: stg_series
+    description: >
+      Cleaned, typed scalar series over the bronze series lake, reconciling the
+      mixed partition depth (flat FRED/CBOE plus metric-partitioned CFTC/perps)
+      into one shape. One row per (source, series_id, metric, date); metric is NULL
+      for single-value sources. Uniqueness of that key is asserted by the singular
+      test tests/assert_series_unique.sql.
+    columns:
+      - name: source
+        description: Series source (partition key), e.g. fred, cboe, cftc.
+        tests: [not_null]
+      - name: series_id
+        description: Series identifier (partition key), e.g. DGS10, VIX, ES.
+        tests: [not_null]
+      - name: metric
+        description: Metric partition for multi-scalar sources; NULL for flat series.
+      - name: date
+        tests: [not_null]
+      - name: value
+        description: The scalar observation; NULL where the source withheld a print.

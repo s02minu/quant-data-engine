@@ -135,6 +135,8 @@ def events_glob(source: str = "*", calendar: str = "*", bucket: str | None = Non
 # `sync.publish_gold` ships. Extend this as new marts land (series/events gold).
 _GOLD_MARTS = {
     "fct_bars_daily": "gold/group=bars/mart=fct_bars_daily/*.parquet",
+    "fct_series_features": "gold/group=series/mart=fct_series_features/*.parquet",
+    "fct_events_revisions": "gold/group=events/mart=fct_events_revisions/*.parquet",
     "dim_sources": "gold/dim_sources/*.parquet",
 }
 

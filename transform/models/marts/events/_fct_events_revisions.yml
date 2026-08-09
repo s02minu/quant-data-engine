@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: fct_events_revisions
+    description: >
+      Gold revision profile per economic release, one row per event_id: initial vs
+      latest value, initial/latest observation timestamps, number of revisions,
+      total and percent revision, and days from first release to latest vintage.
+      The initial-vs-latest gap is the lookahead bias a current-value-only calendar
+      would hide. Grain (one row per event_id) and revision monotonicity are
+      asserted by tests/assert_events_revisions_unique.sql and
+      tests/assert_events_revision_monotonic.sql.
+    columns:
+      - name: event_id
+        tests: [not_null]
+      - name: reference_date
+        tests: [not_null]
+      - name: initial_value
+        description: The figure as first published (revision_seq 0).
+      - name: latest_value
+        description: The figure as most recently revised.
+      - name: n_revisions
+        description: Count of revisions after the initial print (0 = never revised).
+        tests: [not_null]
