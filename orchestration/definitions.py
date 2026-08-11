@@ -44,6 +44,7 @@ from dagster import (
     define_asset_job,
 )
 
+from qde.env import load_env_file
 from qde.loaders import NoNewData
 from qde.registry import all_specs
 from qde.storage import (
@@ -59,6 +60,13 @@ from qde.storage import (
 BASE_DIR = os.getenv("QDE_BASE_DIR", "data")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRANSFORM_DIR = REPO_ROOT / "transform"
+
+# Source keys (FRED, behind bronze_fred / bronze_fredcal), loaded once at module
+# import time -- mirrors qde.daily_update.main(). Dagster imports this file a single
+# time when `dagster dev` starts, before any asset materializes, so this is the
+# right place (an asset body running later would be too late for other assets that
+# already started). No-ops if the file is absent; existing env vars still win.
+load_env_file("secrets/fred.env")
 
 # The batch groups Dagster orchestrates. Microstructure is excluded on purpose (a
 # streaming collector, not a scheduled asset).

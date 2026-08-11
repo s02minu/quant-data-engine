@@ -6,8 +6,9 @@ notebooks/sql_practice.ipynb
 data/
 
 # Dagster local home / run storage (orchestration is dev-only; `dagster dev`
-# writes run + event logs here). Never part of the repo.
-.tmp_dagster_home/
+# writes run + event logs here). Wildcarded because a fresh DAGSTER_HOME may pick
+# up a random suffix. Never part of the repo.
+.tmp_dagster_home*/
 .dagster/
 dagster_home/
 
