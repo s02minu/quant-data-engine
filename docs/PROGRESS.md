@@ -24,7 +24,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 9 | Data quality | In progress (freshness + null + microstructure checks live; **bitemporal events check added**) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
 | 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.12×3.14) |
-| 12 | Catalogue and publishing | Not started |
+| 12 | Catalogue and publishing | In progress (**catalogue.json + redistributable public-publish done**; React site + Streamlit + bucket next) |
 
 **Current focus:** Phase 6 is complete and the platform is fully deployed. The
 collector runs 24/7; the batch side has watermarked incremental loads, idempotent
@@ -808,15 +808,40 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
 - [ ] dbt build against sample data in CI — after dbt (Phase 8)
 - [ ] Deploy on merge
 
-## Phase 12 — Catalogue and publishing
+## Phase 12 — Catalogue and publishing *(in progress — the finale)*
 
-- [ ] Public R2 bucket, publishing job filtered on `redistributable`
-- [ ] Rate limiting + Cloudflare CDN cache in front of the public bucket, so a
-      heavy or malicious reader cannot run up Class B op costs on the account
-- [ ] Catalogue of datasets, schemas, freshness, DQ stats, licence
-- [ ] Docker packaging
-- [ ] Streamlit dashboard
-- [ ] Live public URL with a copyable DuckDB query
+The "users can actually use it" half. Serving decision settled (§5.1): **serve files,
+not queries** — a public Parquet lake on R2 that anyone queries with their own DuckDB
+(zero egress, ~$0 to run). Front-end split (with owner): a **React showcase site** as
+the front door + a **Streamlit dashboard** for interactive exploration, both reading a
+static `catalogue.json`. The catalogue-as-live-service [open] question resolved to a
+**static artifact** (cheaper, fits serve-files).
+
+- [x] **Publishing job filtered on `redistributable` (`qde.publish_public`).** Mirrors
+      only the redistributable slice to a separate PUBLIC bucket: bronze skips
+      `source=<excluded>` partitions, and the gold marts (which blend sources —
+      `fct_bars_daily` carries the yfinance ETFs) are row-filtered `WHERE source NOT IN
+      (excluded)` before upload, so the private gold stays whole and only the public
+      copy is trimmed. Currently `yfinance` is the only excluded source. Wired into
+      `maintain.sh` **guarded on `QDE_R2_PUBLIC_BUCKET`** (a no-op until the bucket is
+      provisioned). Own env vars (`QDE_R2_PUBLIC_BUCKET`, `QDE_PUBLIC_BASE_URL`) so the
+      public/private buckets never cross. Offline tests (4, incl. the gold row-filter
+      proven by reading the uploaded Parquet back).
+- [x] **Catalogue of datasets, schemas, freshness, licence (`qde.catalogue`).** A
+      static `catalogue.json` generated from `dim_sources` + live lake stats: per-source
+      rows + freshness + redistributable flag, and per-dataset (3 bronze groups + 3 gold
+      marts) schema, row count, freshness, and a **copyable DuckDB query** against the
+      public URL. Published alongside the data by `publish_public`. Verified on the real
+      lake: 12 sources, 6 datasets.
+- [ ] **React showcase site** — the front door: architecture story, live catalogue,
+      and a **DuckDB-WASM console** (run SQL vs the R2 lake in-browser, no backend).
+      Cloudflare Pages (free). *(next)*
+- [ ] **Streamlit dashboard** — interactive browse/charts/freshness. Streamlit Cloud
+      (free). Linked from the React site.
+- [ ] Provision the public R2 bucket + Cloudflare CDN cache / rate-limiting (owner's
+      account action; the publish job + nightly wiring are ready and waiting on it).
+- [ ] `docs/licensing.md` — the two-halves audit (also a Phase 2 leftover).
+- [ ] Docker packaging / live public URL — the final deploy.
 
 ---
 

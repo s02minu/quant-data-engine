@@ -47,4 +47,19 @@ docker compose run --rm \
   -e "QDE_R2_BUCKET=$QDE_R2_BUCKET" \
   collector python -m qde.sync
 
+# Public lake (Phase 12): mirror only the redistributable slice + catalogue.json to
+# the PUBLIC bucket, so anyone can query it with their own DuckDB and no credentials.
+# Guarded on QDE_R2_PUBLIC_BUCKET, so it is a no-op until that bucket is provisioned --
+# add QDE_R2_PUBLIC_BUCKET and QDE_PUBLIC_BASE_URL to secrets/r2.env to activate.
+if [ -n "${QDE_R2_PUBLIC_BUCKET:-}" ]; then
+  echo "[$(date -u +%FT%TZ)] public publish start"
+  docker compose run --rm \
+    -e "QDE_R2_ENDPOINT=$QDE_R2_ENDPOINT" \
+    -e "QDE_R2_ACCESS_KEY_ID=$QDE_R2_ACCESS_KEY_ID" \
+    -e "QDE_R2_SECRET_ACCESS_KEY=$QDE_R2_SECRET_ACCESS_KEY" \
+    -e "QDE_R2_PUBLIC_BUCKET=$QDE_R2_PUBLIC_BUCKET" \
+    -e "QDE_PUBLIC_BASE_URL=${QDE_PUBLIC_BASE_URL:-}" \
+    collector python -m qde.publish_public
+fi
+
 echo "[$(date -u +%FT%TZ)] maintenance done"

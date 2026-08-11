@@ -1,0 +1,160 @@
+"""Publish the redistributable slice of the lake to the PUBLIC bucket + catalogue.
+
+The public half of the two-halves product (ROADMAP §6/§12): only data the registry
+marks ``redistributable=True`` is mirrored to a public R2 bucket, where anyone queries
+it with their own DuckDB and **no credentials** — serve files, not queries (§5.1).
+The non-redistributable sources (currently ``yfinance`` — code-only) are filtered out
+two ways:
+
+- **Bronze**: files under a ``source=<excluded>`` partition are skipped.
+- **Gold**: the marts blend sources (``fct_bars_daily`` includes the yfinance ETFs),
+  so their rows are filtered ``WHERE source NOT IN (excluded)`` before upload — the
+  private gold stays whole; only the public copy is trimmed.
+
+The ``catalogue.json`` (``qde.catalogue``) is generated and published alongside, so
+the public bucket is self-describing.
+
+Separate from ``qde.sync`` (the private-lake sync): a different bucket, the
+redistributable filter, and gold row-filtering. Credentials come from the env — the
+public bucket name and its HTTPS origin are their own vars so the public and private
+buckets never get crossed:
+
+    QDE_R2_ENDPOINT, QDE_R2_ACCESS_KEY_ID, QDE_R2_SECRET_ACCESS_KEY  (write token)
+    QDE_R2_PUBLIC_BUCKET     — the public bucket name
+    QDE_PUBLIC_BASE_URL      — its HTTPS origin (embedded in catalogue sample queries)
+"""
+
+import os
+from pathlib import Path
+
+import duckdb
+
+from qde.catalogue import build_catalogue, write_catalogue
+from qde.log import configure, get_logger
+from qde.registry import all_specs
+
+log = get_logger(__name__)
+
+# Bronze groups eligible for the public lake. Microstructure is the owner's private
+# research feed and is never published.
+_PUBLIC_GROUPS = ("bars", "series", "events")
+
+# Gold marts to publish, and the column to filter non-redistributable rows on. All
+# three fct marts carry ``source``; the catalogue.json supersedes the dim_sources
+# mart, so that one is not published as a file.
+_PUBLIC_MARTS = {
+    "gold/group=bars/mart=fct_bars_daily/data.parquet": "source",
+    "gold/group=series/mart=fct_series_features/data.parquet": "source",
+    "gold/group=events/mart=fct_events_revisions/data.parquet": "source",
+}
+
+
+def _excluded_sources() -> list[str]:
+    """Source names the registry forbids republishing (redistributable=False)."""
+    return sorted(s.name for s in all_specs() if not s.redistributable)
+
+
+def _upload(client, path: Path, bucket: str, key: str) -> bool:
+    """Upload one file, verifying the remote size matches. Returns success."""
+    local_size = path.stat().st_size
+    try:
+        client.upload_file(str(path), bucket, key)
+        remote_size = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+    except Exception as exc:
+        log.warning("public_upload_failed", key=key, error=type(exc).__name__, detail=str(exc))
+        return False
+    if remote_size != local_size:
+        log.warning("size_mismatch", key=key, local=local_size, remote=remote_size)
+        return False
+    log.info("public_published", key=key, bytes=local_size)
+    return True
+
+
+def publish_public(
+    base_dir: str,
+    public_bucket: str,
+    client,
+    public_base_url: str | None = None,
+    excluded: list[str] | None = None,
+) -> dict:
+    """Mirror the redistributable lake + catalogue to the public bucket.
+
+    Args:
+        base_dir: local lake root.
+        public_bucket: the PUBLIC R2 bucket name.
+        client: an S3-compatible client (boto3 or a test stand-in).
+        public_base_url: HTTPS origin embedded in catalogue sample queries.
+        excluded: source names to withhold; defaults to the registry's
+            non-redistributable set.
+
+    Returns:
+        Summary counts: bronze files, gold marts, and whether the catalogue landed.
+    """
+    base = Path(base_dir)
+    excluded = _excluded_sources() if excluded is None else excluded
+    bronze_ok = bronze_skipped = gold_ok = 0
+
+    # --- bronze: mirror every file except excluded sources' partitions ---
+    for group in _PUBLIC_GROUPS:
+        root = base / "bronze" / f"group={group}"
+        for file in sorted(root.rglob("*.parquet")):
+            rel_parts = file.relative_to(base).parts
+            if any(part == f"source={x}" for x in excluded for part in rel_parts):
+                bronze_skipped += 1
+                continue
+            if _upload(client, file, public_bucket, file.relative_to(base).as_posix()):
+                bronze_ok += 1
+
+    # --- gold: filter non-redistributable rows, then upload the trimmed copy ---
+    con = duckdb.connect()
+    for rel_key, source_col in _PUBLIC_MARTS.items():
+        src = base / rel_key
+        if not src.exists():
+            continue
+        tmp = base / (rel_key + ".public.tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        in_list = ", ".join(f"'{x}'" for x in excluded) or "''"
+        con.execute(
+            f"COPY (SELECT * FROM read_parquet('{src.as_posix()}') "
+            f"WHERE {source_col} NOT IN ({in_list})) "
+            f"TO '{tmp.as_posix()}' (FORMAT parquet)"
+        )
+        if _upload(client, tmp, public_bucket, rel_key):
+            gold_ok += 1
+        tmp.unlink(missing_ok=True)
+
+    # --- catalogue: generate + publish alongside the data ---
+    catalogue = build_catalogue(base_dir, public_base_url)
+    cat_path = base / "catalogue.json"
+    write_catalogue(catalogue, str(cat_path))
+    catalogue_ok = _upload(client, cat_path, public_bucket, "catalogue.json")
+
+    return {
+        "bronze_published": bronze_ok,
+        "bronze_skipped": bronze_skipped,
+        "gold_published": gold_ok,
+        "catalogue": catalogue_ok,
+        "excluded": excluded,
+    }
+
+
+if __name__ == "__main__":
+    from qde.sync import r2_client_from_env
+
+    configure()
+    base_dir = os.getenv("QDE_BASE_DIR", "data")
+    public_bucket = os.environ["QDE_R2_PUBLIC_BUCKET"]
+    summary = publish_public(
+        base_dir=base_dir,
+        public_bucket=public_bucket,
+        client=r2_client_from_env(),
+        public_base_url=os.getenv("QDE_PUBLIC_BASE_URL"),
+    )
+    log.info(
+        "publish_public_complete",
+        bronze=summary["bronze_published"],
+        bronze_skipped=summary["bronze_skipped"],
+        gold=summary["gold_published"],
+        catalogue=summary["catalogue"],
+        excluded=summary["excluded"],
+    )
