@@ -203,7 +203,9 @@ classification lives on each `SourceSpec` where the publishing job will read it.
 - [x] Populate `redistributable` / `license_note` per source — fields live on
       `SourceSpec`; every registered source carries a licence note.
 - [ ] Document the two-halves product shape in the README
-- [ ] `docs/licensing.md` written
+- [x] `docs/licensing.md` written — the open-lake/code-only split, how the
+      `redistributable` flag enforces it (bronze skip + gold row-filter), and a
+      per-source table generated from the registry (done in Phase 12).
 
 ## Phase 3 — Group schemas
 
@@ -833,14 +835,21 @@ static `catalogue.json`. The catalogue-as-live-service [open] question resolved 
       marts) schema, row count, freshness, and a **copyable DuckDB query** against the
       public URL. Published alongside the data by `publish_public`. Verified on the real
       lake: 12 sources, 6 datasets.
-- [ ] **React showcase site** — the front door: architecture story, live catalogue,
-      and a **DuckDB-WASM console** (run SQL vs the R2 lake in-browser, no backend).
-      Cloudflare Pages (free). *(next)*
+- [~] **React showcase site (`site/`)** — Vite + React app: hero with live stats, the
+      medallion/serve-files/cost story, a **DuckDB-WASM console** (a full SQL engine in
+      WASM querying the R2 Parquet in-browser, no backend), and a live catalogue reading
+      `catalogue.json`. Works before the public bucket exists via a bundled real sample
+      (`public/sample/fct_bars_daily.parquet`, 3.5k BTC/ETH/SOL rows) + snapshot
+      catalogue; switches to the live lake when `VITE_PUBLIC_BASE_URL` is set. **Code
+      complete; needs a local `npm run dev` build-verify** (Node isn't in the dev sandbox
+      here) then Cloudflare Pages deploy (free). Run/deploy steps in `site/README.md`.
 - [ ] **Streamlit dashboard** — interactive browse/charts/freshness. Streamlit Cloud
-      (free). Linked from the React site.
+      (free). Linked from the React site. *(next)*
 - [ ] Provision the public R2 bucket + Cloudflare CDN cache / rate-limiting (owner's
       account action; the publish job + nightly wiring are ready and waiting on it).
-- [ ] `docs/licensing.md` — the two-halves audit (also a Phase 2 leftover).
+- [x] **`docs/licensing.md`** — the two-halves audit (also closed the Phase 2 leftover):
+      the open-lake vs code-only split, how the `redistributable` flag enforces it, and a
+      per-source classification table generated from the registry.
 - [ ] Docker packaging / live public URL — the final deploy.
 
 ---

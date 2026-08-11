@@ -195,8 +195,9 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# (removed the boilerplate `/site` mkdocs-output ignore — this repo doesn't use
+# mkdocs, and `site/` is now the React showcase app, which IS tracked. Its own
+# node_modules/ and dist/ are ignored via site/.gitignore.)
 
 # mypy
 .mypy_cache/
