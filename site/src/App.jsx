@@ -4,7 +4,6 @@ import Architecture from "./components/Architecture.jsx";
 import Catalogue from "./components/Catalogue.jsx";
 import Footer from "./components/Footer.jsx";
 import Hero from "./components/Hero.jsx";
-import QueryConsole from "./components/QueryConsole.jsx";
 import { CATALOGUE_URL } from "./config.js";
 
 export default function App() {
@@ -25,7 +24,6 @@ export default function App() {
       <Hero catalogue={catalogue} />
       <main>
         <Architecture />
-        <QueryConsole />
         <Catalogue catalogue={catalogue} />
       </main>
       <Footer />

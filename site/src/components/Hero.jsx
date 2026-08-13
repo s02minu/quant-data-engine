@@ -1,13 +1,26 @@
 import React from "react";
 
+import QueryConsole from "./QueryConsole.jsx";
+import ThemeToggle from "./ThemeToggle.jsx";
 import { GITHUB_URL } from "../config.js";
 import { compact } from "../format.js";
+import { useActiveSection, useCountUp, useScrollProgress } from "../hooks.js";
 
-function Stat({ value, label }) {
+const SECTIONS = [
+  { id: "console", label: "Live query" },
+  { id: "architecture", label: "Architecture" },
+  { id: "catalogue", label: "Catalogue" },
+];
+
+// Module-level so the observer effect doesn't re-subscribe on every render.
+const SECTION_IDS = SECTIONS.map((s) => s.id);
+
+function Stat({ label, value, format = (n) => String(Math.round(n)) }) {
+  const shown = useCountUp(value ?? null);
   return (
     <div className="stat">
-      <div className="stat-value">{value}</div>
-      <div className="stat-label">{label}</div>
+      <span className="stat-value fig">{value ? format(shown) : "—"}</span>
+      <span className="stat-label">{label}</span>
     </div>
   );
 }
@@ -17,52 +30,66 @@ export default function Hero({ catalogue }) {
   const datasets = catalogue?.datasets ?? [];
   const totalRows = sources.reduce((a, s) => a + (s.rows || 0), 0);
   const redistributable = sources.filter((s) => s.redistributable).length;
+  const progress = useScrollProgress();
+  const active = useActiveSection(SECTION_IDS);
 
   return (
-    <header className="hero">
+    <header className="masthead">
+      <a className="skip-link" href="#console">
+        Skip to the query console
+      </a>
       <nav className="nav">
-        <a className="brand" href="#top">
-          <span className="brand-dot" />
-          quant-data-engine
-        </a>
-        <div className="nav-links">
-          <a href="#architecture">Architecture</a>
-          <a href="#console">Live query</a>
-          <a href="#catalogue">Catalogue</a>
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer">
-            GitHub ↗
+        <div className="nav-inner">
+          <a className="brand" href="#top">
+            <span className="brand-rule" />
+            quant-data-engine
           </a>
+          <div className="nav-right">
+            <div className="nav-links">
+              {SECTIONS.map((s) => (
+                <a
+                  key={s.id}
+                  href={`#${s.id}`}
+                  className={active === s.id ? "active" : undefined}
+                  aria-current={active === s.id ? "true" : undefined}
+                >
+                  {s.label}
+                </a>
+              ))}
+              <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+                GitHub
+              </a>
+            </div>
+            <ThemeToggle />
+          </div>
         </div>
+        <div
+          className="nav-progress"
+          style={{ width: `${progress * 100}%` }}
+          aria-hidden="true"
+        />
       </nav>
 
       <div className="hero-inner" id="top">
-        <div className="badge">serve files, not queries · zero egress</div>
-        <h1>
-          An open financial data lakehouse
-          <br />
-          <span className="accent">you query yourself.</span>
-        </h1>
-        <p className="lede">
-          Clean, validated market &amp; macro data — crypto OHLCV, tick microstructure,
-          the volatility complex, rates, positioning, and a bitemporal economic calendar —
-          published as Parquet on Cloudflare R2. Point your own DuckDB at it: no signup,
-          no server, no egress fees.
-        </p>
-
-        <div className="stats">
-          <Stat value={sources.length || "—"} label="sources" />
-          <Stat value={datasets.length || "—"} label="datasets" />
-          <Stat value={totalRows ? compact(totalRows) : "—"} label="rows" />
-          <Stat value={redistributable || "—"} label="redistributable" />
+        <div className="hero-head">
+          <span className="label">Serve files, not queries · zero egress</span>
+          <h1>
+            An open financial data lakehouse <em>you query yourself.</em>
+          </h1>
+          <p className="lede">
+            Crypto OHLCV, tick microstructure, the volatility complex, rates, positioning and
+            a bitemporal economic calendar — published as Parquet on Cloudflare R2. The query
+            below is running on your machine right now. No signup, no server, no egress fees.
+          </p>
         </div>
 
-        <div className="cta">
-          <a className="btn primary" href="#console">
-            Run SQL in your browser →
-          </a>
-          <a className="btn ghost" href="#catalogue">
-            Browse the catalogue
-          </a>
+        <QueryConsole />
+
+        <div className="stat-strip">
+          <Stat label="Sources" value={sources.length || null} />
+          <Stat label="Datasets" value={datasets.length || null} />
+          <Stat label="Rows" value={totalRows || null} format={compact} />
+          <Stat label="Redistributable" value={redistributable || null} />
         </div>
       </div>
     </header>

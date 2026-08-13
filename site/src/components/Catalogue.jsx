@@ -21,19 +21,22 @@ function CopyButton({ text }) {
 function DatasetCard({ ds }) {
   return (
     <div className="dataset">
-      <div className="dataset-head">
-        <span className={`layer layer-${ds.layer}`}>{ds.layer}</span>
-        <span className="dataset-id">{ds.id}</span>
-        <span className="dataset-rows">{compact(ds.row_count)} rows</span>
+      <div>
+        <div className="dataset-head">
+          <span className={`layer layer-${ds.layer}`}>{ds.layer}</span>
+          <span className="dataset-id">{ds.id}</span>
+        </div>
+        <div className="dataset-meta">
+          {compact(ds.row_count)} rows · {ds.schema?.length ?? 0} columns
+          {ds.freshness && ` · updated ${freshness(ds.freshness)}`}
+        </div>
       </div>
-      <div className="dataset-meta">
-        <span>{ds.schema?.length ?? 0} columns</span>
-        {ds.freshness && <span>· updated {freshness(ds.freshness)}</span>}
+      <div>
+        <pre className="dataset-query">
+          <code>{ds.sample_query}</code>
+        </pre>
+        <CopyButton text={ds.sample_query} />
       </div>
-      <pre className="dataset-query">
-        <code>{ds.sample_query}</code>
-      </pre>
-      <CopyButton text={ds.sample_query} />
     </div>
   );
 }
@@ -42,7 +45,10 @@ export default function Catalogue({ catalogue }) {
   if (!catalogue) {
     return (
       <section className="section" id="catalogue">
-        <h2>Catalogue</h2>
+        <div className="section-head">
+          <h2>Catalogue</h2>
+          <span className="rule" />
+        </div>
         <p className="section-lede">Loading the catalogue…</p>
       </section>
     );
@@ -50,16 +56,33 @@ export default function Catalogue({ catalogue }) {
 
   const sources = catalogue.sources ?? [];
   const datasets = catalogue.datasets ?? [];
+  // The catalogue snapshot ships with a placeholder origin until the public bucket
+  // is live. Say so plainly rather than handing out SQL that can't run.
+  const pendingBucket = /REPLACE-ME/.test(catalogue.public_base_url ?? "");
 
   return (
     <section className="section" id="catalogue">
-      <h2>Catalogue</h2>
+      <div className="section-head">
+        <h2>Catalogue</h2>
+        <span className="rule" />
+        <span className="label">
+          {datasets.length} datasets · {sources.length} sources
+        </span>
+      </div>
       <p className="section-lede">
         Generated from the registry plus live lake stats. Each dataset comes with a schema,
         freshness, licence, and a copyable DuckDB query. Excluded from the public lake:{" "}
         {(catalogue.notes?.excluded_sources ?? []).join(", ") || "none"} (code-only, not
         redistributable).
       </p>
+
+      {pendingBucket && (
+        <p className="notice">
+          <strong>The public bucket isn&apos;t live yet.</strong> These queries show the shape
+          you&apos;ll use, but their host is a placeholder — swap in the bucket origin to run
+          them. The console above works today: it reads a bundled sample.
+        </p>
+      )}
 
       <div className="datasets">
         {datasets.map((ds) => (

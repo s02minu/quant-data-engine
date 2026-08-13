@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 import { BARS_URL, USING_SAMPLE } from "../config.js";
-import { runQuery } from "../duck.js";
+import { getDb, runQuery } from "../duck.js";
+import { useTypewriter } from "../hooks.js";
 
 // Presets read from BARS_URL — the bundled sample by default, or the live public mart
 // once VITE_PUBLIC_BASE_URL is set. All run entirely in the browser.
@@ -43,13 +44,49 @@ export default function QueryConsole() {
   const [error, setError] = useState(null);
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(null);
+  const [activePreset, setActivePreset] = useState(PRESETS[0].label);
+  const [booting, setBooting] = useState(true);
+  const autoRan = useRef(false);
 
-  async function execute() {
+  // Type the opening query out, so the first thing a visitor sees is the product
+  // working rather than a claim that it works.
+  const [typed, typingDone] = useTypewriter(PRESETS[0].sql, { cps: 110 });
+
+  // DuckDB-WASM has to download and instantiate before anything can run; say so
+  // rather than leaving a dead button.
+  useEffect(() => {
+    let alive = true;
+    getDb()
+      .then(() => alive && setBooting(false))
+      .catch(() => alive && setBooting(false));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Once the engine is up and the query has finished typing, run it once.
+  useEffect(() => {
+    if (booting || !typingDone || autoRan.current) return;
+    autoRan.current = true;
+    execute(PRESETS[0].sql);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booting, typingDone]);
+
+  function onKeyDown(e) {
+    // ⌘/Ctrl + Enter runs, the way every SQL console does.
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (!running) execute();
+    }
+  }
+
+  async function execute(override) {
+    const q = override ?? sql;
     setRunning(true);
     setError(null);
     const t0 = performance.now();
     try {
-      const res = await runQuery(sql);
+      const res = await runQuery(q);
       setResult(res);
       setElapsed(((performance.now() - t0) / 1000).toFixed(2));
     } catch (e) {
@@ -60,47 +97,73 @@ export default function QueryConsole() {
     }
   }
 
-  return (
-    <section className="section console-section" id="console">
-      <h2>Query it live, in your browser</h2>
-      <p className="section-lede">
-        This runs a real DuckDB engine compiled to WebAssembly, right here on this page. It
-        fetches Parquet straight from R2 and computes on your machine — there is no backend.
-        {USING_SAMPLE ? " (Querying a bundled sample of BTC/ETH/SOL until the public bucket goes live.)" : ""}
-      </p>
+  const typing = !typingDone;
+  const status = booting
+    ? "Starting DuckDB in your browser…"
+    : running
+      ? "Running…"
+      : error
+        ? "Query failed"
+        : elapsed
+          ? `${result?.rows.length ?? 0} rows · ${elapsed}s · computed on your machine`
+          : "Ready";
 
-      <div className="presets">
-        {PRESETS.map((p) => (
-          <button key={p.label} className="preset" onClick={() => setSql(p.sql)}>
-            {p.label}
-          </button>
-        ))}
+  return (
+    <div className="console-shell" id="console">
+      <div className="console-chrome">
+        <span className={`console-lamp${booting || running ? " busy" : ""}`} aria-hidden="true" />
+        <span className="console-title">duckdb-wasm · your browser</span>
+        <span className="console-status" role="status">
+          {status}
+        </span>
       </div>
 
       <div className="console">
         <textarea
           className="sql"
           spellCheck={false}
-          value={sql}
-          onChange={(e) => setSql(e.target.value)}
-          rows={sql.split("\n").length + 1}
+          value={typing ? typed : sql}
+          readOnly={typing}
+          onChange={(e) => {
+            setSql(e.target.value);
+            setActivePreset(null);
+          }}
+          onKeyDown={onKeyDown}
+          aria-label="SQL query"
+          rows={Math.max(6, sql.split("\n").length + 1)}
         />
+        {(running || booting) && <div className="console-scan" aria-hidden="true" />}
         <div className="console-bar">
-          <button className="btn primary" onClick={execute} disabled={running}>
-            {running ? "Running…" : "▶ Run query"}
+          <button className="btn primary" onClick={() => execute()} disabled={running || booting}>
+            {running ? "Running…" : "Run query"}
           </button>
-          {elapsed && !error && (
-            <span className="console-meta">
-              {result?.rows.length ?? 0} rows · {elapsed}s · computed in your browser
-            </span>
-          )}
+          <span className="console-hint">
+            <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd>
+          </span>
         </div>
       </div>
 
-      {error && <div className="console-error">⚠ {error}</div>}
+      <div className="presets" role="group" aria-label="Example queries">
+        {PRESETS.map((p) => (
+          <button
+            key={p.label}
+            className={`preset${activePreset === p.label ? " active" : ""}`}
+            disabled={booting}
+            onClick={() => {
+              setSql(p.sql);
+              setActivePreset(p.label);
+              execute(p.sql);
+            }}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {error && <div className="console-error">{error}</div>}
 
       {result && !error && (
-        <div className="table-wrap">
+        <div className="table-wrap result-wrap">
           <table className="result">
             <thead>
               <tr>
@@ -111,9 +174,9 @@ export default function QueryConsole() {
             </thead>
             <tbody>
               {result.rows.map((row, i) => (
-                <tr key={i}>
+                <tr key={i} className="row-in" style={{ animationDelay: `${Math.min(i, 14) * 22}ms` }}>
                   {result.columns.map((c) => (
-                    <td key={c}>{formatCell(row[c])}</td>
+                    <td key={c}>{formatCell(row[c], result.temporal?.has(c))}</td>
                   ))}
                 </tr>
               ))}
@@ -121,14 +184,25 @@ export default function QueryConsole() {
           </table>
         </div>
       )}
-    </section>
+
+      <p className="console-foot">
+        A real DuckDB engine compiled to WebAssembly, fetching Parquet over HTTP range
+        requests. There is no backend — this page has no server to send your query to.
+        {USING_SAMPLE ? " Reading a bundled BTC/ETH/SOL sample until the public bucket goes live." : ""}
+      </p>
+    </div>
   );
 }
 
-function formatCell(v) {
+function formatCell(v, isTemporal) {
   if (v == null) return "";
+  // Date/timestamp columns arrive as epoch milliseconds; show them as dates.
+  if (isTemporal && typeof v === "number") {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? String(v) : d.toISOString().slice(0, 10);
+  }
   if (typeof v === "number") return Number.isInteger(v) ? v : Number(v.toFixed(4));
-  // Arrow date/timestamp values render as ISO; trim to the date for readability.
+  // Anything already stringly-typed: trim ISO timestamps down to the date.
   const s = String(v);
   return s.length > 10 && s.includes("T") ? s.slice(0, 10) : s;
 }

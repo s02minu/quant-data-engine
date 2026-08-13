@@ -33,6 +33,15 @@ export async function runQuery(sql) {
   try {
     const table = await conn.query(sql);
     const columns = table.schema.fields.map((f) => f.name);
+    // Arrow hands date/timestamp columns back as int64 epoch values. Without the
+    // schema they'd render as raw numbers like 1786406400000, so carry the types
+    // through and let the formatter turn them back into dates.
+    const temporal = new Set(
+      table.schema.fields
+        .filter((f) => /date|timestamp/i.test(String(f.type)))
+        .map((f) => f.name),
+    );
+
     const rows = table.toArray().map((row) => {
       const obj = row.toJSON();
       for (const key of Object.keys(obj)) {
@@ -41,7 +50,7 @@ export async function runQuery(sql) {
       }
       return obj;
     });
-    return { columns, rows };
+    return { columns, rows, temporal };
   } finally {
     await conn.close();
   }

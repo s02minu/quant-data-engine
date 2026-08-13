@@ -8,28 +8,28 @@ export default function Footer() {
       <div className="footer-inner">
         <div>
           <div className="brand">
-            <span className="brand-dot" />
+            <span className="brand-rule" />
             quant-data-engine
           </div>
           <p className="footer-note">
-            An open financial data lakehouse. Exchange-native + U.S.-government data,
+            An open financial data lakehouse. Exchange-native and U.S.-government data,
             redistributable and free. Licensed sources ship as open ingestors, not data.
           </p>
         </div>
         <div className="footer-links">
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">
-            GitHub ↗
+            GitHub
           </a>
           {STREAMLIT_URL && (
             <a href={STREAMLIT_URL} target="_blank" rel="noreferrer">
-              Dashboard ↗
+              Dashboard
             </a>
           )}
           <a href={`${GITHUB_URL}/blob/main/docs/licensing.md`} target="_blank" rel="noreferrer">
-            Licensing ↗
+            Licensing
           </a>
           <a href={`${GITHUB_URL}/blob/main/docs/ROADMAP.md`} target="_blank" rel="noreferrer">
-            Architecture ↗
+            Architecture
           </a>
         </div>
       </div>

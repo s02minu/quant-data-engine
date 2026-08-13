@@ -255,24 +255,31 @@ a {
   box-shadow: 0 0 8px var(--accent);
 }
 
-/* ---------- hero: the console IS the hero ---------- */
+/* ---------- hero: a ledger entry ---------- */
 .hero-inner {
   max-width: var(--measure);
   margin: 0 auto;
-  padding: 44px 28px 52px;
+  padding: 66px 28px 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.85fr);
+  gap: 64px;
+  align-items: start;
 }
 
-.hero-head {
-  max-width: 74ch;
-  margin-bottom: 28px;
+.hero-folio {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 22px;
 }
 
-.hero-head .label {
-  display: block;
-  margin-bottom: 14px;
+.hero-folio .rule {
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
 }
 
-.hero-head h1 {
+.hero-main h1 {
   font-family: var(--display);
   font-weight: 600;
   font-size: clamp(2.3rem, 5vw, 3.5rem);
@@ -281,7 +288,7 @@ a {
   margin: 0;
 }
 
-.hero-head h1 em {
+.hero-main h1 em {
   font-style: italic;
   font-weight: 500;
   color: var(--bronze);
@@ -289,9 +296,16 @@ a {
 
 .lede {
   color: var(--text-2);
-  font-size: 1.02rem;
-  max-width: 68ch;
-  margin: 16px 0 0;
+  font-size: 1.06rem;
+  max-width: 56ch;
+  margin: 22px 0 0;
+}
+
+.cta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 32px;
 }
 
 .btn {
@@ -333,36 +347,54 @@ a {
   transform: none;
 }
 
-/* Stats read as a tape under the console, not as a separate panel. */
-.stat-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  margin-top: 26px;
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
+.balance {
+  border-top: 2px solid var(--text);
+  padding-top: 12px;
 }
 
-.stat {
+.balance-title {
+  margin-bottom: 6px;
+}
+
+.entry {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 16px 20px 16px 0;
-  border-right: 1px solid var(--rule-soft);
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-soft);
 }
 
-.stat:last-child {
-  border-right: none;
+.entry-name {
+  font-size: 0.92rem;
+  color: var(--text-2);
+  white-space: nowrap;
 }
 
-.stat-value {
-  font-size: 1.5rem;
+.entry-leader {
+  flex: 1;
+  border-bottom: 1px dotted var(--rule);
+  transform: translateY(-3px);
+  min-width: 18px;
+}
+
+.entry-value {
+  font-size: 1.02rem;
   font-weight: 600;
-  line-height: 1.1;
+  white-space: nowrap;
 }
 
-.stat-label {
+.balance-foot {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 2px solid var(--text);
+  margin-top: 2px;
+}
+
+.balance-foot .entry-name {
   font-family: var(--mono);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: var(--text-3);
@@ -543,69 +575,11 @@ main {
 }
 
 /* ---------- console ---------- */
-.console-shell {
-  scroll-margin-top: 90px;
-}
-
-/* A title bar, so the console reads as a real instrument and not a code block. */
-.console-chrome {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  border: 1px solid var(--rule);
-  border-bottom: none;
-  background: var(--bg-2);
-  font-family: var(--mono);
-  font-size: 0.74rem;
-}
-
-.console-lamp {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--gold);
-  box-shadow: 0 0 9px var(--gold);
-  flex: none;
-}
-
-.console-lamp.busy {
-  animation: pulse 1s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.25;
-  }
-}
-
-.console-title {
-  color: var(--text-2);
-  letter-spacing: 0.04em;
-}
-
-.console-status {
-  margin-left: auto;
-  color: var(--text-3);
-  text-align: right;
-}
-
-.console-foot {
-  color: var(--text-3);
-  font-size: 0.86rem;
-  max-width: 72ch;
-  margin: 16px 0 0;
-}
-
 .presets {
   display: flex;
   gap: 0;
   flex-wrap: wrap;
-  margin-top: 14px;
+  margin-bottom: 18px;
   border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
 }
@@ -635,11 +609,6 @@ main {
   color: var(--text);
   border-bottom-color: var(--accent);
   background: var(--band);
-}
-
-.preset:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 
 .console {
@@ -780,28 +749,6 @@ tbody tr:hover {
 
 .result {
   min-width: 520px;
-}
-
-/* Cap the result height so the console stays a single screen-worth of instrument. */
-.result-wrap {
-  max-height: 330px;
-  overflow-y: auto;
-}
-
-/* Rows land one after another — the query visibly delivering. */
-.row-in {
-  animation: rowIn 0.32s var(--ease) both;
-}
-
-@keyframes rowIn {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 /* ---------- catalogue ---------- */
@@ -996,6 +943,11 @@ tbody tr:hover {
 
 /* ---------- responsive ---------- */
 @media (max-width: 900px) {
+  .hero-inner {
+    grid-template-columns: 1fr;
+    gap: 44px;
+    padding-top: 48px;
+  }
   .dataset {
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
