@@ -88,11 +88,14 @@ def publish_public(
             non-redistributable set.
 
     Returns:
-        Summary counts: bronze files, gold marts, and whether the catalogue landed.
+        Summary counts: bronze files, gold marts, whether the catalogue landed, and
+        how many uploads failed. Callers decide what to do about failures — the
+        module entry point below exits non-zero on any.
     """
     base = Path(base_dir)
     excluded = _excluded_sources() if excluded is None else excluded
     bronze_ok = bronze_skipped = gold_ok = 0
+    bronze_failed = gold_failed = 0
 
     # --- bronze: mirror every file except excluded sources' partitions ---
     for group in _PUBLIC_GROUPS:
@@ -104,6 +107,8 @@ def publish_public(
                 continue
             if _upload(client, file, public_bucket, file.relative_to(base).as_posix()):
                 bronze_ok += 1
+            else:
+                bronze_failed += 1
 
     # --- gold: filter non-redistributable rows, then upload the trimmed copy ---
     con = duckdb.connect()
@@ -121,6 +126,8 @@ def publish_public(
         )
         if _upload(client, tmp, public_bucket, rel_key):
             gold_ok += 1
+        else:
+            gold_failed += 1
         tmp.unlink(missing_ok=True)
 
     # --- catalogue: generate + publish alongside the data ---
@@ -135,6 +142,9 @@ def publish_public(
         "gold_published": gold_ok,
         "catalogue": catalogue_ok,
         "excluded": excluded,
+        "bronze_failed": bronze_failed,
+        "gold_failed": gold_failed,
+        "failed": bronze_failed + gold_failed + (0 if catalogue_ok else 1),
     }
 
 
@@ -157,4 +167,22 @@ if __name__ == "__main__":
         gold=summary["gold_published"],
         catalogue=summary["catalogue"],
         excluded=summary["excluded"],
+        failed=summary["failed"],
     )
+
+    # Exit non-zero when anything failed to land. Uploads are idempotent, so a
+    # re-run is the fix; what must not happen is a nightly that publishes nothing
+    # (an unscoped R2 token, an expired key) and still reports success — the failures
+    # are per-file warnings, so without this the run looks green and the bucket is
+    # stale. maintain.sh runs this last under `set -e`, so a non-zero exit here is
+    # visible without putting the private-lake sync at risk.
+    if summary["failed"]:
+        log.error(
+            "publish_public_incomplete",
+            failed=summary["failed"],
+            bronze_failed=summary["bronze_failed"],
+            gold_failed=summary["gold_failed"],
+            catalogue=summary["catalogue"],
+            hint="check the R2 token is scoped to the public bucket with write access",
+        )
+        raise SystemExit(1)

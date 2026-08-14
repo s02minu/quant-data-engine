@@ -112,3 +112,36 @@ def test_publish_uploads_catalogue_json(tmp_path):
 
     assert summary["catalogue"] is True
     assert ("qde-public", "catalogue.json") in client.objects
+
+
+class DenyingS3(FakeS3):
+    """An S3 stand-in that rejects every PutObject, the way an R2 token scoped to
+    the wrong bucket does."""
+
+    def upload_file(self, filename, bucket, key):
+        raise PermissionError("An error occurred (AccessDenied) when calling PutObject")
+
+
+def test_publish_counts_failed_uploads(tmp_path):
+    # Regression: a token without write access to the public bucket made every
+    # upload fail, yet the summary reported success with zero published files and
+    # the nightly logged "maintenance done". Failures must be counted, not swallowed.
+    _tiny_lake(tmp_path)
+    summary = publish_public(str(tmp_path), "qde-public", DenyingS3(), public_base_url="https://d")
+
+    assert summary["bronze_published"] == 0
+    assert summary["gold_published"] == 0
+    assert summary["catalogue"] is False
+    assert summary["bronze_failed"] >= 1
+    assert summary["gold_failed"] >= 1
+    # The catalogue failure counts toward the total too.
+    assert summary["failed"] == summary["bronze_failed"] + summary["gold_failed"] + 1
+
+
+def test_publish_reports_no_failures_on_success(tmp_path):
+    _tiny_lake(tmp_path)
+    summary = publish_public(str(tmp_path), "qde-public", FakeS3(), public_base_url="https://d")
+
+    assert summary["failed"] == 0
+    assert summary["bronze_failed"] == 0
+    assert summary["gold_failed"] == 0
