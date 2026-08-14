@@ -835,14 +835,23 @@ static `catalogue.json`. The catalogue-as-live-service [open] question resolved 
       marts) schema, row count, freshness, and a **copyable DuckDB query** against the
       public URL. Published alongside the data by `publish_public`. Verified on the real
       lake: 12 sources, 6 datasets.
-- [~] **React showcase site (`site/`)** — Vite + React app: hero with live stats, the
-      medallion/serve-files/cost story, a **DuckDB-WASM console** (a full SQL engine in
-      WASM querying the R2 Parquet in-browser, no backend), and a live catalogue reading
-      `catalogue.json`. Works before the public bucket exists via a bundled real sample
-      (`public/sample/fct_bars_daily.parquet`, 3.5k BTC/ETH/SOL rows) + snapshot
-      catalogue; switches to the live lake when `VITE_PUBLIC_BASE_URL` is set. **Code
-      complete; needs a local `npm run dev` build-verify** (Node isn't in the dev sandbox
-      here) then Cloudflare Pages deploy (free). Run/deploy steps in `site/README.md`.
+- [x] **React showcase site (`site/`)** — Vite + React app, **console-first**: the
+      DuckDB-WASM console *is* the hero. On load the opening query types itself in, the
+      WASM engine boots, and a real query runs against real data before the visitor
+      touches anything — the product demonstrates itself rather than describing itself.
+      Below it: a live stat strip, the medallion/serve-files/cost story, and a live
+      catalogue reading `catalogue.json`. Works before the public bucket exists via a
+      bundled real sample (`public/sample/fct_bars_daily.parquet`, 3.5k BTC/ETH/SOL rows)
+      + snapshot catalogue; switches to the live lake when `VITE_PUBLIC_BASE_URL` is set,
+      and the "public bucket isn't live yet" notice retires itself at the same moment.
+      **Build-verified** (`npm run build` green, ~3.6 kB gzip CSS). Design: "Ledger &
+      Vault" — one idea at two points in its history, dark *Phosphor* (default) and light
+      *Greenbar*, switchable, preference persisted, no flash of the wrong mode on load.
+      Accessibility checked by measurement, not assumption: WCAG AA contrast in **both**
+      themes, every interactive target ≥44 px, skip link, scrollspy nav, no horizontal
+      overflow at 375 px or desktop, and all motion collapsing under
+      `prefers-reduced-motion`. Remaining: Cloudflare Pages deploy (free). Run/deploy
+      steps in `site/README.md`.
 - [ ] **Streamlit dashboard** — interactive browse/charts/freshness. Streamlit Cloud
       (free). Linked from the React site. *(next)*
 - [ ] Provision the public R2 bucket + Cloudflare CDN cache / rate-limiting (owner's

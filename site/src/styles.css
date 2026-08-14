@@ -514,9 +514,10 @@ main {
   opacity: 0.9;
 }
 
+/* Four principles, so 2x2 — a 3-across grid orphans the fourth card. */
 .principles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0;
   margin-top: 44px;
   border-top: 1px solid var(--rule);
@@ -526,6 +527,15 @@ main {
   padding: 26px 28px;
   border-right: 1px solid var(--rule-soft);
   border-bottom: 1px solid var(--rule-soft);
+}
+
+/* No trailing rules against the outer edge of the grid. */
+.principle:nth-child(2n) {
+  border-right: none;
+}
+
+.principle:nth-last-child(-n + 2) {
+  border-bottom: none;
 }
 
 .principle h3 {
@@ -1022,9 +1032,17 @@ tbody tr:hover {
     margin-bottom: 12px;
     transform: none;
   }
+  .principles {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .principle {
-    padding-right: 0;
     border-right: none;
+  }
+  .principle:nth-last-child(-n + 2) {
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .principle:last-child {
+    border-bottom: none;
   }
   .console-hint {
     display: none;
