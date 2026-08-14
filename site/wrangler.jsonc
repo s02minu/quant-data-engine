@@ -1,0 +1,23 @@
+{
+  // Cloudflare Workers Static Assets config for the showcase site.
+  //
+  // The site is a static Vite build — there is no Worker script, just files.
+  // `wrangler deploy` uploads ./dist and Cloudflare serves it from the edge.
+  //
+  // Build settings in the Cloudflare dashboard must use:
+  //   Root directory : site
+  //   Build command  : npm run build
+  //   Deploy command : npx wrangler deploy
+  //
+  // Set VITE_PUBLIC_BASE_URL as a build-time environment variable (it is read by
+  // Vite at build time, not at runtime) so the console and catalogue point at the
+  // public R2 bucket instead of the bundled sample.
+  "name": "quant-data-engine",
+  "compatibility_date": "2026-08-14",
+  "assets": {
+    "directory": "./dist",
+    // No client-side router here, but this keeps any unknown path serving the app
+    // rather than a bare 404.
+    "not_found_handling": "single-page-application"
+  }
+}
