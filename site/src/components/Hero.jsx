@@ -71,19 +71,39 @@ export default function Hero({ catalogue }) {
       </nav>
 
       <div className="hero-inner" id="top">
+        <div className="hero-glow" aria-hidden="true" />
+
         <div className="hero-head">
-          <span className="label">Serve files, not queries · zero egress</span>
+          <span className="eyebrow">Serve files, not queries · zero egress</span>
           <h1>
-            An open financial data lakehouse <em>you query yourself.</em>
+            Open market data you
+            <br />
+            query yourself
           </h1>
           <p className="lede">
-            Crypto OHLCV, tick microstructure, the volatility complex, rates, positioning and
-            a bitemporal economic calendar — published as Parquet on Cloudflare R2. The query
-            below is running on your machine right now. No signup, no server, no egress fees.
+            Crypto OHLCV, tick microstructure, the volatility complex, rates, positioning and a
+            bitemporal economic calendar — published as Parquet on Cloudflare R2. No signup, no
+            server, no egress fees.
           </p>
+          <a className="btn primary pill" href="#console">
+            Run a query now
+          </a>
         </div>
 
         <QueryConsole />
+
+        {sources.length > 0 && (
+          <div className="trust-row">
+            <span className="trust-label">Ingested from</span>
+            <div className="trust-names">
+              {[...new Set(sources.map((s) => s.name))].map((n) => (
+                <span className="trust-name" key={n}>
+                  {n}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="stat-strip">
           <Stat label="Sources" value={sources.length || null} />

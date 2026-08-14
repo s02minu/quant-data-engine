@@ -8,57 +8,81 @@
    ============================================================ */
 
 :root {
-  /* ---- dark (default) ---- */
-  --bg: #0e1311;
-  --bg-2: #141a18;
-  --panel: #171f1c;
-  --band: rgba(122, 173, 138, 0.07);
-  --band-strong: rgba(122, 173, 138, 0.12);
+  /* ---- noir (default) — monochrome with a grey-green cast, one light source ---- */
+  --bg: #05050a;
+  --bg-2: #0a0a0f;
+  --panel: #0e0e13;
+  --band: rgba(255, 255, 255, 0.025);
+  --band-strong: rgba(255, 255, 255, 0.055);
 
-  --text: #e8ede9;
-  --text-2: #a5b2aa;
-  --text-3: #8b978f;
+  --text: #ededef;
+  --text-2: #bcbec4;
+  --text-3: #80837f;
 
-  --rule: #2b3632;
-  --rule-soft: #1f2926;
+  --rule: rgba(255, 255, 255, 0.12);
+  --rule-soft: rgba(255, 255, 255, 0.07);
 
-  --bronze: #c08552;
-  --silver: #a8b5bd;
-  --gold: #d9a441;
+  /* Layer marks stay monochrome: weight and brightness carry the hierarchy. */
+  --bronze: #c9ced6;
+  --silver: #a1a6ad;
+  --gold: #ffffff;
 
-  --accent: #d9a441;
-  --accent-ink: #0e1311;
-  --danger: #e08a7d;
+  /* One accent, held back: a sage lime rather than an acid one, so it sits with
+     the grey-green neutrals instead of shouting over them. */
+  --accent: #b9d98a;
+  --accent-ink: #05050a;
+  --chart: #b9d98a;
+  --up: #b9d98a;
+  --down: #d99a8a;
+  --danger: #e0a09a;
 
-  --display: "Spectral", Georgia, "Times New Roman", serif;
-  --sans: "IBM Plex Sans", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  /* Syntax colour lives only in code, where it aids reading. */
+  --tk-keyword: #b9a6ff;
+  --tk-string: #7fd6b5;
+  --tk-number: #f0b47a;
+  --tk-fn: #8fc7ff;
+  --tk-comment: #6b7079;
+
+  /* Space Grotesk is the display companion to Space Mono — a real family pairing
+     with the monospace that carries the rest of the page. */
+  --display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --sans: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
 
   --measure: 1080px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 :root[data-theme="light"] {
-  --bg: #eef0ea;
-  --bg-2: #f7f8f4;
-  --panel: #f7f8f4;
-  --band: rgba(207, 224, 204, 0.5);
-  --band-strong: rgba(207, 224, 204, 0.8);
+  --bg: #f4f4f5;
+  --bg-2: #fafafa;
+  --panel: #ffffff;
+  --band: rgba(0, 0, 0, 0.022);
+  --band-strong: rgba(0, 0, 0, 0.05);
 
-  --text: #14181a;
-  --text-2: #46524c;
-  --text-3: #55605a;
+  --text: #131316;
+  --text-2: #52565e;
+  --text-3: #62666e;
 
-  --rule: #b8c4bc;
-  --rule-soft: #d3dcd3;
+  --rule: rgba(0, 0, 0, 0.15);
+  --rule-soft: rgba(0, 0, 0, 0.08);
 
-  --bronze: #8c5a2b;
-  --silver: #5f6c76;
-  --gold: #8a6210;
+  --bronze: #3f434a;
+  --silver: #52565e;
+  --gold: #131316;
 
-  --accent: #8c2f26;
-  --accent-ink: #f7f8f4;
-  --danger: #8c2f26;
+  --accent: #131316;
+  --accent-ink: #ffffff;
+  --chart: #2f7d17;
+  --up: #2f7d17;
+  --down: #b3261e;
+  --danger: #b3261e;
+
+  --tk-keyword: #6b3fd4;
+  --tk-string: #0f7a5a;
+  --tk-number: #a8560f;
+  --tk-fn: #1f6bb8;
+  --tk-comment: #7c828b;
 }
 
 * {
@@ -255,43 +279,128 @@ a {
   box-shadow: 0 0 8px var(--accent);
 }
 
-/* ---------- hero: the console IS the hero ---------- */
+/* ---------- hero: centred, one light source ---------- */
 .hero-inner {
+  position: relative;
   max-width: var(--measure);
   margin: 0 auto;
-  padding: 44px 28px 52px;
+  padding: 64px 28px 52px;
+}
+
+/* The single light source the whole page is lit by. */
+.hero-glow {
+  position: absolute;
+  top: -140px;
+  left: 50%;
+  /* Must not exceed the container: a translateX(-50%) box wider than 100%
+     pushes the document sideways and gives the whole page a scrollbar. */
+  width: min(1100px, 100%);
+  height: 620px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse 50% 50% at 50% 50%,
+    color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 7%, transparent) 38%,
+    transparent 70%
+  );
+  filter: blur(28px);
 }
 
 .hero-head {
-  max-width: 74ch;
-  margin-bottom: 28px;
+  position: relative;
+  z-index: 1;
+  max-width: 940px;
+  margin: 0 auto 40px;
+  text-align: center;
 }
 
-.hero-head .label {
-  display: block;
-  margin-bottom: 14px;
+.eyebrow {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--accent);
+  margin-bottom: 22px;
 }
 
+/* Big and LIGHT — the reference gets its scale from size, not weight. */
 .hero-head h1 {
   font-family: var(--display);
-  font-weight: 600;
-  font-size: clamp(2.3rem, 5vw, 3.5rem);
-  line-height: 1.08;
-  letter-spacing: -0.015em;
+  font-weight: 300;
+  font-size: clamp(2.6rem, 6.4vw, 4.75rem);
+  line-height: 1.06;
+  letter-spacing: -0.035em;
   margin: 0;
+  color: var(--text);
 }
 
-.hero-head h1 em {
-  font-style: italic;
-  font-weight: 500;
-  color: var(--bronze);
+.lede {
+  margin: 22px auto 0;
+  text-align: center;
+}
+
+/* Pill CTA with the accent's own glow, as in the reference. */
+.btn.pill {
+  border-radius: 999px;
+  padding: 15px 32px;
+  margin-top: 32px;
+  box-shadow: 0 0 44px color-mix(in srgb, var(--accent) 38%, transparent);
+}
+
+.btn.pill:hover {
+  box-shadow: 0 0 60px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* The real source list is the trust signal — no invented logos. */
+.trust-row {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 26px;
+  padding-top: 20px;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.trust-label {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--text-3);
+  flex: none;
+}
+
+.trust-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+}
+
+.trust-name {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text-2);
+  opacity: 0.75;
+  transition: opacity 0.2s var(--ease), color 0.2s var(--ease);
+}
+
+.trust-name:hover {
+  opacity: 1;
+  color: var(--text);
 }
 
 .lede {
   color: var(--text-2);
-  font-size: 1.02rem;
-  max-width: 68ch;
-  margin: 16px 0 0;
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  line-height: 1.95;
+  letter-spacing: 0.005em;
+  max-width: 76ch;
 }
 
 .btn {
@@ -380,33 +489,54 @@ main {
   border-bottom: 1px solid var(--rule);
 }
 
+/* Section heads are centred like the hero, and set in the mono face the
+   trust row uses — the page has one voice for structural type. */
 .section-head {
   display: flex;
-  align-items: baseline;
-  gap: 14px;
-  margin-bottom: 20px;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  text-align: center;
 }
 
 .section-head .rule {
-  flex: 1;
-  height: 1px;
-  background: var(--rule);
+  width: 56px;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.7;
 }
 
 .section h2 {
-  font-family: var(--display);
+  font-family: var(--mono);
   font-weight: 600;
-  font-size: clamp(1.7rem, 3.2vw, 2.3rem);
-  line-height: 1.15;
-  letter-spacing: -0.01em;
+  font-size: clamp(1.35rem, 2.4vw, 1.8rem);
+  line-height: 1.2;
+  letter-spacing: 0.02em;
   margin: 0;
+}
+
+/* Below the hero the page speaks entirely in the mono voice — ledes, row copy,
+   principles, callouts and catalogue metadata all set in the same face. */
+.section-lede,
+.stage-desc,
+.principle p,
+.serve-callout p,
+.dataset-meta,
+.notice,
+.footer-note,
+.chart-cap {
+  font-family: var(--mono);
+  letter-spacing: 0.005em;
 }
 
 .section-lede {
   color: var(--text-2);
-  max-width: 68ch;
-  font-size: 1rem;
-  margin: 14px 0 36px;
+  max-width: 82ch;
+  font-size: 0.86rem;
+  line-height: 1.85;
+  margin: 6px auto 40px;
+  text-align: center;
 }
 
 /* ---------- pipeline: ledger rows ---------- */
@@ -478,7 +608,8 @@ main {
 
 .stage-desc {
   color: var(--text-2);
-  font-size: 0.92rem;
+  font-size: 0.82rem;
+  line-height: 1.8;
 }
 
 .serve-callout {
@@ -492,10 +623,9 @@ main {
 
 .serve-callout p {
   margin: 10px 0 0;
-  font-family: var(--display);
-  font-size: 1.14rem;
-  line-height: 1.55;
-  max-width: 62ch;
+  font-size: 0.88rem;
+  line-height: 1.9;
+  max-width: 88ch;
 }
 
 .stamp {
@@ -539,22 +669,34 @@ main {
 }
 
 .principle h3 {
-  font-family: var(--display);
-  font-size: 1.12rem;
+  font-family: var(--mono);
+  font-size: 0.92rem;
   font-weight: 600;
-  line-height: 1.25;
-  margin: 0 0 10px;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  margin: 0 0 12px;
 }
 
 .principle p {
   color: var(--text-2);
-  font-size: 0.9rem;
+  font-size: 0.8rem;
+  line-height: 1.85;
   margin: 0;
 }
 
 /* ---------- console ---------- */
+/* The product sits in the light, lifted off the page like the reference mockup. */
 .console-shell {
+  position: relative;
+  z-index: 1;
   scroll-margin-top: 90px;
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--panel);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent),
+    0 30px 80px -20px rgba(0, 0, 0, 0.85);
 }
 
 /* A title bar, so the console reads as a real instrument and not a code block. */
@@ -562,9 +704,8 @@ main {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
-  border: 1px solid var(--rule);
-  border-bottom: none;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--rule-soft);
   background: var(--bg-2);
   font-family: var(--mono);
   font-size: 0.74rem;
@@ -604,11 +745,17 @@ main {
   text-align: right;
 }
 
+/* Centred, in the mono face, on a wider measure so it sets as two even lines
+   instead of a narrow ragged block. */
 .console-foot {
   color: var(--text-3);
-  font-size: 0.86rem;
-  max-width: 72ch;
-  margin: 16px 0 0;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.85;
+  letter-spacing: 0.01em;
+  max-width: 96ch;
+  margin: 20px auto 0;
+  text-align: center;
 }
 
 .presets {
@@ -653,28 +800,109 @@ main {
 }
 
 .console {
-  border: 1px solid var(--rule);
   background: var(--panel);
-  transition: border-color 0.2s var(--ease);
+  border-bottom: 1px solid var(--rule-soft);
 }
 
 .console:focus-within {
-  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
-.sql {
+/* ---------- SQL editor ---------- */
+/* These four must be identical on the gutter, the paint layer and the input,
+   or the caret drifts off the glyphs. Change them in one place only. */
+.editor {
+  --code-font-size: 0.85rem;
+  --code-line-height: 1.65;
+  --code-pad-y: 18px;
+  --code-pad-x: 18px;
+
+  display: flex;
+  align-items: stretch;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.editor-gutter {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: var(--code-pad-y) 12px var(--code-pad-y) 16px;
+  border-right: 1px solid var(--rule-soft);
+  background: var(--bg-2);
+  overflow: hidden;
+  user-select: none;
+}
+
+.editor-gutter span {
+  font-family: var(--mono);
+  font-size: var(--code-font-size);
+  line-height: var(--code-line-height);
+  color: var(--text-3);
+  opacity: 0.55;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.editor-code {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.editor-paint,
+.editor-input {
+  margin: 0;
+  padding: var(--code-pad-y) var(--code-pad-x);
+  font-family: var(--mono);
+  font-size: var(--code-font-size);
+  line-height: var(--code-line-height);
+  white-space: pre;
+  overflow: auto;
+  border: 0;
+  tab-size: 2;
+}
+
+.editor-paint {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  color: var(--text);
+}
+
+.editor-input {
+  position: relative;
   display: block;
   width: 100%;
-  border: none;
-  outline: none;
-  resize: vertical;
+  resize: none;
   background: transparent;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 0.88rem;
-  line-height: 1.7;
-  padding: 22px 24px;
-  min-height: 130px;
+  /* Transparent glyphs, visible caret: the colour comes from the layer below. */
+  color: transparent;
+  caret-color: var(--text);
+  outline: none;
+}
+
+.editor-input::selection {
+  background: rgba(130, 170, 255, 0.28);
+}
+
+.tk-keyword {
+  color: var(--tk-keyword);
+  font-weight: 500;
+}
+.tk-string {
+  color: var(--tk-string);
+}
+.tk-number {
+  color: var(--tk-number);
+}
+.tk-fn {
+  color: var(--tk-fn);
+}
+.tk-comment {
+  color: var(--tk-comment);
+  font-style: italic;
 }
 
 .console-bar {
@@ -742,6 +970,124 @@ kbd {
   padding: 14px 18px;
   font-family: var(--mono);
   font-size: 0.85rem;
+}
+
+/* ---------- result chart ---------- */
+.chart {
+  position: relative;
+  margin: 18px 0 0;
+  border: 1px solid var(--rule);
+  border-bottom: none;
+  background: var(--panel);
+  padding: 14px 16px 4px;
+}
+
+.chart-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  margin-bottom: 6px;
+}
+
+.chart-title {
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.chart-delta.up {
+  color: var(--up);
+}
+.chart-delta.down {
+  color: var(--down);
+}
+
+.chart-range {
+  margin-left: auto;
+  color: var(--text-3);
+}
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  height: 210px;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-tick {
+  fill: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--chart);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-hover circle {
+  fill: var(--chart);
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+
+.chart-cross {
+  stroke: var(--text-3);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The wipe reveals the series left-to-right on every fresh result. */
+.chart-wipe {
+  transform-origin: left center;
+  animation: wipe 0.85s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes wipe {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.chart-tip {
+  position: absolute;
+  top: 34px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  padding: 5px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.chart-tip-v {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.chart-tip-x {
+  color: var(--text-3);
 }
 
 /* ---------- tables: greenbar / phosphor stock ---------- */
@@ -819,13 +1165,14 @@ tbody tr:hover {
   border-top: 2px solid var(--text);
 }
 
+/* One column, so the query gets the full width instead of half of it. */
 .dataset {
   padding: 24px 22px;
   border-bottom: 1px solid var(--rule-soft);
   border-left: 2px solid transparent;
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  gap: 36px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   align-items: start;
   transition: background-color 0.2s var(--ease), border-left-color 0.2s var(--ease);
 }
@@ -882,15 +1229,16 @@ tbody tr:hover {
 .dataset-query {
   background: var(--bg-2);
   border: 1px solid var(--rule-soft);
-  padding: 16px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  padding: 18px 20px;
   overflow-x: auto;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
 
 .dataset-query code {
   font-family: var(--mono);
-  font-size: 0.74rem;
-  line-height: 1.65;
+  font-size: 0.78rem;
+  line-height: 1.9;
   color: var(--text);
   white-space: pre;
 }
@@ -930,10 +1278,19 @@ tbody tr:hover {
 }
 
 .sources-title {
-  font-family: var(--display);
-  font-size: 1.35rem;
+  font-family: var(--mono);
+  font-size: 1.05rem;
   font-weight: 600;
-  margin: 52px 0 16px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  margin: 56px 0 18px;
+}
+
+.notice {
+  text-align: center;
+  max-width: 90ch;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .mono {

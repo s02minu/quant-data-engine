@@ -1,6 +1,34 @@
 import React, { useState } from "react";
 
+import { tokenize } from "./SqlEditor.jsx";
 import { compact, freshness } from "../format.js";
+
+// The catalogue ships each query on one very long line. Break the major clauses
+// onto their own lines so it reads like SQL you'd actually write.
+function formatSql(sql) {
+  return String(sql ?? "")
+    .replace(/\s+\bFROM\b\s+/gi, "\nFROM ")
+    .replace(/\s+\bWHERE\b\s+/gi, "\nWHERE ")
+    .replace(/\s+\bORDER\s+BY\b\s+/gi, "\nORDER BY ")
+    .replace(/\s+\bGROUP\s+BY\b\s+/gi, "\nGROUP BY ")
+    .replace(/\s+\bLIMIT\b\s+/gi, "\nLIMIT ")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
+function HighlightedSql({ sql }) {
+  return (
+    <pre className="dataset-query">
+      <code>
+        {tokenize(sql).map((t, i) => (
+          <span key={i} className={`tk-${t.t}`}>
+            {t.v}
+          </span>
+        ))}
+      </code>
+    </pre>
+  );
+}
 
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false);
@@ -32,10 +60,8 @@ function DatasetCard({ ds }) {
         </div>
       </div>
       <div>
-        <pre className="dataset-query">
-          <code>{ds.sample_query}</code>
-        </pre>
-        <CopyButton text={ds.sample_query} />
+        <HighlightedSql sql={formatSql(ds.sample_query)} />
+        <CopyButton text={formatSql(ds.sample_query)} />
       </div>
     </div>
   );

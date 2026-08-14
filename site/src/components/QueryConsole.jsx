@@ -1,5 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 
+import ResultChart from "./ResultChart.jsx";
+import SqlEditor from "./SqlEditor.jsx";
 import { BARS_URL, USING_SAMPLE } from "../config.js";
 import { getDb, runQuery } from "../duck.js";
 import { useTypewriter } from "../hooks.js";
@@ -46,7 +48,7 @@ export default function QueryConsole() {
   const [elapsed, setElapsed] = useState(null);
   const [activePreset, setActivePreset] = useState(PRESETS[0].label);
   const [booting, setBooting] = useState(true);
-  const autoRan = useRef(false);
+  const [autoRan, setAutoRan] = useState(false);
 
   // Type the opening query out, so the first thing a visitor sees is the product
   // working rather than a claim that it works.
@@ -65,12 +67,15 @@ export default function QueryConsole() {
   }, []);
 
   // Once the engine is up and the query has finished typing, run it once.
+  // Guarded on state rather than a ref: StrictMode's dev double-mount resets state
+  // while a ref set during the discarded pass would suppress the retry forever,
+  // leaving the hero sitting at "Ready" with nothing shown.
   useEffect(() => {
-    if (booting || !typingDone || autoRan.current) return;
-    autoRan.current = true;
+    if (booting || !typingDone || autoRan || running) return;
+    setAutoRan(true);
     execute(PRESETS[0].sql);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booting, typingDone]);
+  }, [booting, typingDone, autoRan, running]);
 
   function onKeyDown(e) {
     // ⌘/Ctrl + Enter runs, the way every SQL console does.
@@ -119,9 +124,7 @@ export default function QueryConsole() {
       </div>
 
       <div className="console">
-        <textarea
-          className="sql"
-          spellCheck={false}
+        <SqlEditor
           value={typing ? typed : sql}
           readOnly={typing}
           onChange={(e) => {
@@ -129,8 +132,7 @@ export default function QueryConsole() {
             setActivePreset(null);
           }}
           onKeyDown={onKeyDown}
-          aria-label="SQL query"
-          rows={Math.max(6, sql.split("\n").length + 1)}
+          label="SQL query"
         />
         {(running || booting) && <div className="console-scan" aria-hidden="true" />}
         <div className="console-bar">
@@ -161,6 +163,8 @@ export default function QueryConsole() {
       </div>
 
       {error && <div className="console-error">{error}</div>}
+
+      {result && !error && <ResultChart key={elapsed} result={result} />}
 
       {result && !error && (
         <div className="table-wrap result-wrap">

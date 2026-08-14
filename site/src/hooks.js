@@ -16,7 +16,8 @@ export function useCountUp(target, duration = 1100) {
 
   useEffect(() => {
     if (target == null || !Number.isFinite(target)) return undefined;
-    if (prefersReducedMotion()) {
+    // No animation frames in a hidden tab — show the real figure rather than 0.
+    if (prefersReducedMotion() || document.hidden) {
       setValue(target);
       return undefined;
     }
@@ -31,7 +32,13 @@ export function useCountUp(target, duration = 1100) {
       else setValue(target);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    // Backstop for throttled/paused frames, so a figure never sticks below target.
+    const timer = setTimeout(() => setValue(target), duration + 900);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
   }, [target, duration]);
 
   return value;
@@ -78,26 +85,40 @@ export function useTypewriter(text, { enabled = true, cps = 90 } = {}) {
       setDone(true);
       return undefined;
     }
-    if (prefersReducedMotion()) {
+    // A hidden tab gets no animation frames at all, so don't start one there —
+    // otherwise the editor would sit empty and read-only until the tab is focused.
+    if (prefersReducedMotion() || document.hidden) {
       setShown(text);
       setDone(true);
       return undefined;
     }
 
     let raf;
+    const finish = () => {
+      setShown(text);
+      setDone(true);
+    };
     const start = performance.now();
     const tick = (now) => {
       const n = Math.floor(((now - start) / 1000) * cps);
       if (n >= text.length) {
-        setShown(text);
-        setDone(true);
+        finish();
         return;
       }
       setShown(text.slice(0, n));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+
+    // Backstop: if frames stop arriving (tab backgrounded mid-type, throttling),
+    // snap to the full text so the console never stays stuck mid-animation.
+    const budget = (text.length / cps) * 1000 + 900;
+    const timer = setTimeout(finish, budget);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
   }, [text, enabled, cps]);
 
   return [shown, done];
