@@ -18,6 +18,7 @@ and the mounted ``/data`` volume on the VPS.
 import os
 
 from qde.checks import run_checks, run_events_checks, run_microstructure_checks
+from qde.dq_history import record_run
 from qde.env import load_env_file
 from qde.loaders import NoNewData
 from qde.log import configure, get_logger
@@ -196,6 +197,14 @@ def run(base_dir: str = "data") -> dict:
             severity=v.severity,
             detail=v.detail,
         )
+
+    # Keep the result, so violations can be charted over time rather than only
+    # alerted on. Non-fatal for the same reason the checks themselves are: a
+    # bookkeeping failure must not stop the compact/sync that follows.
+    try:
+        record_run(violations, base_dir)
+    except Exception as exc:
+        log.warning("dq_history_failed", error=str(exc))
 
     return {
         "updated": updated,
