@@ -240,8 +240,10 @@ before it's added. Full plan with phases and reasoning: [docs/ROADMAP.md](docs/R
 compaction + sync → direct DuckDB querying of the remote lake, deployed and
 running autonomously.
 
-**Next:** dbt transformations (silver/gold, order-book reconstruction) →
-Dagster orchestration → public catalogue + Streamlit dashboard.
+**Live:** <https://quant-data-engine.israeladetola.workers.dev> — query the lake in
+your own browser (DuckDB-WASM, no backend), or check
+[`/status`](https://quant-data-engine.israeladetola.workers.dev/status) for live
+source freshness and the nightly data-quality record.
 
 **Deliberately deferred at current scale:** Spark (data fits on one machine —
 DuckDB is faster here), Kafka (one producer, one consumer, replayable sources),

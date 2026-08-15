@@ -24,7 +24,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 9 | Data quality | In progress (freshness + null + microstructure checks live; **bitemporal events check added**) |
 | 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
 | 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.12×3.14) |
-| 12 | Catalogue and publishing | In progress (**catalogue.json + redistributable public-publish done**; React site + Streamlit + bucket next) |
+| 12 | Catalogue and publishing | **Done and live** — public bucket, catalogue, site + `/status` at <https://quant-data-engine.israeladetola.workers.dev> |
 
 **Current focus:** Phase 6 is complete and the platform is fully deployed. The
 collector runs 24/7; the batch side has watermarked incremental loads, idempotent
@@ -852,14 +852,37 @@ static `catalogue.json`. The catalogue-as-live-service [open] question resolved 
       overflow at 375 px or desktop, and all motion collapsing under
       `prefers-reduced-motion`. Remaining: Cloudflare Pages deploy (free). Run/deploy
       steps in `site/README.md`.
-- [ ] **Streamlit dashboard** — interactive browse/charts/freshness. Streamlit Cloud
-      (free). Linked from the React site. *(next)*
-- [ ] Provision the public R2 bucket + Cloudflare CDN cache / rate-limiting (owner's
-      account action; the publish job + nightly wiring are ready and waiting on it).
+- [x] **Data-quality history (`qde.dq_history`)** — every nightly pass is persisted as
+      two Hive-partitioned tables under `quality/`: `dq_violations` (one row per failed
+      check) and `dq_runs` (one row per pass, **written even when clean**). The second
+      table is the point: with only violations, "a clean night" and "the job never ran"
+      are both zero rows, and they mean opposite things. Published to the public bucket
+      — these are our own operational records, not licensed data, and a public quality
+      record is a trust signal rather than a liability.
+- [x] **Status page (`/status`)** — the observability plane, replacing the planned
+      Streamlit dashboard. Live per-source freshness counting up in the browser, run
+      history, violations, and a **"how is this measured?"** toggle on every panel that
+      reveals the SQL behind the number. A status page is normally an assertion you
+      either believe or not; this one publishes its own evidence, because the data it
+      reports on is public Parquet the visitor can re-run. Freshness grading lives in
+      `site/src/health.js` so the home page and `/status` cannot disagree.
+- [~] **Streamlit dashboard — DROPPED.** Superseded by `/status`, which reads the same
+      files, reuses the site's components and deploy, needs no extra hosting, and could
+      not be matched visually by Streamlit. Dagster remains the *control* plane (local);
+      the web page is the *observability* plane. What Streamlit/Power BI would still
+      give you: scheduled email reports and point-and-click filtering for non-SQL users.
+- [x] **Public R2 bucket provisioned + live** — `qde-public`, CORS enabled, published
+      nightly. R2 API tokens are bucket-scoped, so the existing token had to be granted
+      access explicitly; until then every upload returned `AccessDenied`.
 - [x] **`docs/licensing.md`** — the two-halves audit (also closed the Phase 2 leftover):
       the open-lake vs code-only split, how the `redistributable` flag enforces it, and a
       per-source classification table generated from the registry.
-- [ ] Docker packaging / live public URL — the final deploy.
+- [x] **Live public URL** — <https://quant-data-engine.israeladetola.workers.dev>,
+      deployed via Cloudflare Workers Static Assets (`site/wrangler.jsonc`). Static
+      asset requests are free and unlimited and do not count against the Workers free
+      tier; R2 egress is free, so the only cost surface is Class B operations.
+- [ ] Docker packaging — the collector image is built on the VPS from the repo; a
+      published image is still outstanding.
 
 ---
 

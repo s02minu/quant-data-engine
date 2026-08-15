@@ -474,7 +474,7 @@ good as everything beneath it.
 | Catalogue service | **FastAPI** | Datasets, schemas, freshness, DQ stats, licence — generated from the registry. **[open]** whether this needs to be a live service at all, or a static JSON artifact emitted at build time (cheaper, probably sufficient). |
 | Packaging | **Docker + docker-compose** | `docker compose up` brings up catalogue + Dagster locally. |
 | Hosting | Render / Fly.io / HF Spaces | Free tier. Compute is tiny because analysts bring their own. |
-| Dashboard | **Streamlit** | Public page: browse the catalogue, preview a dataset, see freshness. What non-technical people (and recruiters) actually click. |
+| Dashboard | ~~Streamlit~~ → **React `/status`** | Superseded. The status page reads the same public Parquet with DuckDB-WASM, reuses the site's components and deploy, and needs no extra hosting. Streamlit would have been a second stack serving the same files less well. |
 
 **Deliverable:** a live URL where anyone can discover the data and copy a working
 DuckDB query against it.

@@ -159,7 +159,7 @@ def _gold_dataset(
         "row_count": int(n),
         "freshness": fresh,
         "schema": _schema(con, rel),
-        "sample_query": f"SELECT * FROM read_parquet('{url}')\nLIMIT 100;",
+        "sample_query": f"SELECT *\nFROM read_parquet('{url}')\nLIMIT 100;",
     }
 
 
