@@ -4,6 +4,7 @@ import QueryConsole from "./QueryConsole.jsx";
 import ThemeToggle from "./ThemeToggle.jsx";
 import { GITHUB_URL } from "../config.js";
 import { compact } from "../format.js";
+import { healthSummary } from "../health.js";
 import { useActiveSection, useCountUp, useScrollProgress } from "../hooks.js";
 
 const SECTIONS = [
@@ -14,6 +15,25 @@ const SECTIONS = [
 
 // Module-level so the observer effect doesn't re-subscribe on every render.
 const SECTION_IDS = SECTIONS.map((s) => s.id);
+
+// A live health line on the home page: the status page is only useful if people
+// know it exists, and a number they can see beats a link they have to guess at.
+// Grading comes from health.js so this can never disagree with /status.
+function LiveStatus({ sources }) {
+  const { degraded, total } = healthSummary(sources);
+
+  return (
+    <a className={`live-status ${degraded ? "is-behind" : "is-ok"}`} href="/status">
+      <span className="live-dot" aria-hidden="true" />
+      <span className="live-text">
+        {degraded === 0
+          ? `All ${total} sources current`
+          : `${degraded} of ${total} sources behind schedule`}
+      </span>
+      <span className="live-cta">View status →</span>
+    </a>
+  );
+}
 
 function Stat({ label, value, format = (n) => String(Math.round(n)) }) {
   const shown = useCountUp(value ?? null);
@@ -56,6 +76,8 @@ export default function Hero({ catalogue }) {
                   {s.label}
                 </a>
               ))}
+              {/* A page, not a section — so it sits outside the scrollspy list. */}
+              <a href="/status">Status</a>
               <a href={GITHUB_URL} target="_blank" rel="noreferrer">
                 GitHub
               </a>
@@ -104,6 +126,8 @@ export default function Hero({ catalogue }) {
             </div>
           </div>
         )}
+
+        {sources.length > 0 && <LiveStatus sources={sources} />}
 
         <div className="stat-strip">
           <Stat label="Sources" value={sources.length || null} />

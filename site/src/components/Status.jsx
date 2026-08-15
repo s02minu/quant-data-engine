@@ -5,6 +5,7 @@ import { tokenize } from "./SqlEditor.jsx";
 import { DQ_RUNS_URL, DQ_VIOLATIONS_URL, GITHUB_URL, USING_SAMPLE } from "../config.js";
 import { runQuery } from "../duck.js";
 import { compact } from "../format.js";
+import { ageMs, healthOf, healthSummary, humanAge } from "../health.js";
 import { useScrollProgress } from "../hooks.js";
 
 // Every panel names the query behind it. A status page is normally an assertion you
@@ -43,25 +44,8 @@ function useNow(intervalMs = 1000) {
   return now;
 }
 
-function humanAge(ms) {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  const s = Math.floor(ms / 1000);
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (d) return `${d}d ${h}h`;
-  if (h) return `${h}h ${m}m`;
-  return `${m}m ${s % 60}s`;
-}
-
-// A source is judged against its own cadence, not a single global threshold — a
-// daily series and an 8-hourly one cannot share one definition of "late".
-function health(ageMs, cadenceHours) {
-  const ageH = ageMs / 3.6e6;
-  if (ageH <= cadenceHours * 1.5) return "ok";
-  if (ageH <= cadenceHours * 3) return "warn";
-  return "late";
-}
+// Grading and age formatting come from health.js — the same module the home page
+// uses, so the two surfaces cannot report different answers for the same source.
 
 export default function Status({ catalogue }) {
   const [runs, setRuns] = useState(null);
@@ -91,25 +75,12 @@ export default function Status({ catalogue }) {
   const rows = useMemo(
     () =>
       sources
-        .map((s) => {
-          const last = s.freshness?.last ? Date.parse(s.freshness.last) : null;
-          const ageMs = last ? now - last : null;
-          // The catalogue's own age at generation time tells us the expected cadence
-          // well enough to grade against; fall back to a day for anything unknown.
-          const cadence = s.group === "bars" ? 24 : s.group === "series" ? 24 * 3 : 24 * 7;
-          return {
-            ...s,
-            last,
-            ageMs,
-            state: ageMs == null ? "unknown" : health(ageMs, cadence),
-          };
-        })
-        .sort((a, b) => (b.ageMs ?? 0) - (a.ageMs ?? 0)),
+        .map((s) => ({ ...s, age: ageMs(s, now), state: healthOf(s, now) }))
+        .sort((a, b) => (b.age ?? 0) - (a.age ?? 0)),
     [sources, now],
   );
 
-  const late = rows.filter((r) => r.state === "late").length;
-  const warn = rows.filter((r) => r.state === "warn").length;
+  const { late, warn, degraded } = healthSummary(sources, now);
   const lastRun = runs?.[0];
   const overall = late > 0 ? "late" : warn > 0 ? "warn" : "ok";
 
@@ -142,8 +113,8 @@ export default function Status({ catalogue }) {
           <span className={`status-pill status-${overall}`}>
             <span className="status-dot" />
             {overall === "ok"
-              ? "All sources current"
-              : `${late || warn} source${(late || warn) === 1 ? "" : "s"} behind schedule`}
+              ? `All ${rows.length} sources current`
+              : `${degraded} of ${rows.length} sources behind schedule`}
           </span>
           <h1>System status</h1>
           <p className="lede">
@@ -173,7 +144,7 @@ export default function Status({ catalogue }) {
                 <span className="fresh-name">{r.name}</span>
                 <span className="fresh-group">{r.group}</span>
                 <span className="fresh-rows fig">{compact(r.rows || 0)}</span>
-                <span className="fresh-age fig">{humanAge(r.ageMs)}</span>
+                <span className="fresh-age fig">{humanAge(r.age)}</span>
               </div>
             ))}
           </div>

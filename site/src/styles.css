@@ -53,27 +53,33 @@
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
+/* Light mode is the warm counterpart to the dark tube, not a grey inversion of it:
+   a golden ground with a gold accent. A near-black accent (what this used to be)
+   read as black/brown and made the whole page feel like an unlit version of dark
+   rather than its own thing. */
 :root[data-theme="light"] {
-  --bg: #f4f4f5;
-  --bg-2: #fafafa;
-  --panel: #ffffff;
-  --band: rgba(0, 0, 0, 0.022);
-  --band-strong: rgba(0, 0, 0, 0.05);
+  --bg: #f7f2e4;
+  --bg-2: #fdf9ee;
+  --panel: #fffcf4;
+  --band: rgba(140, 105, 20, 0.05);
+  --band-strong: rgba(140, 105, 20, 0.1);
 
-  --text: #131316;
-  --text-2: #52565e;
-  --text-3: #62666e;
+  --text: #1c1810;
+  --text-2: #574d36;
+  --text-3: #6b6047;
 
-  --rule: rgba(0, 0, 0, 0.15);
-  --rule-soft: rgba(0, 0, 0, 0.08);
+  --rule: rgba(120, 92, 26, 0.24);
+  --rule-soft: rgba(120, 92, 26, 0.13);
 
-  --bronze: #3f434a;
-  --silver: #52565e;
-  --gold: #131316;
+  --bronze: #7a5518;
+  --silver: #57503d;
+  --gold: #8a6210;
 
-  --accent: #131316;
-  --accent-ink: #ffffff;
-  --chart: #2f7d17;
+  /* Deep enough to clear 4.5:1 as text on the cream ground — the accent is used
+     for the eyebrow and inline links, not just for fills. */
+  --accent: #8c5f04;
+  --accent-ink: #fffcf4;
+  --chart: #8c5f04;
   --up: #2f7d17;
   --down: #b3261e;
   --danger: #b3261e;
@@ -1666,4 +1672,53 @@ tbody tr:hover {
   .fresh-rows {
     display: none;
   }
+}
+
+/* Live health line on the home page — the way into the status page. */
+.live-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+  padding: 13px 18px;
+  min-height: 44px;
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  transition: border-color 0.18s var(--ease), background-color 0.18s var(--ease);
+}
+
+.live-status:hover {
+  border-color: var(--accent);
+  background: var(--band);
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+.live-status.is-ok .live-dot {
+  background: var(--up);
+  box-shadow: 0 0 10px var(--up);
+}
+
+.live-status.is-behind .live-dot {
+  background: var(--down);
+  box-shadow: 0 0 10px var(--down);
+}
+
+.live-text {
+  color: var(--text-2);
+}
+
+.live-cta {
+  margin-left: auto;
+  color: var(--accent);
+  letter-spacing: 0.06em;
 }

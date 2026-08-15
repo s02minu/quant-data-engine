@@ -17,6 +17,7 @@ export default function Footer() {
           </p>
         </div>
         <div className="footer-links">
+          <a href="/status">Status</a>
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">
             GitHub
           </a>
