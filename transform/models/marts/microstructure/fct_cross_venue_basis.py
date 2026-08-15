@@ -9,6 +9,21 @@ Shape: one row per (symbol, date, bucket) carrying both venue mids and the basis
 basis points. This is the raw signal; daily summaries (mean/std/extremes, share of
 time one venue is richer) are a `GROUP BY` away, so there is no second mart.
 
+**A monitoring artifact, not an archive.** This is a full rebuild over whatever
+`book_ticker` is still on local disk, and the nightly prunes bronze after syncing it
+to R2 — so the mart is a *rolling window* (~the local retention), not an accumulating
+history, and it will start dropping its oldest day once retention is reached. That is
+deliberate: the platform's job is to serve current state and clean data, and the
+durable full history already exists as raw bronze in R2. Anything needing years of
+basis (a backtest, say) should build its own features from that archive rather than
+expect this mart to be one.
+
+Because the window's edges are partial — the newest day is however much of today has
+been captured — every row carries its day's `day_buckets` and `day_coverage_pct`. A
+daily `GROUP BY` over a 30%-covered day is not comparable to a full one, and crypto
+basis has strong intraday structure, so a partial day is a *biased* sample rather
+than merely a smaller one. Filter on coverage before aggregating.
+
 **PRIVATE.** Registered in `lake._GOLD_MARTS` so the nightly syncs it to the private
 bucket, and deliberately absent from `publish_public._PUBLIC_MARTS` so it is not
 served on the open lake. Publishing is a one-way door; this stays closed until
@@ -107,10 +122,20 @@ def model(dbt, session):
             if aligned.empty:
                 continue
 
+            # Coverage of this day, so a consumer can tell a full day from a partial
+            # one without counting rows itself. Denormalised onto every row on
+            # purpose: the alternative is a join, and the whole point is that
+            # filtering before aggregating should be trivial.
+            n_buckets = int(len(aligned))
+            expected = 86_400_000 // BUCKET_MS
+            coverage = round(100.0 * n_buckets / expected, 2)
+
             out = pd.DataFrame(
                 {
                     "symbol": symbol,
                     "date": pd.Timestamp(day).date(),
+                    "day_buckets": n_buckets,
+                    "day_coverage_pct": coverage,
                     "bucket": aligned.index.astype("int64"),
                     # Bucket start as a real timestamp, so consumers can join on time
                     # without knowing the bucket arithmetic.
@@ -134,6 +159,8 @@ def model(dbt, session):
             {
                 "symbol": pd.Series(dtype="object"),
                 "date": pd.Series(dtype="object"),
+                "day_buckets": pd.Series(dtype="int64"),
+                "day_coverage_pct": pd.Series(dtype="float64"),
                 "bucket": pd.Series(dtype="int64"),
                 "bucket_ts": pd.Series(dtype="datetime64[ns, UTC]"),
                 "bucket_ms": pd.Series(dtype="int64"),

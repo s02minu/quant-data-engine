@@ -7,8 +7,11 @@ models:
   - name: fct_cross_venue_basis
     description: >
       Cross-venue basis between Binance BTC/USDT and Coinbase BTC/USD, one row per
-      (symbol, date, 1s bucket). PRIVATE — synced to the private bucket only, and
-      deliberately not listed in publish_public._PUBLIC_MARTS.
+      (symbol, date, 1s bucket). A MONITORING artifact, not an archive: a full
+      rebuild over locally-retained book_ticker, so it is a rolling window (~local
+      retention) rather than accumulating history — the durable full history is raw
+      bronze in R2. PRIVATE: synced to the private bucket only, and deliberately not
+      listed in publish_public._PUBLIC_MARTS.
     config:
       materialized: external
       location: "{{ var('lake_root') }}/gold/group=microstructure/mart=fct_cross_venue_basis/data.parquet"
@@ -33,4 +36,14 @@ models:
         data_tests: [not_null]
       - name: quote_mid
         description: Coinbase mid price in the bucket (last quote wins).
+        data_tests: [not_null]
+      - name: day_coverage_pct
+        description: >
+          Share of a full day this date actually covers (buckets / 86400 for 1s
+          buckets). The window's newest day is partial, and crypto basis has strong
+          intraday structure — so a low-coverage day is a BIASED sample, not just a
+          smaller one. Filter on this before aggregating to daily.
+        data_tests: [not_null]
+      - name: day_buckets
+        description: Aligned buckets present for this date, the numerator of coverage.
         data_tests: [not_null]
