@@ -271,3 +271,17 @@ def test_consolidates_series_across_mixed_partition_depths(tmp_path):
     # Both depths present; the flat source simply carries a null metric.
     assert set(merged["source"]) == {"cboe", "binancefut"}
     assert merged["metric"].isna().any()
+
+
+def test_cross_venue_basis_is_never_published():
+    # The cross-venue basis is derived from the private microstructure capture and
+    # is the platform's research wedge. It is synced to the PRIVATE bucket (it is in
+    # lake._GOLD_MARTS) but must not appear in the public one. Publishing is a
+    # one-way door, so this asserts the two lists stay separate.
+    from qde.lake import _GOLD_MARTS
+    from qde.publish_public import _PUBLIC_MARTS
+
+    assert "fct_cross_venue_basis" in _GOLD_MARTS, "should sync to the private bucket"
+    assert not any("cross_venue_basis" in k for k in _PUBLIC_MARTS), (
+        "cross-venue basis must NOT be in the public publish list"
+    )

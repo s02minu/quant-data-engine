@@ -137,6 +137,13 @@ _GOLD_MARTS = {
     "fct_bars_daily": "gold/group=bars/mart=fct_bars_daily/*.parquet",
     "fct_series_features": "gold/group=series/mart=fct_series_features/*.parquet",
     "fct_events_revisions": "gold/group=events/mart=fct_events_revisions/*.parquet",
+    # PRIVATE. This bucket is the private lake, so listing it here syncs and serves
+    # it to us only; it is deliberately absent from publish_public._PUBLIC_MARTS,
+    # which is the separate list controlling what reaches the open bucket. The
+    # cross-venue basis is the platform's research wedge — publishing is one-way.
+    "fct_cross_venue_basis": (
+        "gold/group=microstructure/mart=fct_cross_venue_basis/*.parquet"
+    ),
     "dim_sources": "gold/dim_sources/*.parquet",
 }
 

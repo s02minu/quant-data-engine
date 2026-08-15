@@ -29,6 +29,7 @@ docker compose run --rm collector sh -c '
   mkdir -p /data/gold/group=bars/mart=fct_bars_daily \
            /data/gold/group=series/mart=fct_series_features \
            /data/gold/group=events/mart=fct_events_revisions \
+           /data/gold/group=microstructure/mart=fct_cross_venue_basis \
            /data/gold/dim_sources
   cd transform && DBT_PROFILES_DIR=. dbt build --vars "lake_root: /data"
 ' || echo "[$(date -u +%FT%TZ)] dbt build failed; continuing to sync"

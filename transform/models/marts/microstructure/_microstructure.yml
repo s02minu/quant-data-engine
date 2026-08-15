@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  # Config lives here rather than inline: dbt parses inline `dbt.config()` args with
+  # `literal_eval`, so `var('lake_root')` cannot be interpolated in the .py file.
+  # YAML config renders Jinja normally.
+  - name: fct_cross_venue_basis
+    description: >
+      Cross-venue basis between Binance BTC/USDT and Coinbase BTC/USD, one row per
+      (symbol, date, 1s bucket). PRIVATE — synced to the private bucket only, and
+      deliberately not listed in publish_public._PUBLIC_MARTS.
+    config:
+      materialized: external
+      location: "{{ var('lake_root') }}/gold/group=microstructure/mart=fct_cross_venue_basis/data.parquet"
+      format: parquet
+      # Surfaced as model CONFIG because a Python model's `dbt.config.get()` reads
+      # config, not project vars — `var('lake_root')` is not visible to it otherwise.
+      lake_root: "{{ var('lake_root') }}"
+    columns:
+      - name: symbol
+        description: Canonical symbol, e.g. BTCUSDT.
+        data_tests: [not_null]
+      - name: bucket_ts
+        description: UTC timestamp of the bucket start.
+        data_tests: [not_null]
+      - name: basis_bps
+        description: >
+          (quote_mid - base_mid) / base_mid * 1e4. Positive means Coinbase (USD) is
+          richer than Binance (USDT) — a USD premium / USDT discount.
+        data_tests: [not_null]
+      - name: base_mid
+        description: Binance mid price in the bucket (last quote wins).
+        data_tests: [not_null]
+      - name: quote_mid
+        description: Coinbase mid price in the bucket (last quote wins).
+        data_tests: [not_null]
