@@ -20,6 +20,7 @@ import os
 from qde.checks import run_checks, run_events_checks, run_microstructure_checks
 from qde.dq_history import record_run
 from qde.env import load_env_file
+from qde.host import check_disk
 from qde.loaders import NoNewData
 from qde.log import configure, get_logger
 from qde.quality import build_quality_summary
@@ -188,6 +189,9 @@ def run(base_dir: str = "data") -> dict:
     violations = run_checks(base_dir)
     violations += run_events_checks(base_dir)
     violations += run_microstructure_checks(base_dir)
+    # Host health rides the same path: a full disk stops ingestion, compaction and
+    # sync alike, and nothing else was watching for it.
+    violations += check_disk(base_dir)
     for v in violations:
         log.warning(
             "dq_violation",
