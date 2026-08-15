@@ -20,6 +20,15 @@ export const BARS_URL = PUBLIC_BASE_URL
 // Catalogue: live from the public bucket if configured, else the bundled snapshot.
 export const CATALOGUE_URL = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/catalogue.json` : "/catalogue.json";
 
+// Data-quality history, for the status page. These are the CONSOLIDATED files, not
+// the date partitions: plain HTTP has no directory listing, so a `**/*.parquet` glob
+// cannot be expanded from a browser — DuckDB fails with "Globs for generic HTTP file
+// are not supported". One file at a stable path is the only thing a client can read.
+export const DQ_RUNS_URL = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/quality/dq_runs.parquet` : null;
+export const DQ_VIOLATIONS_URL = PUBLIC_BASE_URL
+  ? `${PUBLIC_BASE_URL}/quality/dq_violations.parquet`
+  : null;
+
 export const GITHUB_URL = "https://github.com/s02minu/quant-data-engine";
 export const STREAMLIT_URL = import.meta.env.VITE_STREAMLIT_URL || "";
 
