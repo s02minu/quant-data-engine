@@ -145,3 +145,40 @@ def test_publish_reports_no_failures_on_success(tmp_path):
     assert summary["failed"] == 0
     assert summary["bronze_failed"] == 0
     assert summary["gold_failed"] == 0
+
+
+def test_publish_mirrors_dq_history(tmp_path):
+    # The quality history is our own operational record, not licensed data, so it
+    # publishes in full — it is what a status page reads.
+    from qde.checks import Violation
+    from qde.dq_history import record_run
+
+    _tiny_lake(tmp_path)
+    record_run(
+        [Violation("series", "fred", "UNRATE", None, "freshness", "warn", "stale")],
+        str(tmp_path),
+    )
+    client = FakeS3()
+    summary = publish_public(str(tmp_path), "qde-public", client, public_base_url="https://d")
+
+    keys = [k for (_b, k) in client.objects]
+    assert any(k.startswith("quality/dq_runs/") for k in keys)
+    assert any(k.startswith("quality/dq_violations/") for k in keys)
+    assert summary["quality_published"] >= 2
+    assert summary["failed"] == 0
+
+
+def test_clean_run_still_publishes_the_run_record(tmp_path):
+    # A clean night has no violations file, but the run record must still reach the
+    # bucket — otherwise a status page cannot tell "healthy" from "never ran".
+    from qde.dq_history import record_run
+
+    _tiny_lake(tmp_path)
+    record_run([], str(tmp_path))
+    client = FakeS3()
+    summary = publish_public(str(tmp_path), "qde-public", client, public_base_url="https://d")
+
+    keys = [k for (_b, k) in client.objects]
+    assert any(k.startswith("quality/dq_runs/") for k in keys)
+    assert not any(k.startswith("quality/dq_violations/") for k in keys)
+    assert summary["quality_published"] >= 1

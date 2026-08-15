@@ -39,6 +39,12 @@ log = get_logger(__name__)
 # research feed and is never published.
 _PUBLIC_GROUPS = ("bars", "series", "events")
 
+# Data-quality history (qde.dq_history). Published in full and unfiltered: these are
+# our own operational records — which checks ran, what failed, how stale something was
+# — not anyone else's licensed data, so the redistributable rule does not apply. A
+# public quality record is a trust signal for a data product; silence is not.
+_PUBLIC_QUALITY = ("dq_runs", "dq_violations")
+
 # Gold marts to publish, and the column to filter non-redistributable rows on. All
 # three fct marts carry ``source``; the catalogue.json supersedes the dim_sources
 # mart, so that one is not published as a file.
@@ -94,8 +100,8 @@ def publish_public(
     """
     base = Path(base_dir)
     excluded = _excluded_sources() if excluded is None else excluded
-    bronze_ok = bronze_skipped = gold_ok = 0
-    bronze_failed = gold_failed = 0
+    bronze_ok = bronze_skipped = gold_ok = quality_ok = 0
+    bronze_failed = gold_failed = quality_failed = 0
 
     # --- bronze: mirror every file except excluded sources' partitions ---
     for group in _PUBLIC_GROUPS:
@@ -109,6 +115,14 @@ def publish_public(
                 bronze_ok += 1
             else:
                 bronze_failed += 1
+
+    # --- quality: mirror the data-quality history as-is ---
+    for table in _PUBLIC_QUALITY:
+        for file in sorted((base / "quality" / table).rglob("*.parquet")):
+            if _upload(client, file, public_bucket, file.relative_to(base).as_posix()):
+                quality_ok += 1
+            else:
+                quality_failed += 1
 
     # --- gold: filter non-redistributable rows, then upload the trimmed copy ---
     con = duckdb.connect()
@@ -142,9 +156,14 @@ def publish_public(
         "gold_published": gold_ok,
         "catalogue": catalogue_ok,
         "excluded": excluded,
+        "quality_published": quality_ok,
         "bronze_failed": bronze_failed,
         "gold_failed": gold_failed,
-        "failed": bronze_failed + gold_failed + (0 if catalogue_ok else 1),
+        "quality_failed": quality_failed,
+        "failed": bronze_failed
+        + gold_failed
+        + quality_failed
+        + (0 if catalogue_ok else 1),
     }
 
 
@@ -165,6 +184,7 @@ if __name__ == "__main__":
         bronze=summary["bronze_published"],
         bronze_skipped=summary["bronze_skipped"],
         gold=summary["gold_published"],
+        quality=summary["quality_published"],
         catalogue=summary["catalogue"],
         excluded=summary["excluded"],
         failed=summary["failed"],
