@@ -4,8 +4,15 @@
 
 Financial data platform that ingests, stores, and serves market data — batch OHLCV and live crypto microstructure — as a queryable Parquet lakehouse on Cloudflare R2.
 
-**Status:** Running in production — autonomous ingestion, cloud storage, and direct querying.  
-**Batch:** REST loaders, Parquet storage, incremental updates, DuckDB SQL, Power BI quality monitoring.  
+### ▸ [Query it live in your browser](https://quant-data-engine.israeladetola.workers.dev)
+
+No signup, no server, no egress fees. A full DuckDB engine compiled to WebAssembly
+runs in your tab and reads Parquet straight from R2 — your machine does the compute.
+Live source freshness and the nightly data-quality record are at
+[**/status**](https://quant-data-engine.israeladetola.workers.dev/status).
+
+**Status:** Running in production — autonomous ingestion, cloud storage, public open lake, and direct querying.  
+**Batch:** REST loaders, Parquet storage, incremental updates, dbt marts, DuckDB SQL, automated quality checks.  
 **Streaming:** live trades, L2 order-book deltas, and top-of-book quotes captured to a partitioned bronze lake — micro-batching, reconnection, gap detection; runs **24/7 in Docker on a VPS**.  
 **Storage & serving:** a daily job compacts and syncs bronze to **Cloudflare R2** (zero-egress object storage) and prunes locally; the lake is queried directly with DuckDB, no server. Linted (ruff), type-checked (mypy), and tested offline (pytest).
 
@@ -14,8 +21,8 @@ Financial data platform that ingests, stores, and serves market data — batch O
 ```mermaid
 flowchart TD
     subgraph SRC["Sources"]
-      REST["Binance · Kraken · yfinance<br/>REST APIs"]
-      WS["Binance WebSocket<br/>trades · depth · book_ticker"]
+      REST["12 sources · REST APIs<br/>6 crypto venues · FRED · CBOE · CFTC · yfinance"]
+      WS["Binance + Coinbase WebSocket<br/>trades · depth · book_ticker"]
     end
 
     REST -->|"batch pull · pagination · retries"| BL["Batch ingestors<br/>qde.registry · qde.ingest"]
@@ -29,24 +36,29 @@ flowchart TD
     BARS --> DUCK["DuckDB<br/>SQL on Parquet — local or R2"]
     BRONZE --> DUCK
     R2 --> DUCK
-    DUCK --> OUT["Queries · Power BI · quality checks"]
+    DUCK --> OUT["Queries · quality checks · alerts"]
 
-    R2 -.-> SILVER["Silver / Gold<br/>dbt · book reconstruction · features"]
-    SILVER -.-> PUB["Public catalogue<br/>serve files to analysts"]
+    R2 --> SILVER["Silver / Gold<br/>dbt marts · returns · ATR · realized vol · revisions"]
+    SILVER --> PUB["Public open lake + catalogue<br/>serve files, not queries"]
+    PUB --> WEB["Browser<br/>DuckDB-WASM console · /status"]
+
+    R2 -.-> BOOK["Order-book reconstruction<br/>from depth deltas"]
 
     classDef planned stroke-dasharray:5 5;
-    class SILVER,PUB planned;
+    class BOOK planned;
 ```
 
-Solid = operational today (ingestion → bronze → R2 → query, running autonomously). Dashed = planned phases (full plan and reasoning in [docs/ROADMAP.md](docs/ROADMAP.md)).
+Solid = operational today, running autonomously end to end: ingestion → bronze → dbt →
+public lake → in-browser query. Dashed = still planned (full plan and reasoning in
+[docs/ROADMAP.md](docs/ROADMAP.md)).
 
 ### What it does
 
-- Loads OHLCV data from Binance (REST API), Yahoo Finance, and Kraken (REST API), with unified symbol mapping across sources.
+- Loads data from **12 registered sources** — six crypto venues (Binance, Coinbase, Kraken, OKX, KuCoin, Bybit), Binance perpetual futures, FRED macro series, the FRED/ALFRED economic calendar, CBOE volatility indices, CFTC positioning, and Yahoo Finance ETFs — each declared once as a `SourceSpec` that drives ingestion, quality thresholds, and the public catalogue.
 - Cleans and standardizes every DataFrame: lowercase columns, UTC-aware index, canonical OHLCV order — regardless of source.
 - Stores data locally as Parquet files with incremental updates — fetch once, refresh daily, never re-download history.
 - Queries stored data instantly via DuckDB SQL or direct DataFrame load — no API calls, no internet required.
-- Monitors data quality automatically with four checks (gaps, duplicates, nulls, price sanity), surfaced in a Power BI dashboard.
+- Monitors data quality automatically every night — freshness graded against each source's own cadence, null tolerance, bitemporal ordering, and microstructure sanity — alerting to Discord and recording every result so violations can be tracked over time, not just noticed once.
 - Captures live Binance microstructure — trades, order-book deltas, and top-of-book quotes — over WebSockets into a hive-partitioned bronze lake, buffering and flushing micro-batches, reconnecting on drops, and recording gaps so a hole in the tape is never silent.
 - Runs autonomously: the collector runs 24/7 in Docker on a VPS, and a daily cron job compacts each settled day's small files, syncs them to Cloudflare R2, and prunes local copies — so the disk stays flat and the box is disposable.
 - Serves files, not queries: query the R2 lake directly with your own DuckDB (partition pruning, column pushdown), pushing compute to the client so marginal cost per user is near zero — R2's zero egress fees make this viable.
@@ -226,9 +238,17 @@ without touching real R2.
 
 ### Data quality monitoring
 
-Automated daily quality checks with a Power BI dashboard connected to pipeline output.
+Every night the pipeline re-checks each source against its registry contract:
+freshness (graded against that source's own cadence, so a daily series and an
+8-hourly one aren't held to one threshold), null tolerance, bitemporal ordering on
+the economic calendar, and microstructure sanity (feed activity, gap records,
+crossed books). Failures alert to Discord.
 
-<img src="assets/dashboard_quality.png" width="600" alt="Data quality dashboard">
+Every result is also **persisted** — including clean runs, so "healthy" is
+distinguishable from "the job never ran" — and published as open Parquet. The
+[**status page**](https://quant-data-engine.israeladetola.workers.dev/status) reads
+it in your browser and shows the query behind every number, so nothing on it has to
+be taken on trust.
 
 
 ### Roadmap
@@ -251,7 +271,8 @@ Kubernetes (a single container doesn't need an orchestrator). These get
 revisited when the constraints that justify them actually appear.
 
 ### Limitations
-- The R2 lake is currently private (querying needs a read-only token); the public open lake and catalogue service are still planned.
+- The public lake carries only the **redistributable** half. Sources whose terms forbid republishing (currently yfinance) ship as open ingestor code, not data — bronze partitions are skipped and gold marts are row-filtered before upload. Streamed microstructure stays private by design.
+- Public files are read over plain HTTP, which has no directory listing, so `**/*.parquet` globs cannot be expanded by a browser client. Each group is therefore also published as one consolidated `all.parquet`, which is what the catalogue's sample queries point at.
 - Symbol mapping is manual — new symbols are added to the source's `SourceSpec` in `qde.registry` (canonical → native), not auto-normalized across venues.
 - Kraken's public OHLC endpoint serves only ~720 recent candles per interval, regardless of start date — deep history requires its paid data service.
 - Order-book reconstruction from depth deltas is deferred to a later transform; the collector captures raw deltas and periodic snapshots (bronze), not a rebuilt book.

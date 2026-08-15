@@ -248,3 +248,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Personal learning notes — not part of the project
+docs/learning/
