@@ -87,7 +87,10 @@ def _days_available(session, lake_root: str, symbol: str) -> list[str]:
         HAVING count(DISTINCT source) = 2
         ORDER BY date
     """
-    return [str(d) for d in session.sql(sql).df()["date"]]
+    # The hive `date` key is typed as a date/timestamp by DuckDB, so `str()` would
+    # yield "2026-08-15 00:00:00" and no longer match the `date=` directory name.
+    # Format explicitly back to the partition's own representation.
+    return [pd.Timestamp(d).strftime("%Y-%m-%d") for d in session.sql(sql).df()["date"]]
 
 
 def model(dbt, session):
