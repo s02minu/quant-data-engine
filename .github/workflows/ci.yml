@@ -46,3 +46,69 @@ jobs:
 
       - name: Pytest
         run: pytest -q
+
+  # The transform layer was previously only exercised on the VPS, so a broken model
+  # was found by deploying: push -> pull -> rebuild image -> run -> read logs, minutes
+  # per attempt. This builds every dbt model and test against a synthetic lake, in
+  # seconds, before anything is pushed anywhere.
+  dbt:
+    runs-on: ubuntu-latest
+    name: dbt build (sample lake)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          # Match the Dockerfile, so CI builds the models on the same version the
+          # nightly does.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package with the transform extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,transform]"
+
+      - name: Regenerate the dim_sources seed from the registry
+        # The nightly does this too. Running it here means a registry change that
+        # was never reflected in the committed seed shows up as a diff below.
+        run: |
+          python -c "from qde.registry import dim_sources; dim_sources().to_csv('transform/seeds/dim_sources_seed.csv', index=False)"
+
+      - name: Check the committed seed matches the registry
+        run: git diff --exit-code -- transform/seeds/dim_sources_seed.csv
+
+      - name: Build a synthetic lake
+        run: python scripts/make_sample_lake.py "${{ runner.temp }}/sample-lake"
+
+      - name: dbt build
+        working-directory: transform
+        env:
+          DBT_PROFILES_DIR: .
+        # Block scalar: the --vars value contains a "key: value" pair, and inline
+        # YAML would try to parse that colon as a mapping.
+        run: |
+          dbt build --vars "lake_root: ${{ runner.temp }}/sample-lake"
+
+      # The lineage site is static HTML, so it needs no hosting to be useful — it
+      # ships as a downloadable artifact from every run instead. Grab it from the
+      # run's Artifacts section and open index.html to see the model graph, column
+      # descriptions and tests.
+      - name: Generate the dbt docs site
+        working-directory: transform
+        env:
+          DBT_PROFILES_DIR: .
+        run: |
+          dbt docs generate --vars "lake_root: ${{ runner.temp }}/sample-lake"
+
+      - name: Upload the dbt docs site
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-docs
+          path: |
+            transform/target/index.html
+            transform/target/manifest.json
+            transform/target/catalog.json
+          retention-days: 14

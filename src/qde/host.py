@@ -14,11 +14,20 @@ long before it is an outage.
 """
 
 import shutil
+from pathlib import Path
 
 from qde.checks import Violation
 from qde.log import get_logger
 
 log = get_logger(__name__)
+
+# A settled partition should be ONE compacted file. Many small files is the classic
+# lake pathology: every query pays per-file open + metadata cost, and the count grows
+# without bound because the streaming collector flushes micro-batches continuously.
+# Compaction exists to fix this, so a high count on a settled day means compaction is
+# not doing its job — a silent degradation nothing else would report.
+_SMALL_FILES_WARN = 50
+_SMALL_FILES_ERROR = 200
 
 # Warn early enough to act, error early enough to still have room to act *in*. A
 # full disk is not a gradual degradation — writes simply start failing, so there is
@@ -91,3 +100,74 @@ def check_disk(
             detail=detail,
         )
     ]
+
+
+def check_small_files(
+    base_dir: str = "data",
+    warn: int = _SMALL_FILES_WARN,
+    error: int = _SMALL_FILES_ERROR,
+    today: str | None = None,
+) -> list[Violation]:
+    """Flag settled partitions that were never compacted into one file.
+
+    The streaming collector flushes micro-batches continuously, so a live day
+    legitimately holds hundreds of part files; ``qde.compact`` rewrites each settled
+    day into one. If that stops working the files simply accumulate — queries get
+    slower and the object count climbs, but nothing errors. This is the check that
+    makes that visible.
+
+    Only *settled* days are judged. Today's partition is expected to be many files
+    and flagging it would cry wolf every single night.
+
+    Args:
+        base_dir: lake root.
+        warn / error: part-file counts per partition at which to speak up.
+        today: UTC date string to treat as unsettled; defaults to the real today.
+
+    Returns:
+        One violation per offending partition, worst first, capped so a systemic
+        compaction failure reports the scale of the problem without emitting
+        hundreds of alerts.
+    """
+    import pandas as pd
+
+    today = today or pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d")
+    root = Path(base_dir) / "bronze"
+    if not root.exists():
+        return []
+
+    counts: dict[Path, int] = {}
+    for f in root.rglob("*.parquet"):
+        # Only date-partitioned groups compact per day; others are single files by
+        # construction and a count of 1 there is meaningless.
+        if not any(p.startswith("date=") for p in f.parts):
+            continue
+        if f"date={today}" in f.parts:
+            continue  # still being written to
+        counts[f.parent] = counts.get(f.parent, 0) + 1
+
+    offenders = sorted(
+        ((d, n) for d, n in counts.items() if n >= warn), key=lambda kv: -kv[1]
+    )
+    if not offenders:
+        log.info("host_small_files_ok", partitions=len(counts))
+        return []
+
+    log.warning("host_small_files", offending=len(offenders), worst=offenders[0][1])
+    out = []
+    for part_dir, n in offenders[:10]:
+        keys = {
+            p.split("=", 1)[0]: p.split("=", 1)[1] for p in part_dir.parts if "=" in p
+        }
+        out.append(
+            Violation(
+                group=keys.get("group", "?"),
+                source=keys.get("source", "?"),
+                series_id=keys.get("symbol") or keys.get("series_id") or keys.get("date", "?"),
+                metric=keys.get("date"),
+                check="small_files",
+                severity="error" if n >= error else "warn",
+                detail=f"{n} part files in a settled partition; compaction should leave 1",
+            )
+        )
+    return out

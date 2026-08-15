@@ -44,10 +44,12 @@ import pandas as pd
 
 from qde.analytics import BASE_VENUE, QUOTE_VENUE, align, basis_bps
 
-# One symbol to start. The basis holds across BTC/ETH/SOL, but proving the shape on
-# the most liquid pair first keeps the row count and the review small; widening is
-# adding to this tuple.
-SYMBOLS = ("BTCUSDT",)
+# All three pairs, because the agreement BETWEEN them is the evidence. A single
+# symbol shows a number; three symbols moving together show a market-wide stablecoin
+# quantity (the USDT/USD premium) rather than per-symbol noise. Cross-symbol
+# consistency is what validated this signal originally — BTC/ETH/SOL came in at
+# -6.87 / -6.41 / -6.57 bps on the same day — so the mart should carry it.
+SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 
 # 1s buckets: fine enough to see the basis move, coarse enough that a day is ~86k
 # rows per venue rather than millions.
@@ -102,10 +104,17 @@ def _days_available(session, lake_root: str, symbol: str) -> list[str]:
         HAVING count(DISTINCT source) = 2
         ORDER BY date
     """
+    try:
+        rows = session.sql(sql).df()["date"]
+    except Exception:
+        # A symbol with no capture at all makes the glob match nothing, which
+        # DuckDB raises on. One symbol going quiet must not take the whole mart
+        # down with it — the others still have a basis worth computing.
+        return []
     # The hive `date` key is typed as a date/timestamp by DuckDB, so `str()` would
     # yield "2026-08-15 00:00:00" and no longer match the `date=` directory name.
     # Format explicitly back to the partition's own representation.
-    return [pd.Timestamp(d).strftime("%Y-%m-%d") for d in session.sql(sql).df()["date"]]
+    return [pd.Timestamp(d).strftime("%Y-%m-%d") for d in rows]
 
 
 def model(dbt, session):

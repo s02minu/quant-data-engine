@@ -2,7 +2,7 @@
 
 from collections import namedtuple
 
-from qde.host import check_disk
+from qde.host import check_disk, check_small_files
 
 Usage = namedtuple("Usage", "total used free")
 
@@ -55,3 +55,64 @@ def test_detail_is_human_readable():
 
 def test_zero_total_does_not_divide_by_zero():
     assert check_disk("/", usage=Usage(total=0, used=0, free=0)) == []
+
+
+# --- small-files watch ---------------------------------------------------------
+
+
+def _part(tmp, group, source, symbol, day, n):
+    d = (
+        tmp / "bronze" / f"group={group}" / f"source={source}"
+        / "kind=book_ticker" / f"symbol={symbol}" / f"date={day}"
+    )
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        (d / f"part-{i:04d}.parquet").write_bytes(b"x")
+
+
+def test_compacted_partition_is_quiet(tmp_path):
+    _part(tmp_path, "microstructure", "binance", "BTCUSDT", "2026-08-10", n=1)
+    assert check_small_files(str(tmp_path), today="2026-08-15") == []
+
+
+def test_uncompacted_settled_partition_is_flagged(tmp_path):
+    # Compaction should leave one file per settled day; hundreds means it stopped
+    # working, which nothing else would report — queries just get slower.
+    _part(tmp_path, "microstructure", "binance", "BTCUSDT", "2026-08-10", n=120)
+    v = check_small_files(str(tmp_path), today="2026-08-15")
+    assert len(v) == 1
+    assert v[0].check == "small_files" and v[0].severity == "warn"
+    assert "120 part files" in v[0].detail
+
+
+def test_todays_partition_is_never_flagged(tmp_path):
+    # The live day legitimately holds many micro-batch flushes; flagging it would
+    # cry wolf every single night.
+    _part(tmp_path, "microstructure", "binance", "BTCUSDT", "2026-08-15", n=500)
+    assert check_small_files(str(tmp_path), today="2026-08-15") == []
+
+
+def test_severity_escalates_when_it_is_really_bad(tmp_path):
+    _part(tmp_path, "microstructure", "binance", "BTCUSDT", "2026-08-10", n=400)
+    v = check_small_files(str(tmp_path), today="2026-08-15")
+    assert v[0].severity == "error"
+
+
+def test_reports_partition_identity_not_just_a_count(tmp_path):
+    _part(tmp_path, "microstructure", "coinbase", "ETHUSDT", "2026-08-09", n=90)
+    v = check_small_files(str(tmp_path), today="2026-08-15")
+    assert v[0].source == "coinbase"
+    assert v[0].series_id == "ETHUSDT"
+    assert v[0].metric == "2026-08-09"
+
+
+def test_many_offenders_are_capped(tmp_path):
+    for i in range(20):
+        _part(tmp_path, "microstructure", "binance", f"SYM{i}", "2026-08-10", n=60)
+    v = check_small_files(str(tmp_path), today="2026-08-15")
+    # A systemic compaction failure should report scale, not emit 20 alerts.
+    assert len(v) == 10
+
+
+def test_missing_lake_is_not_an_error(tmp_path):
+    assert check_small_files(str(tmp_path / "nope"), today="2026-08-15") == []

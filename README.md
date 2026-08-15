@@ -173,6 +173,36 @@ query("SELECT symbol, count(*) AS trades FROM trades GROUP BY symbol")
 For full control over which partitions are scanned, build the glob yourself with
 `open_lake()` + `bronze_glob()` (microstructure) or `bars_glob()` (bars).
 
+### The two-halves product
+
+Most data licences forbid republishing the data — which is usually where an open
+data project stops. This one splits in two instead, because **the data and the work
+of making it usable are separable, and only one of them is encumbered.**
+
+| | What ships | Who it serves |
+|---|---|---|
+| **The open lake** | Redistributable data as Parquet — exchange-native and U.S.-government sources | Anyone. No signup, no credentials, no egress fees. |
+| **The open ingestors** | The *code* for everything else, including sources whose terms forbid republishing | Anyone who already pays for that data |
+
+One flag decides which half a source lands in. Every source is declared once as a
+`SourceSpec`, and `redistributable` drives the split automatically: bronze partitions
+are skipped, gold marts are row-filtered before upload, and the catalogue marks the
+source excluded. The private lake keeps everything; only the public copy is trimmed.
+`yfinance` is the live example — its ingestor is open, its data is not.
+
+The second half is the less obvious one, and arguably the more useful. If you hold a
+CME or Bloomberg subscription, the expensive part was never fetching the bytes — it
+is the pagination, the retries, the watermarks, the symbol normalisation, the
+schema, the quality thresholds. Point this platform's ingestor at your own
+credentials and your licensed data lands in exactly the same shape as the open half:
+same partition layout, same checks, same dbt marts, same queries. **You bring the
+licence; the platform brings the plumbing.**
+
+That is why adding a source is one registry row plus one ingestor module, and why
+"we cannot republish this" never means "we cannot support this".
+
+Full per-source classification: [docs/licensing.md](docs/licensing.md).
+
 ### Project structure
 ```
 src/qde/
