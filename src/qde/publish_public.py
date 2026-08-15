@@ -103,29 +103,71 @@ def publish_public(
     bronze_ok = bronze_skipped = gold_ok = quality_ok = 0
     bronze_failed = gold_failed = quality_failed = 0
 
+    con = duckdb.connect()
+
     # --- bronze: mirror every file except excluded sources' partitions ---
     for group in _PUBLIC_GROUPS:
         root = base / "bronze" / f"group={group}"
+        included: list[Path] = []
         for file in sorted(root.rglob("*.parquet")):
             rel_parts = file.relative_to(base).parts
             if any(part == f"source={x}" for x in excluded for part in rel_parts):
                 bronze_skipped += 1
                 continue
+            included.append(file)
             if _upload(client, file, public_bucket, file.relative_to(base).as_posix()):
                 bronze_ok += 1
             else:
                 bronze_failed += 1
 
-    # --- quality: mirror the data-quality history as-is ---
+        # One consolidated file per group, built from the INCLUDED files only so the
+        # redistributable filter still holds. This is what the catalogue's sample
+        # query points at — a glob cannot be expanded over plain HTTP, so without
+        # this the advertised query fails for anyone who copies it.
+        if included:
+            merged = root / "all.parquet"
+            sources = [str(p) for p in included]
+            con.execute(
+                f"COPY (SELECT * FROM read_parquet({sources!r}, "
+                f"union_by_name=true, hive_partitioning=true)) "
+                f"TO '{merged.as_posix()}' (FORMAT parquet)"
+            )
+            if _upload(client, merged, public_bucket, f"bronze/group={group}/all.parquet"):
+                bronze_ok += 1
+            else:
+                bronze_failed += 1
+            merged.unlink(missing_ok=True)
+
+    # --- quality: mirror the history, plus a consolidated file per table ---
+    #
+    # The partitioned files are published for completeness, but nothing can actually
+    # read them over plain HTTP: a glob like `quality/dq_runs/**/*.parquet` needs
+    # directory listing, and an r2.dev URL has none (DuckDB fails with "Globs for
+    # generic HTTP file are not supported"). So each table is also written as ONE
+    # file at a stable path, which is what a browser client should point at. These
+    # tables are small — one row per run — so a single file stays cheap for years.
     for table in _PUBLIC_QUALITY:
-        for file in sorted((base / "quality" / table).rglob("*.parquet")):
+        parts = sorted((base / "quality" / table).rglob("*.parquet"))
+        for file in parts:
             if _upload(client, file, public_bucket, file.relative_to(base).as_posix()):
                 quality_ok += 1
             else:
                 quality_failed += 1
 
+        if parts:
+            merged = base / "quality" / f"{table}.parquet"
+            sources = [str(p) for p in parts]
+            con.execute(
+                f"COPY (SELECT * FROM read_parquet({sources!r}, union_by_name=true)) "
+                f"TO '{merged.as_posix()}' (FORMAT parquet)"
+            )
+            if _upload(client, merged, public_bucket, f"quality/{table}.parquet"):
+                quality_ok += 1
+            else:
+                quality_failed += 1
+            merged.unlink(missing_ok=True)
+
     # --- gold: filter non-redistributable rows, then upload the trimmed copy ---
-    con = duckdb.connect()
     for rel_key, source_col in _PUBLIC_MARTS.items():
         src = base / rel_key
         if not src.exists():

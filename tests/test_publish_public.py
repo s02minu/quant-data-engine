@@ -1,5 +1,5 @@
 """Tests for the public catalogue + redistributable-filtered public publish."""
-
+import io
 from pathlib import Path
 
 import duckdb
@@ -182,3 +182,64 @@ def test_clean_run_still_publishes_the_run_record(tmp_path):
     assert any(k.startswith("quality/dq_runs/") for k in keys)
     assert not any(k.startswith("quality/dq_violations/") for k in keys)
     assert summary["quality_published"] >= 1
+
+
+def test_publish_writes_http_readable_consolidated_quality_files(tmp_path):
+    # Partitioned files cannot be globbed over plain HTTP (no directory listing),
+    # so each quality table also ships as one file at a stable path.
+    from qde.checks import Violation
+    from qde.dq_history import record_run
+
+    _tiny_lake(tmp_path)
+    v = Violation("series", "fred", "UNRATE", None, "freshness", "warn", "x")
+    record_run([v], str(tmp_path))
+    client = FakeS3()
+    publish_public(str(tmp_path), "qde-public", client, public_base_url="https://d")
+
+    keys = [k for (_b, k) in client.objects]
+    assert "quality/dq_runs.parquet" in keys
+    assert "quality/dq_violations.parquet" in keys
+
+
+def test_consolidated_quality_file_spans_every_partition(tmp_path):
+    import pandas as pd
+
+    from qde.dq_history import record_run
+
+    _tiny_lake(tmp_path)
+    record_run([], str(tmp_path), pd.Timestamp("2026-08-14T00:30:00Z"))
+    record_run([], str(tmp_path), pd.Timestamp("2026-08-15T00:30:00Z"))
+    client = FakeS3()
+    publish_public(str(tmp_path), "qde-public", client, public_base_url="https://d")
+
+    blob = client.blobs[("qde-public", "quality/dq_runs.parquet")]
+    merged = pd.read_parquet(io.BytesIO(blob))
+    # Both days present in the single file a browser will actually read.
+    assert sorted(merged["run_date"].unique()) == ["2026-08-14", "2026-08-15"]
+
+
+def test_bronze_consolidated_file_is_published(tmp_path):
+    # The catalogue's advertised query points here; a glob cannot be expanded over
+    # plain HTTP, so this single file is what actually has to exist.
+    _tiny_lake(tmp_path)
+    client = FakeS3()
+    publish_public(str(tmp_path), "qde-public", client, public_base_url="https://d")
+
+    keys = [k for (_b, k) in client.objects]
+    assert "bronze/group=bars/all.parquet" in keys
+
+
+def test_bronze_consolidated_file_excludes_nonredistributable_sources(tmp_path):
+    # The whole licensing split rests on this: the merged file is built from the
+    # included files only, so yfinance must not reappear in it.
+    import pandas as pd
+
+    _tiny_lake(tmp_path)
+    client = FakeS3()
+    publish_public(str(tmp_path), "qde-public", client, public_base_url="https://d")
+
+    blob = client.blobs[("qde-public", "bronze/group=bars/all.parquet")]
+    merged = pd.read_parquet(io.BytesIO(blob))
+    if "source" in merged.columns:
+        assert "yfinance" not in set(merged["source"])
+    assert len(merged) > 0

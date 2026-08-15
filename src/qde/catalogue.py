@@ -111,7 +111,12 @@ def _bronze_dataset(group: str, base_dir: str, public_base_url: str, now: pd.Tim
     agg = query(
         f"SELECT count(*) AS n, max({date_col}) AS last FROM {group}", base_dir=base_dir
     )
-    glob = f"{public_base_url}/bronze/group={group}/**/*.parquet"
+    # Point at the consolidated per-group file, NOT a `**/*.parquet` glob: plain HTTP
+    # has no directory listing, so DuckDB cannot expand a glob against an r2.dev URL
+    # ("Globs for generic HTTP file are not supported"). The partitioned files are
+    # still published for anyone who wants a specific slice, but the query we hand
+    # out has to be one that actually runs.
+    url = f"{public_base_url}/bronze/group={group}/all.parquet"
     return {
         "id": group,
         "layer": "bronze",
@@ -119,9 +124,7 @@ def _bronze_dataset(group: str, base_dir: str, public_base_url: str, now: pd.Tim
         "row_count": int(agg["n"].iloc[0]),
         "freshness": _age(agg["last"].iloc[0], now),
         "schema": _bronze_schema(group, base_dir),
-        "sample_query": (
-            f"SELECT * FROM read_parquet('{glob}', hive_partitioning=true)\nLIMIT 100;"
-        ),
+        "sample_query": f"SELECT *\nFROM read_parquet('{url}')\nLIMIT 100;",
     }
 
 
