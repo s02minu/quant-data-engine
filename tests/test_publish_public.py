@@ -243,3 +243,31 @@ def test_bronze_consolidated_file_excludes_nonredistributable_sources(tmp_path):
     if "source" in merged.columns:
         assert "yfinance" not in set(merged["source"])
     assert len(merged) > 0
+
+
+def _write_series(base, source, series_id, metric=None):
+    """A series partition, with or without the optional metric= level."""
+    part = Path(base) / "bronze" / "group=series" / f"source={source}" / f"series_id={series_id}"
+    if metric:
+        part = part / f"metric={metric}"
+    part.mkdir(parents=True, exist_ok=True)
+    idx = pd.DatetimeIndex(pd.to_datetime(["2024-01-01", "2024-01-02"], utc=True), name="date")
+    pd.DataFrame({"value": [1.0, 2.0]}, index=idx).to_parquet(part / "series.parquet")
+
+
+def test_consolidates_series_across_mixed_partition_depths(tmp_path):
+    # Regression: single-value sources sit at source/series_id/ while multi-metric
+    # ones add a metric= level. Reading both under one hive glob raises
+    # "Hive partition mismatch ... key metric not found", which broke the publish.
+    _write_series(tmp_path, "cboe", "SKEW")                              # flat
+    _write_series(tmp_path, "binancefut", "BTCUSDT", metric="funding_rate")  # nested
+    client = FakeS3()
+
+    summary = publish_public(str(tmp_path), "qde-public", client, public_base_url="https://d")
+
+    assert summary["failed"] == 0
+    blob = client.blobs[("qde-public", "bronze/group=series/all.parquet")]
+    merged = pd.read_parquet(io.BytesIO(blob))
+    # Both depths present; the flat source simply carries a null metric.
+    assert set(merged["source"]) == {"cboe", "binancefut"}
+    assert merged["metric"].isna().any()

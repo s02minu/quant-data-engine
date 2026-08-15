@@ -45,6 +45,16 @@ _PUBLIC_GROUPS = ("bars", "series", "events")
 # public quality record is a trust signal for a data product; silence is not.
 _PUBLIC_QUALITY = ("dq_runs", "dq_violations")
 
+# Partition depth per bronze group, for building the consolidated file. `series` is
+# mixed: single-value sources (FRED, CBOE) sit at source/series_id/, multi-metric
+# ones (CFTC COT, perps) add a metric= level — and DuckDB rejects mixed hive depth
+# under a single glob, so those two are read separately and unioned by name.
+_BRONZE_GLOBS = {
+    "bars": ("**/*.parquet",),
+    "series": ("*/*/series.parquet", "*/*/*/series.parquet"),
+    "events": ("**/*.parquet",),
+}
+
 # Gold marts to publish, and the column to filter non-redistributable rows on. All
 # three fct marts carry ``source``; the catalogue.json supersedes the dim_sources
 # mart, so that one is not published as a file.
@@ -108,28 +118,37 @@ def publish_public(
     # --- bronze: mirror every file except excluded sources' partitions ---
     for group in _PUBLIC_GROUPS:
         root = base / "bronze" / f"group={group}"
-        included: list[Path] = []
         for file in sorted(root.rglob("*.parquet")):
             rel_parts = file.relative_to(base).parts
             if any(part == f"source={x}" for x in excluded for part in rel_parts):
                 bronze_skipped += 1
                 continue
-            included.append(file)
             if _upload(client, file, public_bucket, file.relative_to(base).as_posix()):
                 bronze_ok += 1
             else:
                 bronze_failed += 1
 
-        # One consolidated file per group, built from the INCLUDED files only so the
-        # redistributable filter still holds. This is what the catalogue's sample
-        # query points at — a glob cannot be expanded over plain HTTP, so without
-        # this the advertised query fails for anyone who copies it.
-        if included:
+        # One consolidated file per group. This is what the catalogue's sample query
+        # points at — a glob cannot be expanded over plain HTTP, so without this the
+        # advertised query fails for anyone who copies it.
+        #
+        # Read by glob rather than by file list, and filter on the hive-derived
+        # `source` column, so the redistributable rule still holds. Depths differ per
+        # group: `series` mixes source/series_id/ with source/series_id/metric/, and
+        # DuckDB rejects mixed hive depth under one glob, so those are unioned the
+        # same way qde.storage.query does it.
+        reads = [
+            f"SELECT * FROM read_parquet('{(root / pattern).as_posix()}', "
+            f"hive_partitioning=true)"
+            for pattern in _BRONZE_GLOBS[group]
+            if any(root.glob(pattern))
+        ]
+        if reads:
             merged = root / "all.parquet"
-            sources = [str(p) for p in included]
+            body = " UNION ALL BY NAME ".join(reads)
+            in_list = ", ".join(f"'{x}'" for x in excluded) or "''"
             con.execute(
-                f"COPY (SELECT * FROM read_parquet({sources!r}, "
-                f"union_by_name=true, hive_partitioning=true)) "
+                f"COPY (SELECT * FROM ({body}) WHERE source NOT IN ({in_list})) "
                 f"TO '{merged.as_posix()}' (FORMAT parquet)"
             )
             if _upload(client, merged, public_bucket, f"bronze/group={group}/all.parquet"):
