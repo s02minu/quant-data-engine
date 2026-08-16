@@ -30,7 +30,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from qde.registry import SOURCES
+from qde.log import get_logger
+from qde.registry import SOURCES, all_specs
+
+log = get_logger(__name__)
 
 # How many typical gaps a series may fall behind before it is called stale. The
 # gap estimate is a high percentile of recent spacings, so ordinary weekend and
@@ -350,7 +353,16 @@ def _crossed_book_counts(root: Path, day_str: str) -> dict[tuple[str, str], tupl
             """
             try:
                 rows = con.execute(sql).fetchall()
-            except duckdb.Error:  # no book_ticker files for this source/day
+            except duckdb.Error as exc:
+                # Usually benign — this source wrote no book_ticker for this day, and
+                # DuckDB raises rather than returning nothing when a glob matches no
+                # files. But an unreadable or truncated partition raises here too, and
+                # swallowing it silently would turn corrupt data into a clean night.
+                # The absence case is already covered by the activity and capture
+                # checks above, so logging is enough to stop this being invisible.
+                log.warning(
+                    "book_scan_unreadable", source=source, day=day_str, detail=str(exc)
+                )
                 continue
             for symbol, crossed, neg, total in rows:
                 out[(source, symbol)] = (int(crossed), int(neg), int(total))
@@ -399,10 +411,34 @@ def run_microstructure_checks(
         keys = _partition_keys(date_dir, root)
         present[(keys.get("source", ""), keys.get("symbol", ""))].add(keys.get("kind", ""))
 
-    if not present:
-        return []
-
     violations: list[Violation] = []
+
+    # 0) Did each declared venue capture at all?
+    #
+    # Every check below reasons about partitions that EXIST, which means the one
+    # thing none of them can see is a partition that was never created. If both
+    # collectors die, nothing is written, `present` is empty, and a pass built only
+    # on what is there returns zero violations — a total capture outage reported as
+    # a clean night. The registry knows what should have been captured, so the
+    # absence is only detectable by asking it.
+    declared = {
+        (spec.name, symbol)
+        for spec in all_specs()
+        if spec.group == "microstructure"
+        for symbol in spec.canonical_symbols
+    }
+    for source, symbol in sorted(declared - set(present)):
+        violations.append(
+            Violation(
+                "microstructure", source, symbol, None, "capture", "error",
+                f"no capture at all on {day_str} — the registry declares this stream "
+                "but nothing was written; the collector was not running",
+            )
+        )
+
+    if not present:
+        # Nothing to inspect beyond the absence just reported.
+        return violations
 
     # 1) Feed activity. The session marker lives under the synthetic _all symbol,
     # not a trading pair, so it is exempt from the "owes trades + top-of-book" rule

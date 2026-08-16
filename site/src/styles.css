@@ -1232,6 +1232,19 @@ tbody tr:hover {
   font-size: 0.76rem;
 }
 
+/* Stands in for the query block on a dataset that cannot advertise one. Sits in
+   the same slot, so the card keeps its shape whichever it carries. */
+.dataset-notes {
+  background: var(--bg-2);
+  border: 1px solid var(--rule-soft);
+  border-left: 2px solid color-mix(in srgb, var(--text-2) 40%, transparent);
+  padding: 18px 20px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
 .dataset-query {
   background: var(--bg-2);
   border: 1px solid var(--rule-soft);

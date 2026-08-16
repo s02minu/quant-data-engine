@@ -55,13 +55,29 @@ function DatasetCard({ ds }) {
           <span className="dataset-id">{ds.id}</span>
         </div>
         <div className="dataset-meta">
-          {compact(ds.row_count)} rows · {ds.schema?.length ?? 0} columns
+          {/* The streamed archive reports no counts: it is mirrored bucket-to-bucket
+              and never lands on the machine that builds this, so measuring it would
+              mean scanning the whole thing over HTTP. "— rows · 0 columns" would read
+              as a broken dataset rather than an unmeasured one. */}
+          {ds.row_count == null && !ds.schema
+            ? "full archive · not measured"
+            : `${compact(ds.row_count)} rows · ${ds.schema?.length ?? 0} columns`}
           {ds.freshness && ` · updated ${freshness(ds.freshness)}`}
         </div>
       </div>
       <div>
-        <HighlightedSql sql={formatSql(ds.sample_query)} />
-        <CopyButton text={formatSql(ds.sample_query)} />
+        {/* Not every dataset can advertise a runnable query. The microstructure
+            archive has no consolidated file and plain HTTP cannot expand a glob, so
+            it carries access notes instead — an empty code block with a dead copy
+            button would be worse than saying why there isn't one. */}
+        {ds.sample_query ? (
+          <>
+            <HighlightedSql sql={formatSql(ds.sample_query)} />
+            <CopyButton text={formatSql(ds.sample_query)} />
+          </>
+        ) : (
+          <p className="dataset-notes">{ds.notes}</p>
+        )}
       </div>
     </div>
   );

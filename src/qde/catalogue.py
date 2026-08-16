@@ -32,14 +32,10 @@ from qde.storage import query
 # it is described statically instead (see _microstructure_dataset).
 _BRONZE_GROUPS = {"bars": "date", "series": "date", "events": "observed_ts"}
 
-# Hive layout of the mirrored microstructure archive, as a template a reader can fill
-# in. It gets no consolidated file and no row count on purpose: it is orders of
-# magnitude larger than every other dataset combined, so merging it nightly is not
-# viable, and counting it would mean scanning the whole archive over HTTP.
-_MICROSTRUCTURE_PATH = (
-    "bronze/group=microstructure/source={source}/kind={kind}"
-    "/symbol={symbol}/date={date}/*.parquet"
-)
+# Prefix of the mirrored microstructure archive. A prefix rather than a fillable
+# path template because part-file names carry a flush timestamp and cannot be
+# predicted — which is also why no runnable sample query is offered for it.
+_MICROSTRUCTURE_PREFIX = "bronze/group=microstructure/"
 
 # The gold marts (dbt `external` Parquet), each a single file. `date_col` is what a
 # freshness/range is computed from, or None where the mart has no natural date.
@@ -154,23 +150,23 @@ def _microstructure_dataset(public_base_url: str) -> dict:
         "row_count": None,
         "freshness": None,
         "schema": None,
-        "partition_template": f"{public_base_url}/{_MICROSTRUCTURE_PATH}",
+        "partition_prefix": f"{public_base_url}/{_MICROSTRUCTURE_PREFIX}",
         "notes": (
             "Full tick + L2 archive, Hive-partitioned by source/kind/symbol/date. "
-            "Too large for a consolidated file, and plain HTTP has no directory "
-            "listing, so fill in the template rather than globbing across dates. "
-            "Kinds: trades, depth, book_ticker, snapshot, gaps, session "
-            "(coinbase adds heartbeat). Prices and sizes are stored as strings "
-            "exactly as the venue sent them; cast before comparing."
+            "Unlike the other datasets it has no consolidated file — it is orders of "
+            "magnitude larger than all of them combined — and plain HTTP offers no "
+            "directory listing, so a `*` in the path will NOT expand: DuckDB rejects "
+            "it outright. Reach it with a client that can list objects (the S3 API "
+            "against the bucket, or duckdb's httpfs with S3 credentials), or address "
+            "an exact object key. Kinds: trades, depth, book_ticker, snapshot, gaps, "
+            "session (coinbase adds heartbeat). Prices and sizes are stored as "
+            "strings exactly as the venue sent them; cast before comparing."
         ),
-        "sample_query": (
-            "SELECT *\nFROM read_parquet('"
-            + f"{public_base_url}/"
-            + _MICROSTRUCTURE_PATH.format(
-                source="binance", kind="trades", symbol="BTCUSDT", date="2026-08-01"
-            )
-            + "')\nLIMIT 100;"
-        ),
+        # Deliberately absent. Every other dataset advertises a query that can be
+        # copied and run; a glob over an r2.dev URL cannot, so offering one here
+        # would hand out a snippet that fails on first use. Better to say plainly
+        # that this one needs a different access path.
+        "sample_query": None,
     }
 
 

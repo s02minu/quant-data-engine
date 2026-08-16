@@ -68,8 +68,16 @@ def sync_bronze(base_dir: str, bucket: str, client, today=None) -> dict:
 
     for file in sorted(bronze.rglob("part-*.parquet")):
         pdate = partition_date(file.parent)
-        if pdate is None or pdate >= today:
-            continue  # today's active partition, or an unparseable path
+        if pdate is None:
+            # Both compaction and this skip an unreadable date, so such a partition
+            # would never be merged, never uploaded, and never pruned — data that
+            # silently never leaves the box while quietly consuming its disk. The
+            # layout makes this near-impossible, which is exactly why it would go
+            # unnoticed if it ever happened.
+            log.warning("unparseable_partition_date", path=str(file.parent))
+            continue
+        if pdate >= today:
+            continue  # today's partition is still being written
 
         key = file.relative_to(base).as_posix()
         local_size = file.stat().st_size
