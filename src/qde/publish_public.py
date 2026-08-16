@@ -370,10 +370,22 @@ if __name__ == "__main__":
     public_bucket = os.environ["QDE_R2_PUBLIC_BUCKET"]
 
     # Microstructure is published straight from the private bucket, because the
-    # local copy has already been pruned by the sync that precedes this. Guarded on
-    # the private bucket name so an environment without it simply does nothing.
+    # local copy has already been pruned by the sync that precedes this.
+    #
+    # The absence of the private bucket name is announced rather than silently
+    # obeyed. It was silent once, and the result was a nightly that published no
+    # microstructure at all, reported `mirrored=0 failed=0`, and exited 0 — the
+    # caller had simply forgotten to pass the variable through to the container.
+    # A skipped step that looks identical to a completed one is the failure mode
+    # this whole module exists to avoid.
     private_bucket = os.getenv("QDE_R2_BUCKET")
     mirror = {"copied": 0, "skipped": 0, "failed": 0}
+    if not private_bucket:
+        log.warning(
+            "mirror_skipped",
+            reason="QDE_R2_BUCKET is unset, so the private lake cannot be read",
+            consequence="no microstructure was published by this run",
+        )
     if private_bucket:
         mirror = mirror_private_prefix(
             r2_client_from_env(),

@@ -70,6 +70,7 @@ if [ -n "${QDE_R2_PUBLIC_BUCKET:-}" ]; then
     -e "QDE_R2_ACCESS_KEY_ID=$QDE_R2_ACCESS_KEY_ID" \
     -e "QDE_R2_SECRET_ACCESS_KEY=$QDE_R2_SECRET_ACCESS_KEY" \
     -e "QDE_R2_PUBLIC_BUCKET=$QDE_R2_PUBLIC_BUCKET" \
+    -e "QDE_R2_BUCKET=$QDE_R2_BUCKET" \
     -e "QDE_PUBLIC_BASE_URL=${QDE_PUBLIC_BASE_URL:-}" \
     collector python -m qde.publish_public
 fi
