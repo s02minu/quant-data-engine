@@ -35,6 +35,14 @@ log = get_logger(__name__)
 # colliding with a real ticker.
 SESSION_SYMBOL = "_all"
 
+# How long to wait for the peer's half of the closing handshake before dropping the
+# socket. The `websockets` default is 10s, and **Binance never replies to a close
+# frame** — measured: connect costs ~1.2s, the close always burns the timeout in
+# full, so the default turned every recycle into a ~9s hole instead of ~2s. This is
+# a cap, not a delay: a venue that does reply closes immediately. Nothing is at risk
+# in abandoning the handshake, because buffered rows are flushed before the close.
+CLOSE_TIMEOUT_SECONDS = 2
+
 
 class StreamCollector:
     """Captures an exchange's streams to the bronze layer.
@@ -89,7 +97,11 @@ class StreamCollector:
                     # opens the connection and guarantees the connection is cleanly closed.
                     # max_size follows the venue: Coinbase's inline book snapshot is
                     # >1 MiB and would trip the websockets default frame limit.
-                    async with websockets.connect(url, max_size=self.adapter.max_frame_bytes) as ws:
+                    async with websockets.connect(
+                        url,
+                        max_size=self.adapter.max_frame_bytes,
+                        close_timeout=CLOSE_TIMEOUT_SECONDS,
+                    ) as ws:
                         # Some venues (Coinbase) subscribe with a frame after
                         # connecting; Binance encodes it in the URL, so this is empty.
                         for frame in self.adapter.subscribe_frames(self.config):

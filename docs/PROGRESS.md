@@ -579,6 +579,15 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
         deliberate cycle is not a reason for the lake to claim continuity it does
         not have. Venue-neutral by construction (the recycle lives in the shared
         loop, not an adapter), so Coinbase gets it too.
+  - [x] **`close_timeout` lowered to 2s** — found by measuring the recycle against
+        the live feed instead of trusting the estimate. The first implementation
+        left a **9.05s mean** hole, not the ~2s predicted from historical reconnect
+        records. Isolating the phases showed why: connect costs ~1.2s, but
+        **Binance never replies to a close frame**, so `websockets`' 10s default
+        `close_timeout` was burned in full on every cycle. It is a cap rather than
+        a delay — a venue that does reply closes immediately — and abandoning the
+        handshake risks nothing, because buffered rows are flushed before the
+        close. Re-measured live: **9.05s → 3.28s mean**, still zero sequence jumps.
 - [x] **Step 5b — Snapshot anchoring**
   - [x] REST depth snapshot stored under its own `kind=snapshot` partition
   - [x] Snapshot taken on every connect, so each connection is anchored
@@ -844,6 +853,19 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
 - [x] **Surface gap records from `kind=gaps`** — per (source, symbol): a
       `sequence_jump` is missed data (error, with an estimated missed-message
       count), a `reconnect` is a known outage window (warn).
+- [x] **Venue-pair coverage (2026-08-16)** — the basis is a *relationship*, which
+      makes it the one product where a healthy venue is not evidence of a healthy
+      dataset. If `collector-coinbase` dies, its partitions simply stop being
+      created, Binance passes every check above, and `fct_cross_venue_basis` quietly
+      computes nothing for that day — a failure with no voice. The check flags a
+      symbol captured on exactly one side of the pair (error). Two design points:
+      the venue pair is read from `qde.analytics` rather than restated, so the check
+      and the mart cannot disagree about which pair matters; and it is judged
+      against the venues this lake has **ever** captured, so a legitimate
+      single-venue deployment is never nagged — it fires on regression, not on
+      configuration. Verified against the live lake before deploy (both venues
+      capturing all three symbols → silent), a habit earned from the small-files
+      false positive above.
 
 ## Phase 10 — Observability
 

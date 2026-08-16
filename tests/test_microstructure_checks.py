@@ -179,3 +179,42 @@ def test_day_defaults_to_yesterday(tmp_path):
 
 def x_label(violations, check):
     return next(x.label() for x in violations if x.check == check)
+
+
+# --- venue-pair coverage -------------------------------------------------------
+#
+# The basis is a relationship between two venues, so it is the one product where a
+# healthy venue is not evidence of a healthy dataset: if one collector dies, its
+# partitions simply stop existing and every per-venue check above still passes.
+
+
+def test_half_a_pair_is_flagged(tmp_path):
+    # coinbase captured on an earlier day, so the lake has demonstrably run the
+    # pair — then its collector died and it wrote no DAY partition at all.
+    # binance alone still looks perfectly healthy to every other check.
+    _write(
+        tmp_path, "coinbase", "book_ticker", "BTCUSDT",
+        [_quote("99.99", "100.01")], day=dt.date(2026, 8, 5),
+    )
+    _healthy(tmp_path, "binance", symbol="BTCUSDT")
+    v = run_microstructure_checks(str(tmp_path), day=DAY)
+
+    pair = [x for x in v if x.check == "venue_pair"]
+    assert len(pair) == 1
+    assert pair[0].severity == "error"
+    assert "coinbase is missing" in pair[0].detail
+
+
+def test_single_venue_lake_is_not_nagged(tmp_path):
+    # A one-venue deployment is a valid configuration, not a regression. A check
+    # that fires every night on one is a check you switch off.
+    _healthy(tmp_path, "binance", symbol="BTCUSDT")
+    v = run_microstructure_checks(str(tmp_path), day=DAY)
+    assert [x for x in v if x.check == "venue_pair"] == []
+
+
+def test_both_venues_present_is_silent(tmp_path):
+    _healthy(tmp_path, "binance", symbol="ETHUSDT")
+    _healthy(tmp_path, "coinbase", symbol="ETHUSDT")
+    v = run_microstructure_checks(str(tmp_path), day=DAY)
+    assert [x for x in v if x.check == "venue_pair"] == []

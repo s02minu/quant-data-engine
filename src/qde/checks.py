@@ -296,6 +296,26 @@ _SESSION_SYMBOL = "_all"
 _RECONNECT_WARN_THRESHOLD = 24
 
 
+def _basis_venues() -> frozenset[str]:
+    """The two venues the cross-venue basis is computed between.
+
+    Read from ``qde.analytics`` rather than restated here, so the check and the
+    mart can never disagree about which pair matters -- the same one-definition
+    argument the basis mart itself makes. Guarded rather than deferred: this is
+    resolved once at import, and a missing analytics module degrades the check to
+    a no-op instead of taking the whole DQ pass down with it.
+    """
+    try:
+        from qde.analytics import BASE_VENUE, QUOTE_VENUE
+
+        return frozenset({BASE_VENUE, QUOTE_VENUE})
+    except Exception:  # pragma: no cover - analytics is an in-repo module
+        return frozenset()
+
+
+_BASIS_VENUES = _basis_venues()
+
+
 def _crossed_book_counts(root: Path, day_str: str) -> dict[tuple[str, str], tuple[int, int, int]]:
     """Count crossed books and negative sizes per (source, symbol) for one day.
 
@@ -356,6 +376,9 @@ def run_microstructure_checks(
       (error); a reconnect is a known outage window (warn).
     - **crossed_book** — a book with bid > ask, or a negative size, is a data
       defect rather than a market state (error).
+    - **venue_pair** — both sides of the cross-venue basis captured. A per-venue
+      check cannot see this failure: each venue looks fine alone, and only the
+      *pair* is the product (error).
 
     Read-only; returns :class:`Violation`s for the caller to log/alert on. Absent
     microstructure (e.g. on the laptop) yields an empty list.
@@ -445,5 +468,37 @@ def run_microstructure_checks(
                     f"{', '.join(problems)} of {total} quotes on {day_str}",
                 )
             )
+
+    # 4) Venue-pair coverage. The basis is a *relationship*, so it is the one
+    # product where a healthy venue is not evidence of a healthy dataset: if one
+    # collector dies, its own partitions simply stop existing, the surviving venue
+    # passes every check above, and the mart quietly computes nothing for that day.
+    # Checking the pair is the only way that failure has a voice.
+    #
+    # Judged against the venues this lake has *ever* captured, not against the pair
+    # in the abstract: a single-venue deployment is a valid configuration, and a
+    # check that fires nightly on one is a check you turn off. A venue only counts
+    # as missing if it has a partition tree here at all -- i.e. it used to work.
+    ever_captured = {d.name.split("=", 1)[1] for d in root.glob("source=*")}
+    expected_pair = _BASIS_VENUES & ever_captured
+    for symbol in sorted({s for (_, s) in present if s != _SESSION_SYMBOL}):
+        if len(expected_pair) < 2:
+            break  # this lake never ran the pair; nothing to regress from
+        have = {
+            source
+            for (source, sym), kinds in present.items()
+            if sym == symbol and "book_ticker" in kinds
+        } & expected_pair
+        # Neither side present is not a pair failure -- it is a symbol this pair
+        # was never capturing. Only a half-captured pair is the alarming state.
+        if len(have) != 1:
+            continue
+        violations.append(
+            Violation(
+                "microstructure", sorted(have)[0], symbol, None, "venue_pair", "error",
+                f"only {sorted(have)[0]} captured book_ticker on {day_str}; "
+                f"{sorted(expected_pair - have)[0]} is missing, so no basis for this day",
+            )
+        )
 
     return violations
