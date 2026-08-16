@@ -26,10 +26,20 @@ import pandas as pd
 from qde.registry import all_specs, dim_sources
 from qde.storage import query
 
-# The bronze groups the catalogue describes and the column each dates its freshness
-# by. Microstructure is excluded — it is the owner's private research feed, not part
-# of the published catalogue.
+# The bronze groups the catalogue can describe from the LOCAL lake, and the column
+# each dates its freshness by. Microstructure is public but absent here because the
+# sync prunes it from local disk, so nothing about it can be measured at this point —
+# it is described statically instead (see _microstructure_dataset).
 _BRONZE_GROUPS = {"bars": "date", "series": "date", "events": "observed_ts"}
+
+# Hive layout of the mirrored microstructure archive, as a template a reader can fill
+# in. It gets no consolidated file and no row count on purpose: it is orders of
+# magnitude larger than every other dataset combined, so merging it nightly is not
+# viable, and counting it would mean scanning the whole archive over HTTP.
+_MICROSTRUCTURE_PATH = (
+    "bronze/group=microstructure/source={source}/kind={kind}"
+    "/symbol={symbol}/date={date}/*.parquet"
+)
 
 # The gold marts (dbt `external` Parquet), each a single file. `date_col` is what a
 # freshness/range is computed from, or None where the mart has no natural date.
@@ -128,6 +138,42 @@ def _bronze_dataset(group: str, base_dir: str, public_base_url: str, now: pd.Tim
     }
 
 
+def _microstructure_dataset(public_base_url: str) -> dict:
+    """Describe the streamed archive without measuring it.
+
+    Every other dataset reports a row count and a freshness read from the local
+    lake. This one cannot: it is mirrored bucket-to-bucket precisely *because* the
+    nightly prunes it from disk. Publishing a fabricated or stale number here would
+    be worse than publishing none, so the entry is explicit that the figures are
+    unavailable and tells the reader how to address the archive instead.
+    """
+    return {
+        "id": "microstructure",
+        "layer": "bronze",
+        "group": "microstructure",
+        "row_count": None,
+        "freshness": None,
+        "schema": None,
+        "partition_template": f"{public_base_url}/{_MICROSTRUCTURE_PATH}",
+        "notes": (
+            "Full tick + L2 archive, Hive-partitioned by source/kind/symbol/date. "
+            "Too large for a consolidated file, and plain HTTP has no directory "
+            "listing, so fill in the template rather than globbing across dates. "
+            "Kinds: trades, depth, book_ticker, snapshot, gaps, session "
+            "(coinbase adds heartbeat). Prices and sizes are stored as strings "
+            "exactly as the venue sent them; cast before comparing."
+        ),
+        "sample_query": (
+            "SELECT *\nFROM read_parquet('"
+            + f"{public_base_url}/"
+            + _MICROSTRUCTURE_PATH.format(
+                source="binance", kind="trades", symbol="BTCUSDT", date="2026-08-01"
+            )
+            + "')\nLIMIT 100;"
+        ),
+    }
+
+
 def _bronze_schema(group: str, base_dir: str) -> list[dict[str, str]]:
     # DESCRIBE through storage.query's registered view so the mixed-depth series view
     # resolves; strip to name/type.
@@ -187,6 +233,11 @@ def build_catalogue(base_dir: str = "data", public_base_url: str | None = None) 
     for group in _BRONZE_GROUPS:
         if any((Path(base_dir) / "bronze" / f"group={group}").glob("**/*.parquet")):
             datasets.append(_bronze_dataset(group, base_dir, public_base_url, now))
+    # Listed unconditionally: it is mirrored from the private bucket rather than
+    # published from here, so its absence on local disk says nothing about whether
+    # it exists in the public lake. Gating on a local glob would hide the largest
+    # dataset on the platform on every VPS run.
+    datasets.append(_microstructure_dataset(public_base_url))
     for mart, spec in _GOLD_MARTS.items():
         entry = _gold_dataset(mart, spec, base_dir, public_base_url, now)
         if entry is not None:

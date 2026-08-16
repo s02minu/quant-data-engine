@@ -285,3 +285,171 @@ def test_cross_venue_basis_is_never_published():
     assert not any("cross_venue_basis" in k for k in _PUBLIC_MARTS), (
         "cross-venue basis must NOT be in the public publish list"
     )
+
+
+# --- the publication gate is an allowlist ---------------------------------------
+#
+# Publishing is the one irreversible thing the platform does. Filtering by "not
+# forbidden" served anything the registry had never heard of; filtering by
+# "explicitly permitted" cannot.
+
+
+def test_a_source_the_registry_does_not_know_is_never_published(tmp_path):
+    _write_bars(tmp_path, "binance", "BTCUSDT")  # registered, redistributable
+    # A retired spec whose files remain, a directory dropped in by hand, a source
+    # seeded before it was declared — all the same shape, and all were published.
+    _write_bars(tmp_path, "some_licensed_vendor", "SECRET")
+
+    s3 = FakeS3()
+    summary = publish_public(base_dir=str(tmp_path), public_bucket="pub", client=s3)
+
+    assert not any("some_licensed_vendor" in k for _, k in s3.objects)
+    assert any("source=binance" in k for _, k in s3.objects)
+    assert summary["bronze_skipped"] >= 1
+
+
+def test_an_unknown_source_is_kept_out_of_the_consolidated_files(tmp_path):
+    # The per-file loop and the merged file are separate code paths, so the gate has
+    # to hold in both — the consolidated file is what the catalogue tells people to
+    # query, which makes it the copy most likely to actually be read.
+    _write_bars(tmp_path, "binance", "BTCUSDT")
+    _write_bars(tmp_path, "some_licensed_vendor", "SECRET")
+    _write_gold_bars(tmp_path, ["binance", "some_licensed_vendor", "yfinance"])
+
+    s3 = FakeS3()
+    publish_public(base_dir=str(tmp_path), public_bucket="pub", client=s3)
+
+    for key in ("bronze/group=bars/all.parquet",
+                "gold/group=bars/mart=fct_bars_daily/data.parquet"):
+        blob = s3.blobs[("pub", key)]
+        got = duckdb.connect().execute(
+            "SELECT DISTINCT source FROM read_parquet(?)", [_as_file(tmp_path, key, blob)]
+        ).fetchall()
+        assert {r[0] for r in got} == {"binance"}, key
+
+
+def _as_file(tmp_path, key, blob):
+    path = tmp_path / (key.replace("/", "__") + ".check")
+    path.write_bytes(blob)
+    return str(path)
+
+
+# --- microstructure: mirrored bucket-to-bucket -----------------------------------
+#
+# Every other group publishes from the local lake. Microstructure cannot: the sync
+# that runs first ships it to R2 and prunes it locally, so on disk there is only a
+# half-written current day. The bytes exist only in R2, so the copy happens there.
+
+
+class FakeR2:
+    """Two buckets with server-side copy, enough to exercise the mirror."""
+
+    def __init__(self, private: dict[str, int]):
+        self.buckets = {"priv": dict(private), "pub": {}}
+        self.copies: list[str] = []
+        self.fail_on: set[str] = set()
+
+    def get_paginator(self, _op):
+        outer = self
+
+        class P:
+            def paginate(self, Bucket, Prefix=""):
+                yield {
+                    "Contents": [
+                        {"Key": k, "Size": v}
+                        for k, v in sorted(outer.buckets[Bucket].items())
+                        if k.startswith(Prefix)
+                    ]
+                }
+
+        return P()
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.buckets[Bucket]:
+            raise KeyError(Key)
+        return {"ContentLength": self.buckets[Bucket][Key]}
+
+    def copy_object(self, Bucket, Key, CopySource):
+        if Key in self.fail_on:
+            raise OSError("copy refused")
+        self.buckets[Bucket][Key] = self.buckets[CopySource["Bucket"]][CopySource["Key"]]
+        self.copies.append(Key)
+
+
+def test_microstructure_is_mirrored_from_the_private_bucket(tmp_path):
+    from qde.publish_public import _MIRRORED_PREFIX, mirror_private_prefix
+
+    tick = "kind=trades/symbol=BTCUSDT/date=2026-08-01/p.parquet"
+    r2 = FakeR2({
+        f"{_MIRRORED_PREFIX}source=binance/{tick}": 10,
+        f"{_MIRRORED_PREFIX}source=coinbase/{tick}": 20,
+        "bronze/group=bars/source=binance/symbol=BTCUSDT/interval=1d/bars.parquet": 5,
+    })
+    out = mirror_private_prefix(r2, "priv", "pub", _MIRRORED_PREFIX)
+
+    assert out["copied"] == 2
+    # Only the requested prefix moves; bars publish from the local lake instead and
+    # must not be duplicated through this path.
+    assert not any("group=bars" in k for k in r2.buckets["pub"])
+
+
+def test_mirror_skips_what_is_already_published(tmp_path):
+    # Without this the nightly would re-copy the entire archive every single night.
+    from qde.publish_public import _MIRRORED_PREFIX, mirror_private_prefix
+
+    r2 = FakeR2({f"{_MIRRORED_PREFIX}a/p.parquet": 10, f"{_MIRRORED_PREFIX}b/p.parquet": 20})
+    first = mirror_private_prefix(r2, "priv", "pub", _MIRRORED_PREFIX)
+    second = mirror_private_prefix(r2, "priv", "pub", _MIRRORED_PREFIX)
+
+    assert first["copied"] == 2 and first["skipped"] == 0
+    assert second["copied"] == 0 and second["skipped"] == 2
+
+
+def test_mirror_recopies_a_partition_that_changed_size(tmp_path):
+    # Compaction rewrites a settled partition into one file; the public copy has to
+    # follow, or it keeps serving the superseded version forever.
+    from qde.publish_public import _MIRRORED_PREFIX, mirror_private_prefix
+
+    r2 = FakeR2({f"{_MIRRORED_PREFIX}a/p.parquet": 10})
+    mirror_private_prefix(r2, "priv", "pub", _MIRRORED_PREFIX)
+    r2.buckets["priv"][f"{_MIRRORED_PREFIX}a/p.parquet"] = 99
+
+    out = mirror_private_prefix(r2, "priv", "pub", _MIRRORED_PREFIX)
+    assert out["copied"] == 1
+    assert r2.buckets["pub"][f"{_MIRRORED_PREFIX}a/p.parquet"] == 99
+
+
+def test_mirror_never_deletes_from_the_public_bucket():
+    # The public copy is an archive. A partition pruned locally, or absent from the
+    # private bucket, is expected — never a reason to withdraw published history.
+    from qde.publish_public import _MIRRORED_PREFIX, mirror_private_prefix
+
+    r2 = FakeR2({f"{_MIRRORED_PREFIX}new/p.parquet": 10})
+    r2.buckets["pub"][f"{_MIRRORED_PREFIX}old/p.parquet"] = 7
+    mirror_private_prefix(r2, "priv", "pub", _MIRRORED_PREFIX)
+
+    assert f"{_MIRRORED_PREFIX}old/p.parquet" in r2.buckets["pub"]
+
+
+def test_a_failed_copy_is_counted_not_swallowed():
+    from qde.publish_public import _MIRRORED_PREFIX, mirror_private_prefix
+
+    r2 = FakeR2({f"{_MIRRORED_PREFIX}a/p.parquet": 10, f"{_MIRRORED_PREFIX}b/p.parquet": 20})
+    r2.fail_on = {f"{_MIRRORED_PREFIX}b/p.parquet"}
+    out = mirror_private_prefix(r2, "priv", "pub", _MIRRORED_PREFIX)
+
+    assert out["copied"] == 1 and out["failed"] == 1
+
+
+def test_staging_files_cannot_pollute_the_next_merge(tmp_path):
+    # The merged file used to be written beside the partitions it was built from,
+    # inside a recursive glob. One crash between writing and deleting it and every
+    # row would be counted twice, forever, with nothing raised.
+    from qde.publish_public import _STAGING
+
+    _write_bars(tmp_path, "binance", "BTCUSDT")
+    publish_public(base_dir=str(tmp_path), public_bucket="pub", client=FakeS3())
+
+    stray = list((tmp_path / "bronze").rglob("all.parquet"))
+    assert stray == [], "a consolidated file must never be left inside the lake tree"
+    assert _STAGING not in {p.name for p in (tmp_path / "bronze").rglob("*")}

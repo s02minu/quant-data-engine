@@ -3,13 +3,16 @@
 The public half of the two-halves product (ROADMAP §6/§12): only data the registry
 marks ``redistributable=True`` is mirrored to a public R2 bucket, where anyone queries
 it with their own DuckDB and **no credentials** — serve files, not queries (§5.1).
-The non-redistributable sources (currently ``yfinance`` — code-only) are filtered out
-two ways:
 
-- **Bronze**: files under a ``source=<excluded>`` partition are skipped.
+The gate is an **allowlist**: a source is published only if the registry names it and
+marks it redistributable. Everything else is withheld, including sources the registry
+has never heard of. That polarity is deliberate — see :func:`_publishable_sources` —
+because publishing cannot be undone. It applies in both places data leaves:
+
+- **Bronze**: a file is uploaded only if its ``source=`` partition is on the allowlist.
 - **Gold**: the marts blend sources (``fct_bars_daily`` includes the yfinance ETFs),
-  so their rows are filtered ``WHERE source NOT IN (excluded)`` before upload — the
-  private gold stays whole; only the public copy is trimmed.
+  so their rows are filtered ``WHERE source IN (allowed)`` before upload — the private
+  gold stays whole; only the public copy is trimmed.
 
 The ``catalogue.json`` (``qde.catalogue``) is generated and published alongside, so
 the public bucket is self-describing.
@@ -24,6 +27,7 @@ buckets never get crossed:
     QDE_PUBLIC_BASE_URL      — its HTTPS origin (embedded in catalogue sample queries)
 """
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -35,9 +39,15 @@ from qde.registry import all_specs
 
 log = get_logger(__name__)
 
-# Bronze groups eligible for the public lake. Microstructure is the owner's private
-# research feed and is never published.
+# Bronze groups published *from the local lake*. Microstructure is public too, but
+# reaches the bucket by a different route — see _MIRRORED_PREFIX below.
 _PUBLIC_GROUPS = ("bars", "series", "events")
+
+# Microstructure is public too (decided 2026-08-16: the platform serves data; the
+# strategy that reads it lives outside the repo). It is absent from _PUBLIC_GROUPS
+# because it cannot be published from the local lake at all — see
+# `mirror_private_prefix` — not because it is withheld.
+_MIRRORED_PREFIX = "bronze/group=microstructure/"
 
 # Data-quality history (qde.dq_history). Published in full and unfiltered: these are
 # our own operational records — which checks ran, what failed, how stale something was
@@ -65,9 +75,94 @@ _PUBLIC_MARTS = {
 }
 
 
+# Where the consolidated files are staged before upload. Deliberately OUTSIDE
+# `bronze/`, because the group globs below are recursive: a merged file written
+# beside the partitions it was built from is read back into the *next* merge, and a
+# single crash between writing and deleting it would leave every row duplicated,
+# silently and permanently. Staging elsewhere makes that impossible rather than
+# unlikely.
+_STAGING = ".publish-staging"
+
+
+def _publishable_sources() -> frozenset[str]:
+    """Sources the registry explicitly permits republishing.
+
+    An **allowlist**, not a list of exclusions, and the distinction matters more
+    here than anywhere else in the codebase: publishing is the one irreversible
+    action the platform takes. Filtering by "everything except the sources known to
+    be forbidden" publishes anything the registry has not heard of — a spec that was
+    retired while its files remained, a directory dropped in by hand, a source
+    seeded before it was declared. Each of those is a plausible Tuesday, and each
+    would have been served publicly, forever, with no error raised.
+
+    Withholding something that should have been public is a bug fixable by the next
+    nightly. Publishing something licensed is not fixable at all.
+    """
+    return frozenset(s.name for s in all_specs() if s.redistributable)
+
+
 def _excluded_sources() -> list[str]:
-    """Source names the registry forbids republishing (redistributable=False)."""
+    """Registered sources forbidden from republishing — reported, not enforced.
+
+    The enforcement is :func:`_publishable_sources`; this exists so the catalogue
+    and the run log can say *why* something is missing.
+    """
     return sorted(s.name for s in all_specs() if not s.redistributable)
+
+
+def _source_of(rel_parts: tuple[str, ...]) -> str | None:
+    """The ``source=`` partition value in a lake-relative path, if it has one."""
+    for part in rel_parts:
+        if part.startswith("source="):
+            return part.split("=", 1)[1]
+    return None
+
+
+def mirror_private_prefix(client, private_bucket: str, public_bucket: str, prefix: str) -> dict:
+    """Copy objects straight from the private bucket to the public one.
+
+    Everything else here publishes from the local lake, which works because bars,
+    series and events are mutable single files that stay on disk. Microstructure is
+    not: ``qde.sync`` ships each settled partition to R2 and **prunes it locally**,
+    which is the only reason a 40 GB box can carry a feed this size. By the time
+    publishing runs, the only microstructure on disk is the half-written current
+    day — so publishing it from the local lake would quietly serve a fragment and
+    report success. The bytes only exist in R2, so the copy has to happen there.
+
+    Server-side: nothing travels through the VPS, so the size of the archive is
+    irrelevant to the nightly's runtime and bandwidth.
+
+    **Copy-only, never delete.** The public copy is an archive; a partition missing
+    locally is expected, not a signal to withdraw anything already published.
+
+    Objects already present at the same size are skipped, which is what keeps this
+    affordable — without it every nightly would re-copy the entire history.
+    """
+    copied = skipped = failed = 0
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=private_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key, size = obj["Key"], obj["Size"]
+            try:
+                if client.head_object(Bucket=public_bucket, Key=key)["ContentLength"] == size:
+                    skipped += 1
+                    continue
+            except Exception:
+                pass  # absent, or unreadable — either way, copy it
+            try:
+                client.copy_object(
+                    Bucket=public_bucket,
+                    Key=key,
+                    CopySource={"Bucket": private_bucket, "Key": key},
+                )
+                copied += 1
+            except Exception as exc:
+                log.warning(
+                    "mirror_failed", key=key, error=type(exc).__name__, detail=str(exc)
+                )
+                failed += 1
+    log.info("mirror_complete", prefix=prefix, copied=copied, skipped=skipped, failed=failed)
+    return {"copied": copied, "skipped": skipped, "failed": failed}
 
 
 def _upload(client, path: Path, bucket: str, key: str) -> bool:
@@ -91,7 +186,7 @@ def publish_public(
     public_bucket: str,
     client,
     public_base_url: str | None = None,
-    excluded: list[str] | None = None,
+    allowed: list[str] | None = None,
 ) -> dict:
     """Mirror the redistributable lake + catalogue to the public bucket.
 
@@ -100,8 +195,9 @@ def publish_public(
         public_bucket: the PUBLIC R2 bucket name.
         client: an S3-compatible client (boto3 or a test stand-in).
         public_base_url: HTTPS origin embedded in catalogue sample queries.
-        excluded: source names to withhold; defaults to the registry's
-            non-redistributable set.
+        allowed: source names cleared for publication; defaults to the registry's
+            redistributable set. Anything not named here is withheld, including
+            sources the registry has never heard of.
 
     Returns:
         Summary counts: bronze files, gold marts, whether the catalogue landed, and
@@ -109,21 +205,28 @@ def publish_public(
         module entry point below exits non-zero on any.
     """
     base = Path(base_dir)
-    excluded = _excluded_sources() if excluded is None else excluded
+    publishable = _publishable_sources() if allowed is None else frozenset(allowed)
+    excluded = _excluded_sources()
     bronze_ok = bronze_skipped = gold_ok = quality_ok = 0
     bronze_failed = gold_failed = quality_failed = 0
 
     con = duckdb.connect()
+    staging = base / _STAGING
+    staging.mkdir(parents=True, exist_ok=True)
 
-    # --- bronze: mirror every file except excluded sources' partitions ---
+    # --- bronze: mirror only files belonging to an allowed source ---
     for group in _PUBLIC_GROUPS:
         root = base / "bronze" / f"group={group}"
         for file in sorted(root.rglob("*.parquet")):
-            rel_parts = file.relative_to(base).parts
-            if any(part == f"source={x}" for x in excluded for part in rel_parts):
+            rel = file.relative_to(base)
+            source = _source_of(rel.parts)
+            # A file with no source= partition cannot be attributed, so it cannot be
+            # cleared for publication either.
+            if source is None or source not in publishable:
                 bronze_skipped += 1
+                log.info("public_withheld", key=rel.as_posix(), source=source)
                 continue
-            if _upload(client, file, public_bucket, file.relative_to(base).as_posix()):
+            if _upload(client, file, public_bucket, rel.as_posix()):
                 bronze_ok += 1
             else:
                 bronze_failed += 1
@@ -144,18 +247,23 @@ def publish_public(
             if any(root.glob(pattern))
         ]
         if reads:
-            merged = root / "all.parquet"
+            merged = staging / f"{group}-all.parquet"
             body = " UNION ALL BY NAME ".join(reads)
-            in_list = ", ".join(f"'{x}'" for x in excluded) or "''"
-            con.execute(
-                f"COPY (SELECT * FROM ({body}) WHERE source NOT IN ({in_list})) "
-                f"TO '{merged.as_posix()}' (FORMAT parquet)"
-            )
-            if _upload(client, merged, public_bucket, f"bronze/group={group}/all.parquet"):
-                bronze_ok += 1
-            else:
-                bronze_failed += 1
-            merged.unlink(missing_ok=True)
+            # IN, not NOT IN: an unrecognised source is withheld, and a NULL source
+            # (a file whose hive path lacks the key) fails the test rather than
+            # passing it, since `NULL IN (...)` is never true.
+            in_list = ", ".join(f"'{x}'" for x in sorted(publishable)) or "''"
+            try:
+                con.execute(
+                    f"COPY (SELECT * FROM ({body}) WHERE source IN ({in_list})) "
+                    f"TO '{merged.as_posix()}' (FORMAT parquet)"
+                )
+                if _upload(client, merged, public_bucket, f"bronze/group={group}/all.parquet"):
+                    bronze_ok += 1
+                else:
+                    bronze_failed += 1
+            finally:
+                merged.unlink(missing_ok=True)
 
     # --- quality: mirror the history, plus a consolidated file per table ---
     #
@@ -174,36 +282,39 @@ def publish_public(
                 quality_failed += 1
 
         if parts:
-            merged = base / "quality" / f"{table}.parquet"
+            merged = staging / f"{table}.parquet"
             sources = [str(p) for p in parts]
-            con.execute(
-                f"COPY (SELECT * FROM read_parquet({sources!r}, union_by_name=true)) "
-                f"TO '{merged.as_posix()}' (FORMAT parquet)"
-            )
-            if _upload(client, merged, public_bucket, f"quality/{table}.parquet"):
-                quality_ok += 1
-            else:
-                quality_failed += 1
-            merged.unlink(missing_ok=True)
+            try:
+                con.execute(
+                    f"COPY (SELECT * FROM read_parquet({sources!r}, union_by_name=true)) "
+                    f"TO '{merged.as_posix()}' (FORMAT parquet)"
+                )
+                if _upload(client, merged, public_bucket, f"quality/{table}.parquet"):
+                    quality_ok += 1
+                else:
+                    quality_failed += 1
+            finally:
+                merged.unlink(missing_ok=True)
 
     # --- gold: filter non-redistributable rows, then upload the trimmed copy ---
     for rel_key, source_col in _PUBLIC_MARTS.items():
         src = base / rel_key
         if not src.exists():
             continue
-        tmp = base / (rel_key + ".public.tmp")
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        in_list = ", ".join(f"'{x}'" for x in excluded) or "''"
-        con.execute(
-            f"COPY (SELECT * FROM read_parquet('{src.as_posix()}') "
-            f"WHERE {source_col} NOT IN ({in_list})) "
-            f"TO '{tmp.as_posix()}' (FORMAT parquet)"
-        )
-        if _upload(client, tmp, public_bucket, rel_key):
-            gold_ok += 1
-        else:
-            gold_failed += 1
-        tmp.unlink(missing_ok=True)
+        tmp = staging / rel_key.replace("/", "__")
+        in_list = ", ".join(f"'{x}'" for x in sorted(publishable)) or "''"
+        try:
+            con.execute(
+                f"COPY (SELECT * FROM read_parquet('{src.as_posix()}') "
+                f"WHERE {source_col} IN ({in_list})) "
+                f"TO '{tmp.as_posix()}' (FORMAT parquet)"
+            )
+            if _upload(client, tmp, public_bucket, rel_key):
+                gold_ok += 1
+            else:
+                gold_failed += 1
+        finally:
+            tmp.unlink(missing_ok=True)
 
     # --- catalogue: generate + publish alongside the data ---
     catalogue = build_catalogue(base_dir, public_base_url)
@@ -211,12 +322,16 @@ def publish_public(
     write_catalogue(catalogue, str(cat_path))
     catalogue_ok = _upload(client, cat_path, public_bucket, "catalogue.json")
 
+    with contextlib.suppress(OSError):
+        staging.rmdir()  # empty unless a merge is mid-flight; never force it
+
     return {
         "bronze_published": bronze_ok,
         "bronze_skipped": bronze_skipped,
         "gold_published": gold_ok,
         "catalogue": catalogue_ok,
         "excluded": excluded,
+        "allowed": sorted(publishable),
         "quality_published": quality_ok,
         "bronze_failed": bronze_failed,
         "gold_failed": gold_failed,
@@ -234,6 +349,20 @@ if __name__ == "__main__":
     configure()
     base_dir = os.getenv("QDE_BASE_DIR", "data")
     public_bucket = os.environ["QDE_R2_PUBLIC_BUCKET"]
+
+    # Microstructure is published straight from the private bucket, because the
+    # local copy has already been pruned by the sync that precedes this. Guarded on
+    # the private bucket name so an environment without it simply does nothing.
+    private_bucket = os.getenv("QDE_R2_BUCKET")
+    mirror = {"copied": 0, "skipped": 0, "failed": 0}
+    if private_bucket:
+        mirror = mirror_private_prefix(
+            r2_client_from_env(),
+            private_bucket,
+            public_bucket,
+            _MIRRORED_PREFIX,
+        )
+
     summary = publish_public(
         base_dir=base_dir,
         public_bucket=public_bucket,
@@ -248,7 +377,9 @@ if __name__ == "__main__":
         quality=summary["quality_published"],
         catalogue=summary["catalogue"],
         excluded=summary["excluded"],
-        failed=summary["failed"],
+        mirrored=mirror["copied"],
+        mirror_skipped=mirror["skipped"],
+        failed=summary["failed"] + mirror["failed"],
     )
 
     # Exit non-zero when anything failed to land. Uploads are idempotent, so a
@@ -257,10 +388,11 @@ if __name__ == "__main__":
     # are per-file warnings, so without this the run looks green and the bucket is
     # stale. maintain.sh runs this last under `set -e`, so a non-zero exit here is
     # visible without putting the private-lake sync at risk.
-    if summary["failed"]:
+    if summary["failed"] or mirror["failed"]:
         log.error(
             "publish_public_incomplete",
-            failed=summary["failed"],
+            failed=summary["failed"] + mirror["failed"],
+            mirror_failed=mirror["failed"],
             bronze_failed=summary["bronze_failed"],
             gold_failed=summary["gold_failed"],
             catalogue=summary["catalogue"],

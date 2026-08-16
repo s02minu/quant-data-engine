@@ -301,7 +301,7 @@ Kubernetes (a single container doesn't need an orchestrator). These get
 revisited when the constraints that justify them actually appear.
 
 ### Limitations
-- The public lake carries only the **redistributable** half. Sources whose terms forbid republishing (currently yfinance) ship as open ingestor code, not data — bronze partitions are skipped and gold marts are row-filtered before upload. Streamed microstructure stays private by design.
+- The public lake carries only the **redistributable** half, enforced as an allowlist: a source is published only if the registry names it *and* marks it redistributable, so anything the registry has never heard of is withheld by default. Sources whose terms forbid republishing (currently yfinance) ship as open ingestor code, not data — their partitions are skipped and gold marts are row-filtered before upload. **Streamed microstructure is published in full**, mirrored bucket-to-bucket because the sync prunes it from local disk; the derived cross-venue basis mart stays private, since it is a rolling window rather than an archive and would be a misleading thing to serve.
 - Public files are read over plain HTTP, which has no directory listing, so `**/*.parquet` globs cannot be expanded by a browser client. Each group is therefore also published as one consolidated `all.parquet`, which is what the catalogue's sample queries point at.
 - Symbol mapping is manual — new symbols are added to the source's `SourceSpec` in `qde.registry` (canonical → native), not auto-normalized across venues.
 - Kraken's public OHLC endpoint serves only ~720 recent candles per interval, regardless of start date — deep history requires its paid data service.
