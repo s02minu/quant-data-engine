@@ -64,6 +64,18 @@ docker compose up -d                     # restart the live collector IF stream 
 `docker compose run` (used by cron) picks up the freshly built image
 automatically, so batch-only changes need only `build`, not a collector restart.
 
+**Reclaim build cache before you log off.** Each rebuild leaves its layers behind,
+and on a 40 GB box they add up faster than the data does — a deploy session once
+left 24 GB of cache against 739 MB of actual lake, taking the disk to 79%. A full
+disk stops ingestion, compaction and sync alike, so end every deploy session with:
+
+```bash
+docker builder prune -af
+```
+
+The nightly `check_disk` pass now alerts on this (warn 80%, error 90%, or under
+3 GB free), but the cache is cheaper to drop than to be warned about.
+
 ## Seeding the bars lake (first time only)
 
 `daily_update` only refreshes series that already exist; on a fresh VPS the bars

@@ -14,24 +14,30 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | — | Foundation (the working pipeline) | Done |
 | 0 | Harden the foundation | Done |
 | 1 | Lakehouse storage on Cloudflare R2 | Done |
-| 2 | Licensing audit | In progress (per-source fields done) |
+| 2 | Licensing audit | Done (per-source fields + `docs/licensing.md` + README two-halves) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; **events calendar done** — 4th group live) |
+| 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; events calendar done — 4th group live. Equities/Tiingo deferred) |
 | 6 | Streaming and backfills | Done |
-| 7 | Orchestration with Dagster | In progress (**registry-driven asset graph done**, local/dev-only; date-partitioning deferred) |
-| 8 | Transformations with dbt | In progress (**bars + series + events silver→gold done**; docs site + CI build left) |
-| 9 | Data quality | In progress (freshness + null + microstructure checks live; **bitemporal events check added**) |
-| 10 | Observability | In progress (Discord health alerts live; webhook opt-in) |
-| 11 | CI/CD | In progress (CI: ruff/mypy/pytest on push + PR, 3.12×3.14) |
+| 7 | Orchestration with Dagster | In progress (registry-driven asset graph done, local/dev-only; date-partitioning deferred) |
+| 8 | Transformations with dbt | Done — all four groups have marts (**incl. the private cross-venue basis mart**); dbt docs + CI build landed |
+| 9 | Data quality | In progress (freshness + null + bitemporal + microstructure checks live; **small-files watch added**) |
+| 10 | Observability | In progress (Discord alerts + **host health checks** live; `/status` page is the health page) |
+| 11 | CI/CD | In progress (ruff/mypy/pytest 3.12×3.14 + **dbt build on a synthetic lake**; deploy-on-merge left) |
 | 12 | Catalogue and publishing | **Done and live** — public bucket, catalogue, site + `/status` at <https://quant-data-engine.israeladetola.workers.dev> |
 
-**Current focus:** Phase 6 is complete and the platform is fully deployed. The
-collector runs 24/7; the batch side has watermarked incremental loads, idempotent
-upserts, and a group-level backfill CLI, and now runs nightly on the VPS with bars
-published to R2 (durable + queryable like microstructure). Recent hardening:
-memory-safe streaming compaction, and a `NoNewData` exception so a real fetch error
-is no longer mistaken for "already up to date".
+**Current focus (from 2026-08-16): none — the build is paused deliberately.** Every
+phase that gates the platform being *usable* has landed: 12 sources across four group
+shapes, streaming + batch ingestion running nightly on the VPS, dbt marts for all four
+groups, data-quality and host-health checks with alerting and history, a public lake,
+a catalogue, and a live site with a `/status` page. What remains is genuinely optional
+(published Docker image, deploy-on-merge, Dagster date partitioning, equities via
+Tiingo) and none of it blocks use.
+
+The owner's priority has shifted from *building* the platform to **using and
+understanding** it, en route to a trading system built on top. Private learning notes
+live in `docs/learning/` (gitignored). New work should be driven by a question hit
+while using the platform, not by clearing the remaining boxes below.
 
 **Phase 4 (the registry, "little book") is complete.** The `qde.registry` package
 declares binance / kraken / yfinance once each as a `SourceSpec`, folding in the
@@ -66,12 +72,13 @@ perp funding (`series`, multi-metric) is fully deployed**: `BinanceFuturesIngest
 + `binancefut` `SourceSpec`, 42,874 rows live in R2 (233 series files now published
 nightly), reusing COT's machinery unchanged (purely additive — no storage/lake
 changes); OI and liquidations are scoped out (no usable public REST history — see
-the checklist). **Wave 1 #5 — 2nd microstructure venue (Coinbase) is code-complete
-+ live-verified locally**: the collector gained a `VenueAdapter` seam (Binance
-behavior-unchanged, `CoinbaseAdapter` added). **NEXT (resume point): deploy
-`collector-coinbase` to the VPS** (ff, rebuild, `up -d`; verify Coinbase reachable
-from the EU box + files land in R2), then a schema/doc pass for the per-venue
-microstructure shape.
+the checklist). **Wave 1 #5 — 2nd microstructure venue (Coinbase) is deployed and
+R2-confirmed (2026-08-08)**: the collector gained a `VenueAdapter` seam (Binance
+behavior-unchanged, `CoinbaseAdapter` added), both collectors run on the VPS, and the
+per-venue schema/doc pass is done. This unblocked the cross-venue basis work —
+`qde.analytics` first, then the `fct_cross_venue_basis` mart. **Wave 2 #6 (ccxt bars,
+4 more venues) and the `events` calendar are likewise deployed**; the only open Wave 2
+item is equities via Tiingo, deferred pending an API key.
 
 ---
 
@@ -202,7 +209,9 @@ classification lives on each `SourceSpec` where the publishing job will read it.
       Yahoo; code-only source).
 - [x] Populate `redistributable` / `license_note` per source — fields live on
       `SourceSpec`; every registered source carries a licence note.
-- [ ] Document the two-halves product shape in the README
+- [x] Document the two-halves product shape in the README — the open lake vs the open
+      *ingestors*, why only one half is encumbered, and the "you bring the licence, the
+      platform brings the plumbing" framing for anyone who already pays for a feed.
 - [x] `docs/licensing.md` written — the open-lake/code-only split, how the
       `redistributable` flag enforces it (bronze skip + gold row-filter), and a
       per-source table generated from the registry (done in Phase 12).
@@ -508,7 +517,7 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
       FRED — build + live-verify it once a key is available (`secrets/tiingo.env`),
       `redistributable=False` so it stays code-only.
 
-## Phase 6 — Streaming and backfills *(current)*
+## Phase 6 — Streaming and backfills
 
 ### Websocket collector
 
@@ -710,8 +719,37 @@ confirmed live in R2 (`publish_gold_complete published=2`); `fct_bars_daily` and
       from the laptop**: `fct_series_features` 304,191 rows; `fct_events_revisions`
       4,358 rows, GDP 2002-Q2 revised 9,387.9 → 14,460.8 (13 revisions, +54%) —
       matching the local run exactly.
-- [ ] `dbt docs` lineage site (hosting) — follow-on
-- [ ] `dbt build` on a sample lake in CI — follow-on (Phase 11)
+- [x] **Cross-venue basis mart (`fct_cross_venue_basis`) — the first microstructure
+      mart, and PRIVATE.** Promotes `qde.analytics`' basis calculation from a one-off
+      script into a nightly-built gold table: one row per (symbol, date, 1s bucket)
+      carrying both venue mids and the basis in bps, for all three pairs (BTC/ETH/SOL —
+      the *agreement between them* is what makes it a market-wide stablecoin premium
+      rather than per-symbol noise). Written as a **dbt Python model** so the heavy
+      collapse (millions of `book_ticker` rows → one mid per bucket) stays DuckDB SQL
+      while the alignment reuses the already-unit-tested `qde.analytics.align`, keeping
+      one definition of the basis instead of two. Two things it is deliberately honest
+      about: (1) it is a **monitoring artifact, not an archive** — a full rebuild over
+      whatever bronze is still on local disk, so it is a rolling window that will drop
+      its oldest day once retention bites; the durable history is raw bronze in R2.
+      (2) Every row carries `day_buckets` + `day_coverage_pct`, because a partial day
+      is a *biased* sample of a signal with strong intraday structure, not merely a
+      smaller one — filter on coverage before aggregating. Registered in
+      `lake._GOLD_MARTS` (syncs to the private bucket) and deliberately **absent from
+      `publish_public._PUBLIC_MARTS`**: publishing is a one-way door. Gotcha found
+      building it: dbt parses inline `dbt.config()` with `literal_eval`, so
+      `var('lake_root')` cannot be interpolated there — the config lives in
+      `_microstructure.yml`, where Jinja renders normally.
+- [x] **`dbt build` on a sample lake in CI** — a second `dbt` job in
+      `.github/workflows/ci.yml` builds every model and test against a synthetic lake
+      generated by `scripts/make_sample_lake.py`, in seconds. Closes the loop that used
+      to be *push → pull → rebuild image → run → read logs*, minutes per attempt, with
+      the VPS as the only place the transform layer was ever exercised. The job also
+      regenerates the `dim_sources` seed from the registry and `git diff --exit-code`s
+      it, so a registry change that never made it into the committed seed fails CI.
+- [x] **`dbt docs` lineage site** — generated by the same CI job and uploaded as a
+      downloadable run artifact (`dbt-docs`, 14-day retention) rather than hosted. The
+      site is static HTML, so an artifact is the whole product at zero hosting cost;
+      grab it from the run's Artifacts section and open `index.html`.
 
 ## Phase 9 — Data quality
 
@@ -730,7 +768,9 @@ confirmed live in R2 (`publish_gold_complete published=2`); `fct_bars_daily` and
       dated 06-01), so a ~2-month-old monthly observation is current, not stale —
       verified it does not false-positive on the live FRED monthly spine.
 - [ ] Pandera schemas at the bronze boundary (row-level contract) — later
-- [ ] dbt tests: not_null, unique, accepted_values — after dbt (Phase 8)
+- [x] dbt tests: not_null, unique, accepted_values — landed with the marts in Phase 8,
+      alongside the singular tests (OHLC coherence, key uniqueness, ATR non-negativity,
+      bitemporal ordering). Now run on every push via the CI `dbt` job, not only nightly.
 - [~] Custom financial tests — **bitemporal ordering + OHLC coherence done.**
       Bitemporal: `run_events_checks` (`observed_ts >= scheduled_ts`, contiguous
       `revision_seq`, one initial print per event; ROADMAP §9's headline check). OHLC
@@ -760,9 +800,15 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
 - [x] **Crossed-book (bid > ask) and non-negative sizes** — DuckDB streaming scan
       per source (book_ticker is the chattiest kind, millions of rows/day), string
       prices via `TRY_CAST`, `union_by_name` across venues; a defect is error-level.
-- [ ] Rows per partition per day, and part-file counts (small-files watch) —
-      deferred (part-file counts are a post-compaction concern; the check runs
-      pre-compaction).
+- [x] **Part-file counts (small-files watch)** — `qde.host.check_small_files` counts
+      part files per *settled* partition and flags any still holding many (warn at 50,
+      error at 200). Compaction is supposed to leave exactly one; if it silently stops
+      working the files just accumulate, queries get slower and the object count climbs,
+      and **nothing errors** — this is the check that makes that visible. Today's
+      partition is skipped on purpose (a live day legitimately holds hundreds of files,
+      and flagging it would cry wolf nightly), and the report is capped at the 10 worst
+      so a systemic compaction failure shows its scale without emitting hundreds of
+      alerts. Rows-per-partition baselining is still open.
 - [x] **Surface gap records from `kind=gaps`** — per (source, symbol): a
       `sequence_jump` is missed data (error, with an estimated missed-message
       count), a `reconnect` is a known outage window (warn).
@@ -778,8 +824,27 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
       set the sender is a logged no-op, so the pipeline is unchanged on a box that
       hasn't opted in. The nightly exit stays 0 so a DQ issue never blocks the
       compact/sync in `maintain.sh` — the *alert* is what surfaces it, not a crash.
-- [ ] Metrics over the data: row counts per partition, ingestion lag, error rates
-- [ ] Pipeline-health page
+- [x] **Host health checks (`qde.host`) — is the *box* still able to do its job?**
+      A different failure mode from `qde.checks` ("is the data right?"), and one nothing
+      was watching. Prompted by a real finding on 2026-08-15: the VPS sat at **79% disk
+      with 24 GB of Docker build cache against 739 MB of actual data**, and nothing would
+      have alerted until writes began failing — which stops ingestion, compaction and
+      sync alike, silently, mid-run. `check_disk` applies two independent tests, a used
+      *percentage* (warn 80%, error 90%) and an absolute *free-space floor* (3 GB),
+      because either can bite alone: a large filesystem at 85% may be fine while a small
+      one at 85% has no room for a single compaction pass. It returns at most one
+      violation — the worst condition — so a nearly-full disk does not fire two alerts
+      saying the same thing. Both this and the small-files watch return `Violation`s, so
+      they ride the paths that already exist: logged by the nightly, alerted to Discord,
+      and **persisted by `qde.dq_history`** — which is the real prize, since disk
+      pressure then charts over time and a slow leak is visible as a trend rather than
+      noticed once.
+- [x] **Pipeline-health page** — the `/status` page (Phase 12): live per-source
+      freshness, run history, and violations, each panel able to reveal the SQL behind
+      its own number.
+- [ ] Metrics over the data: row counts per partition, ingestion lag, error rates —
+      partially covered (freshness per source, DQ run history); a real metrics series
+      over the lake is still open.
 
 ## Phase 11 — CI/CD
 
@@ -807,10 +872,12 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
       `load_ohlcv`/`save_ohlcv`/`update_ohlcv` must mock the network or it will pass
       locally and fail in CI.** Verified with a `docker run --network none` full-suite
       pass (181) on Linux 3.12, plus mypy clean under 3.12 with numpy 2.5.1.
-- [ ] dbt build against sample data in CI — after dbt (Phase 8)
-- [ ] Deploy on merge
+- [x] **dbt build against sample data in CI** — a second `dbt` job builds every model
+      and test against a synthetic lake from `scripts/make_sample_lake.py`, and guards
+      the committed `dim_sources` seed against registry drift. Details in Phase 8.
+- [ ] Deploy on merge — the VPS is still updated by hand (ff, rebuild, `up -d`).
 
-## Phase 12 — Catalogue and publishing *(in progress — the finale)*
+## Phase 12 — Catalogue and publishing *(done and live)*
 
 The "users can actually use it" half. Serving decision settled (§5.1): **serve files,
 not queries** — a public Parquet lake on R2 that anyone queries with their own DuckDB
