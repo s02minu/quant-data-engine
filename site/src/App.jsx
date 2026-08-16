@@ -17,7 +17,14 @@ export default function App() {
   useEffect(() => {
     // Try the live catalogue first; fall back to the bundled snapshot so the site
     // always renders even before the public bucket exists.
-    fetch(CATALOGUE_URL)
+    //
+    // `no-cache` forces revalidation on every load. The bucket serves catalogue.json
+    // with an ETag but **no Cache-Control**, so browsers fall back to heuristic
+    // caching and will happily serve a copy hours old — which was observed: the page
+    // showed 12 sources while the bucket held 14. Stale is quietly wrong everywhere,
+    // but on /status it is self-defeating, since that page exists to report how fresh
+    // each source is. Revalidation costs a 304 when nothing has changed.
+    fetch(CATALOGUE_URL, { cache: "no-cache" })
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .catch(() => fetch("/catalogue.json").then((r) => r.json()))
       .then(setCatalogue)

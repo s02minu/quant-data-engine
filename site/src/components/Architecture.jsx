@@ -25,8 +25,8 @@ const PRINCIPLES = [
     d: "The economic calendar stores what was known and when. GDP for a 2020 quarter was revised 13× over five years — backtesting on today's number is silent lookahead.",
   },
   {
-    t: "~$0 to run",
-    d: "R2 has zero egress fees, so serving files pushes compute to the client. Marginal cost per user approaches zero — the whole thing runs on free tiers.",
+    t: "Flat cost, any audience",
+    d: "R2 charges no egress, so serving files pushes compute to the visitor's machine: the thousandth user costs the same as the first. What does cost money is storage — the tick archive is ~16 GB and grows around 0.7 GB a day — so the bill tracks how much history is kept, not how many people read it.",
   },
 ];
 

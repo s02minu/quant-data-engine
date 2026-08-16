@@ -22,13 +22,29 @@ The platform is split cleanly, and the split is enforced in code, not by convent
 Every `SourceSpec` in the registry carries `redistributable: bool` and a
 `license_note`. That single flag drives the public-publish job (`qde.publish_public`):
 
-- **Bronze** files under a non-redistributable `source=` partition are **skipped**.
-- **Gold** marts blend sources (e.g. `fct_bars_daily` includes yfinance ETFs), so their
-  rows are **filtered** `WHERE source NOT IN (excluded)` before the public copy is
-  written — the private gold stays whole; only the public copy is trimmed.
+The gate is an **allowlist**, not a list of exclusions, and the direction is the whole
+point: a source is published only if the registry names it *and* marks it
+redistributable.
 
-So a source marked `redistributable=False` **cannot** reach the public bucket, by
-construction. The `catalogue.json` records the exclusion and the reason.
+- **Bronze** files are uploaded only when their `source=` partition is on the allowlist.
+- **Gold** marts blend sources (e.g. `fct_bars_daily` includes yfinance ETFs), so their
+  rows are **filtered** `WHERE source IN (allowed)` before the public copy is written —
+  the private gold stays whole; only the public copy is trimmed.
+
+Filtering by "everything except the sources known to be forbidden" would publish anything
+the registry has not heard of: a spec retired while its files remained, a directory
+dropped in by hand, a source seeded before it was declared. Each is an ordinary mistake,
+and each would have been served publicly with no error raised. The asymmetry decides it —
+withholding something that should have been public is fixed by the next nightly;
+publishing something licensed cannot be fixed at all.
+
+Identity is `(group, source)` rather than the name alone, because a venue can appear in
+more than one group: Binance is both a `bars` source and a `microstructure` one. A
+permission granted in one group must not authorise publication in another.
+
+So a source marked `redistributable=False`, or absent from the registry entirely,
+**cannot** reach the public bucket, by construction. The `catalogue.json` records the
+exclusion and the reason.
 
 ## Per-source classification
 
@@ -49,6 +65,31 @@ before relying on it for public publishing.
 | cftc | series | **Yes** | CFTC Commitments of Traders (TFF, futures-only) — U.S.-government public-domain. |
 | binancefut | series | **Yes** | Binance USD-M perpetual funding + settlement mark price (public fapi REST); exchange-native. |
 | fredcal | events | **Yes** | U.S. macro release calendar from FRED releases + ALFRED vintages — public domain. The consensus **forecast** column is proprietary and is *not* included (a code-only enrichment). |
+| binance | microstructure | **Yes** | Binance public websocket feed (trades, diff-depth, book ticker) — exchange-native, same terms as the REST klines above. |
+| coinbase | microstructure | **Yes** | Coinbase Exchange public websocket feed (matches, level2_batch, ticker, heartbeat) — public and no-auth. Canonical `BTCUSDT` maps to Coinbase's **USD** pair; the USD/USDT difference against Binance is the signal, not an error. |
+
+### A note on microstructure
+
+The streamed archive was withheld from the public lake until **2026-08-16**, and it is
+worth being precise about why, because the reason was never legal. Both venues are
+`redistributable=True` — it was excluded by a hardcoded group list in the publisher,
+entirely independent of the flag above. It was a *choice*: the tick and order-book
+capture is the owner's own order-flow research (ROADMAP §3.3), and the relationship
+between venues — rather than either venue alone — is the platform's wedge.
+
+That choice was reversed on the reasoning that the platform serves data while the
+strategy consuming it lives outside this repo. The archive is now published **in full**.
+
+Two consequences worth recording:
+
+- It reaches the public bucket by a **different route** from everything else. The nightly
+  sync prunes microstructure from local disk after uploading it, so at publish time the
+  only copy on the machine is a half-written current day. It is mirrored bucket-to-bucket
+  instead (`publish_public.mirror_private_prefix`), server-side.
+- The derived `fct_cross_venue_basis` mart stays **private**. Not for secrecy — it is a
+  rolling window rebuilt nightly from whatever bronze is still on local disk, so
+  publishing it would serve a dataset that silently shrinks. If it is ever made public it
+  should first be rebuilt from R2 as a genuinely accumulating mart.
 
 ## The general rule of thumb
 

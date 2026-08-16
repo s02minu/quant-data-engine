@@ -138,8 +138,12 @@ export default function Status({ catalogue }) {
           </p>
 
           <div className="freshness">
+            {/* group+name, not name alone: a venue can appear in two groups
+                (Binance is bars *and* microstructure) and a colliding key lets
+                React drop or duplicate a row — on the page whose whole job is
+                reporting whether every source is alive. */}
             {rows.map((r) => (
-              <div className={`fresh-row fresh-${r.state}`} key={r.name}>
+              <div className={`fresh-row fresh-${r.state}`} key={`${r.group}/${r.name}`}>
                 <span className="fresh-dot" aria-hidden="true" />
                 <span className="fresh-name">{r.name}</span>
                 <span className="fresh-group">{r.group}</span>

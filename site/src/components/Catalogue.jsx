@@ -145,8 +145,12 @@ export default function Catalogue({ catalogue }) {
             </tr>
           </thead>
           <tbody>
+            {/* Keyed by group AND name: a venue can appear in more than one group
+                — Binance is both a bars source and a microstructure one — and a
+                name-only key makes those rows collide, which React resolves by
+                dropping or duplicating one of them. */}
             {sources.map((s) => (
-              <tr key={s.name}>
+              <tr key={`${s.group}/${s.name}`}>
                 <td className="mono">{s.name}</td>
                 <td>{s.group}</td>
                 <td>{compact(s.rows)}</td>

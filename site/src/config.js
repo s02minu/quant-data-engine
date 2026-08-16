@@ -24,9 +24,19 @@ export const CATALOGUE_URL = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/catalogue.jso
 // the date partitions: plain HTTP has no directory listing, so a `**/*.parquet` glob
 // cannot be expanded from a browser — DuckDB fails with "Globs for generic HTTP file
 // are not supported". One file at a stable path is the only thing a client can read.
-export const DQ_RUNS_URL = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/quality/dq_runs.parquet` : null;
+// The bucket serves these with an ETag but no Cache-Control, so a browser is free to
+// keep serving yesterday's copy — and a stale dq_runs on the status page recreates
+// precisely the confusion that table exists to prevent: "the night was clean" and "the
+// job never ran" become indistinguishable again. The token changes once a day, matching
+// how often the nightly rewrites these, so caching still works within a day but can
+// never span one.
+const DAY_TOKEN = new Date().toISOString().slice(0, 10);
+
+export const DQ_RUNS_URL = PUBLIC_BASE_URL
+  ? `${PUBLIC_BASE_URL}/quality/dq_runs.parquet?d=${DAY_TOKEN}`
+  : null;
 export const DQ_VIOLATIONS_URL = PUBLIC_BASE_URL
-  ? `${PUBLIC_BASE_URL}/quality/dq_violations.parquet`
+  ? `${PUBLIC_BASE_URL}/quality/dq_violations.parquet?d=${DAY_TOKEN}`
   : null;
 
 export const GITHUB_URL = "https://github.com/s02minu/quant-data-engine";

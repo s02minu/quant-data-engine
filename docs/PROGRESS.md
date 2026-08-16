@@ -1046,6 +1046,92 @@ static `catalogue.json`. The catalogue-as-live-service [open] question resolved 
 
 ---
 
+## Correctness audit — 2026-08-16
+
+A deliberate sweep for **silent failures**: not crashes, but things that fail while
+looking fine. Prompted by the small-files check firing falsely on its first live night,
+which raised the obvious question of what else was wrong in the other direction. Run in
+severity order — publishing first, because it is the only irreversible thing the platform
+does. Ten defects found; every one of them had been running in production.
+
+The recurring lesson: **reading the code found some, running it found the ones that
+mattered.** The zero-loss handover passed its unit tests at three successive wrong
+implementations, and the mirror's wiring bug survived a full green test suite.
+
+### Publishing
+
+- [x] **The publication gate was a denylist.** It filtered out sources the registry marked
+      non-redistributable, which means it *published anything the registry had never heard
+      of* — a retired spec whose files remained, a hand-dropped directory, a source seeded
+      before it was declared. Now an allowlist keyed on `(group, source)`, since a venue
+      can be redistributable in one group and not another. Nothing had leaked; all 12 lake
+      sources were registered. Details in [licensing.md](licensing.md).
+- [x] **The consolidated `all.parquet` was written inside the recursive glob it was built
+      from.** One crash between writing and deleting it and the next merge reads it back
+      into itself — every row duplicated, permanently, with nothing raised. Merges now
+      stage outside the lake under `try/finally`.
+
+### Registry
+
+- [x] **`SOURCES` had no duplicate-name guard**, despite a comment asserting uniqueness. A
+      duplicate would have silently replaced one spec with another and every backfill for
+      that source would have resolved to the wrong definition. Now raises.
+- [x] **Streamed venues declared** (`_STREAM_SPECS`) — the platform's most valuable data
+      had no registry entry at all: no licence note, no catalogue row, nothing to enforce
+      against. Held apart from `SOURCES`, which maps a name to an *ingestor* that a
+      streaming venue does not have. This is what made the capture check below possible.
+
+### Ingest
+
+- [x] **No HTTP request had a timeout.** The single worst defect found: a connection that
+      opens and then goes silent blocks forever, so the nightly never finishes — no
+      exception, no alert, and a process that looks healthy throughout. Now `(10, 60)`.
+- [x] **Transport errors were not retried** (only 429/5xx were), so a DNS blip failed an
+      entire source and reported a data gap that never existed.
+- [x] **Pagination was unbounded** — no progress check, no ceiling. A source returning a
+      cursor it had already issued would be walked forever against a remote API with an
+      ever-growing list in memory. Now detects a repeated cursor and caps at `MAX_PAGES`.
+      All 12 ingestors audited individually; their cursors advance strictly.
+
+### Storage, compaction, sync
+
+- [x] **`_write_frame_atomic` never fsynced**, so its "crash-safe" claim was half true: the
+      rename is atomic, but a power loss could publish a complete-*looking* file whose
+      bytes were still in the page cache.
+- [x] **Schema drift was silent.** `concat` fills missing columns with NaN and
+      last-write-wins keeps the incoming row, so a source dropping a field hollows out
+      every re-fetched date while the file keeps its full column list. Now warns.
+- [x] **The compaction temp file matched `*.parquet` globs.** The basis mart reads
+      `date=*/*.parquet` off local bronze, so between an interrupted compaction and the
+      next recovery pass it would read the partial merge *alongside* the originals being
+      merged. Renamed; recovery still sweeps the old name.
+
+### Data quality
+
+- [x] **A total capture outage reported a clean night.** Every microstructure check
+      reasoned about partitions that *exist*, so the one thing none of them could see was
+      a partition never created: both collectors dying produced zero violations. Now
+      compared against the registry's declared streams. A lake that has never captured
+      microstructure stays exempt — that is a laptop, not an outage.
+- [x] **Venue-pair coverage** — the basis is a *relationship*, the one product where a
+      healthy venue is not evidence of a healthy dataset.
+- [x] `_crossed_book_counts` swallowed read errors, so an unreadable partition read as
+      clean.
+- [x] **`backfill` never surfaced failures.** A failing series was logged and skipped but
+      never counted or returned, and the CLI always exited 0 — a run where every series
+      failed looked identical to a clean one.
+
+### Verified, not assumed
+
+- [x] Site console: all three preset queries run live against the public mart.
+- [x] A `*.parquet` glob **cannot** be expanded over plain HTTP (no directory listing), so
+      the microstructure catalogue entry advertises a prefix and access notes rather than a
+      query that would fail on first use.
+- [x] Transform: no defects. Window partitioning is correct, and the bars mart filters
+      `interval = '1d'` *before* windowing, so intervals cannot silently mix.
+
+---
+
 ## Deliberately not doing
 
 Spark, Kafka, Kubernetes, Snowflake/BigQuery, and serving query compute to users.
