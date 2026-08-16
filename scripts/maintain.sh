@@ -15,6 +15,23 @@ set -a
 . ./secrets/r2.env
 set +a
 
+# Compaction runs FIRST, before the checks in daily_update look at the lake.
+#
+# It only ever touches partitions dated before today, so the newest thing it can
+# settle is yesterday -- which is also the only settled day still on local disk,
+# since the sync below prunes each partition after uploading it. Run in the other
+# order, daily_update's small-files check inspects yesterday while it is still
+# thousands of uncompacted part files and reports a failure that this very script
+# fixes ninety seconds later. It fired 10 times on 2026-08-16 for that reason alone.
+#
+# The ordering also earns something: because compaction has already run, a
+# small-files violation now means compaction genuinely did not do its job.
+echo "[$(date -u +%FT%TZ)] compaction start"
+# Non-fatal: a compaction problem (e.g. one oversized partition) must not abort
+# the run before sync, or settled data and bars would never reach R2.
+docker compose run --rm collector python -m qde.compact \
+  || echo "[$(date -u +%FT%TZ)] compaction failed; continuing to sync"
+
 echo "[$(date -u +%FT%TZ)] bars update start"
 docker compose run --rm collector python -m qde.daily_update
 
@@ -33,12 +50,6 @@ docker compose run --rm collector sh -c '
            /data/gold/dim_sources
   cd transform && DBT_PROFILES_DIR=. dbt build --vars "lake_root: /data"
 ' || echo "[$(date -u +%FT%TZ)] dbt build failed; continuing to sync"
-
-echo "[$(date -u +%FT%TZ)] compaction start"
-# Non-fatal: a compaction problem (e.g. one oversized partition) must not abort
-# the run before sync, or settled data and bars would never reach R2.
-docker compose run --rm collector python -m qde.compact \
-  || echo "[$(date -u +%FT%TZ)] compaction failed; continuing to sync"
 
 echo "[$(date -u +%FT%TZ)] sync start"
 docker compose run --rm \

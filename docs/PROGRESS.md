@@ -809,6 +809,16 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
       and flagging it would cry wolf nightly), and the report is capped at the 10 worst
       so a systemic compaction failure shows its scale without emitting hundreds of
       alerts. Rows-per-partition baselining is still open.
+      **Ordering fix (2026-08-16), found by its first live run:** the check fired 10
+      times on its first night, all false. `maintain.sh` ran `daily_update` (which runs
+      the checks) *before* `qde.compact`, so the check inspected yesterday's partition
+      while it was still ~2,875 uncompacted part files and reported a failure the same
+      script repaired ninety seconds later — a check structurally guaranteed to fail
+      every night, which is worse than no check, because it teaches you to ignore the
+      alert. Compaction now runs first. That ordering is also what gives the check
+      meaning: with compaction already done, a small-files violation is real. Second
+      fix in the same pass: the violation dropped the `kind` key, so one symbol's three
+      partitions reported as three identical-looking rows.
 - [x] **Surface gap records from `kind=gaps`** — per (source, symbol): a
       `sequence_jump` is missed data (error, with an estimated missed-message
       count), a `reconnect` is a known outage window (warn).

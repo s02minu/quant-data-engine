@@ -60,10 +60,10 @@ def test_zero_total_does_not_divide_by_zero():
 # --- small-files watch ---------------------------------------------------------
 
 
-def _part(tmp, group, source, symbol, day, n):
+def _part(tmp, group, source, symbol, day, n, kind="book_ticker"):
     d = (
         tmp / "bronze" / f"group={group}" / f"source={source}"
-        / "kind=book_ticker" / f"symbol={symbol}" / f"date={day}"
+        / f"kind={kind}" / f"symbol={symbol}" / f"date={day}"
     )
     d.mkdir(parents=True, exist_ok=True)
     for i in range(n):
@@ -102,8 +102,19 @@ def test_reports_partition_identity_not_just_a_count(tmp_path):
     _part(tmp_path, "microstructure", "coinbase", "ETHUSDT", "2026-08-09", n=90)
     v = check_small_files(str(tmp_path), today="2026-08-15")
     assert v[0].source == "coinbase"
-    assert v[0].series_id == "ETHUSDT"
-    assert v[0].metric == "2026-08-09"
+    assert v[0].series_id == "ETHUSDT/2026-08-09"
+    assert v[0].metric == "book_ticker"
+
+
+def test_kinds_of_one_symbol_are_distinguishable(tmp_path):
+    # A symbol's kinds are separate partitions, so they must not report as
+    # identical-looking rows — the reader could not tell which to go and look at.
+    for kind in ("book_ticker", "trades", "depth"):
+        _part(tmp_path, "microstructure", "binance", "BTCUSDT", "2026-08-09", n=90, kind=kind)
+    v = check_small_files(str(tmp_path), today="2026-08-15")
+    assert len(v) == 3
+    assert {x.metric for x in v} == {"book_ticker", "trades", "depth"}
+    assert len({x.label() for x in v}) == 3
 
 
 def test_many_offenders_are_capped(tmp_path):

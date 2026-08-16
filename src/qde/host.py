@@ -159,12 +159,18 @@ def check_small_files(
         keys = {
             p.split("=", 1)[0]: p.split("=", 1)[1] for p in part_dir.parts if "=" in p
         }
+        # One partition per (symbol, kind, date), so the kind has to survive into the
+        # violation or a symbol's three kinds report as three identical-looking rows
+        # and the reader cannot tell which one to go and look at. `metric` is the
+        # field the Violation schema already reserves for the microstructure kind.
+        symbol = keys.get("symbol") or keys.get("series_id") or "?"
+        date = keys.get("date", "?")
         out.append(
             Violation(
                 group=keys.get("group", "?"),
                 source=keys.get("source", "?"),
-                series_id=keys.get("symbol") or keys.get("series_id") or keys.get("date", "?"),
-                metric=keys.get("date"),
+                series_id=f"{symbol}/{date}",
+                metric=keys.get("kind"),
                 check="small_files",
                 severity="error" if n >= error else "warn",
                 detail=f"{n} part files in a settled partition; compaction should leave 1",
