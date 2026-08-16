@@ -175,6 +175,40 @@ query("SELECT symbol, count(*) AS trades FROM trades GROUP BY symbol")
 For full control over which partitions are scanned, build the glob yourself with
 `open_lake()` + `bronze_glob()` (microstructure) or `bars_glob()` (bars).
 
+#### Reading the public lake from your own code
+
+There is no API to call and no SDK to install — a dataset **is** a URL, and the file
+is read in place:
+
+```python
+import duckdb
+
+con = duckdb.connect()
+con.execute("INSTALL httpfs; LOAD httpfs;")
+con.execute("""
+    SELECT date, close, realized_vol_30d
+    FROM read_parquet('https://<public-base>/gold/group=bars/mart=fct_bars_daily/data.parquet')
+    WHERE symbol = 'BTCUSDT' AND source = 'binance'
+""").df()
+```
+
+This does not download the file. Parquet is columnar with a footer index, so DuckDB
+reads the footer, works out which column chunks and row groups the query touches, and
+asks for those byte ranges over HTTP — the server answers `206 Partial Content`. That is
+the whole reason serving files can replace a query API: the filtering still happens, it
+just happens on the client's machine and the bandwidth bill is a rounding error.
+
+Every dataset, its schema, and a copyable query are listed in
+[`catalogue.json`](https://quant-data-engine.israeladetola.workers.dev) — the machine
+-readable index that takes the place of API docs.
+
+> **Known limitation — `pandas.read_parquet(url)` returns HTTP 403.** The bucket is
+> currently served from an `r2.dev` domain, which Cloudflare intends for development:
+> it is rate-limited and it rejects Python's default `urllib` User-Agent. DuckDB,
+> curl/wget and browsers all work; pandas reading the URL directly does not. Until a
+> custom domain is in place, either read through DuckDB or download the file first
+> (`curl -O …`) and open it locally.
+
 ### The two-halves product
 
 Most data licences forbid republishing the data — which is usually where an open

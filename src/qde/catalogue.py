@@ -249,6 +249,19 @@ def build_catalogue(base_dir: str = "data", public_base_url: str | None = None) 
                 "DuckDB fetches only the columns and row-groups your query touches; "
                 "your machine does the compute, R2 serves the bytes (zero egress)."
             ),
+            # A real limitation of the current host, surfaced deliberately rather than
+            # left for a reader to hit as an unexplained 403. `pandas.read_parquet(url)`
+            # is the single most obvious way to try this lake, and it fails.
+            "client_support": (
+                "Verified working: DuckDB (httpfs), curl/wget, and browsers — including "
+                "DuckDB-WASM. NOT working: pandas.read_parquet(url) and anything else "
+                "using Python's urllib directly, which is rejected with HTTP 403. The "
+                "bucket is served from an r2.dev development domain, which Cloudflare "
+                "rate-limits and which blocks Python's default User-Agent. Workarounds: "
+                "read through DuckDB, or download the file first (curl) and open it "
+                "locally. A custom domain would remove the restriction and is the "
+                "documented production setup; it is not in place yet."
+            ),
             "excluded_sources": nonredist,
             "excluded_reason": (
                 "not redistributable (code-only); the ingestor is open, the data is not."
