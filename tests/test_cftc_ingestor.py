@@ -45,7 +45,7 @@ def test_symbol_is_translated_to_the_market_code(offline_cftc, monkeypatch):
     seen = {}
     real = _cftc()
 
-    def spy(url, params):
+    def spy(url, params, **kwargs):
         seen["where"] = params["$where"]
         from tests.conftest import FakeResponse, _cot_rows
 

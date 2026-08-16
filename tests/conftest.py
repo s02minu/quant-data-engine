@@ -72,7 +72,7 @@ def offline_binance(monkeypatch):
     """Serve canned Binance klines; an unknown symbol returns a 400, as the API
     does, so the loader's error path is exercised without internet."""
 
-    def fake_get(url, params):
+    def fake_get(url, params, **kwargs):
         if params["symbol"] == "NOTAREALTICKER":
             return FakeResponse(status_code=400, text="Invalid symbol.")
         return FakeResponse(payload=_binance_klines())
@@ -85,7 +85,7 @@ def offline_kraken(monkeypatch):
     """Serve canned Kraken OHLC; an unknown pair returns Kraken's in-body error
     list, which the loader raises on."""
 
-    def fake_get(url, params):
+    def fake_get(url, params, **kwargs):
         if params["pair"] == "NOTREAL":
             return FakeResponse(payload={"error": ["EQuery:Unknown asset pair"], "result": {}})
         return FakeResponse(payload=_kraken_result(params["since"]))
@@ -126,7 +126,7 @@ def offline_fred(monkeypatch):
     400 as the API does. Sets a dummy FRED_API_KEY so the key guard passes."""
     monkeypatch.setenv("FRED_API_KEY", "test-key")
 
-    def fake_get(url, params):
+    def fake_get(url, params, **kwargs):
         if params["series_id"] == "NOTREAL":
             return FakeResponse(status_code=400, text="Bad Request")
         return FakeResponse(payload=_fred_observations())
@@ -170,7 +170,7 @@ def offline_fred_releases(monkeypatch):
     returns nothing so the pagination loop terminates. Sets a dummy FRED_API_KEY."""
     monkeypatch.setenv("FRED_API_KEY", "test-key")
 
-    def fake_get(url, params):
+    def fake_get(url, params, **kwargs):
         if params["series_id"] == "NOTREAL":
             return FakeResponse(status_code=400, text="Bad Request")
         if params.get("offset", 0):
@@ -212,7 +212,7 @@ def offline_cboe(monkeypatch):
     public. The symbol is parsed from the filename so ``VIX`` is not mistaken for
     the ``VVIX`` file (``VIX_History.csv`` is a substring of ``VVIX_History.csv``)."""
 
-    def fake_get(url, params):
+    def fake_get(url, params, **kwargs):
         symbol = url.rsplit("/", 1)[-1].split("_")[0]
         if symbol not in _CBOE_CSVS:
             return FakeResponse(status_code=404, text="Not Found")
@@ -253,7 +253,7 @@ def offline_cftc(monkeypatch):
     the Socrata endpoint is public."""
     import re
 
-    def fake_get(url, params):
+    def fake_get(url, params, **kwargs):
         rows = _cot_rows()
         match = re.search(r">= '([0-9-]+)T", params["$where"])
         if match:
@@ -319,7 +319,7 @@ def offline_binance_futures(monkeypatch):
     the caught-up (-> NoNewData) and the multi-page pagination paths are exercised
     against the same fake. No API key — the fapi endpoint is public."""
 
-    def fake_get(url, params):
+    def fake_get(url, params, **kwargs):
         rows = [
             r
             for r in _funding_rows()

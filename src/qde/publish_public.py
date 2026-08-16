@@ -84,6 +84,17 @@ _PUBLIC_MARTS = {
 _STAGING = ".publish-staging"
 
 
+def _publishable_pairs() -> frozenset[tuple[str, str]]:
+    """``(group, source)`` pairs the registry permits republishing.
+
+    Keyed by the pair, not the name, because a venue can appear in more than one
+    group with different terms — Binance is both a ``bars`` source and a
+    ``microstructure`` one. A name-keyed allowlist would let a permission granted
+    in one group silently authorise publication in another.
+    """
+    return frozenset((s.group, s.name) for s in all_specs() if s.redistributable)
+
+
 def _publishable_sources() -> frozenset[str]:
     """Sources the registry explicitly permits republishing.
 
@@ -206,6 +217,14 @@ def publish_public(
     """
     base = Path(base_dir)
     publishable = _publishable_sources() if allowed is None else frozenset(allowed)
+    # An explicit `allowed` names sources without saying which group, so it clears
+    # them wherever they appear; the registry default is group-aware.
+    pairs = (
+        _publishable_pairs()
+        if allowed is None
+        else frozenset((g, n) for (g, n) in _publishable_pairs() if n in publishable)
+        | frozenset((g, n) for g in _PUBLIC_GROUPS for n in publishable)
+    )
     excluded = _excluded_sources()
     bronze_ok = bronze_skipped = gold_ok = quality_ok = 0
     bronze_failed = gold_failed = quality_failed = 0
@@ -222,7 +241,7 @@ def publish_public(
             source = _source_of(rel.parts)
             # A file with no source= partition cannot be attributed, so it cannot be
             # cleared for publication either.
-            if source is None or source not in publishable:
+            if source is None or (group, source) not in pairs:
                 bronze_skipped += 1
                 log.info("public_withheld", key=rel.as_posix(), source=source)
                 continue

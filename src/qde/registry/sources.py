@@ -340,8 +340,75 @@ _SPECS: list[SourceSpec] = [
     ),
 ]
 
-# Registry indexed by source name for O(1) lookup. Names are unique by construction.
-SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in _SPECS}
+# Streamed venues (group `microstructure`). Held apart from `_SPECS` because they are
+# a different kind of thing: there is no `BaseIngestor`, no pagination, no interval and
+# no watermark — a collector process holds a socket open. What they DO share is the
+# part the rest of the platform reads: a licence decision and a catalogue identity.
+#
+# Kept out of `SOURCES` deliberately. That index maps a name to the ingestor a batch
+# job should use, and these have none; worse, both names already exist there as `bars`
+# sources, so indexing them by name would silently replace the batch specs with
+# streaming ones and every backfill would resolve to the wrong definition.
+_STREAM_SPECS: list[SourceSpec] = [
+    SourceSpec(
+        group="microstructure",
+        name="binance",
+        symbols={s: s for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")},
+        intervals=["tick"],
+        # A live tick + L2 feed has no meaningful daily row count and no batch
+        # freshness SLA; continuity is judged by `run_microstructure_checks` against
+        # sequence ids and the settled-day partition, not by these fields.
+        expected_daily_rows=0,
+        freshness_sla_minutes=24 * 60,
+        redistributable=True,
+        license_note=(
+            "Binance public websocket market data (trades, diff-depth, book ticker) — "
+            "exchange-native and redistributable, same terms as the REST klines. "
+            "Published in full from 2026-08-16: the platform serves data; the strategy "
+            "that consumes it lives outside this repo. Withheld before that date by "
+            "choice, never by licence."
+        ),
+    ),
+    SourceSpec(
+        group="microstructure",
+        name="coinbase",
+        symbols={s: s for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")},
+        intervals=["tick"],
+        expected_daily_rows=0,
+        freshness_sla_minutes=24 * 60,
+        redistributable=True,
+        license_note=(
+            "Coinbase Exchange public websocket feed (matches, level2_batch, ticker, "
+            "heartbeat) — public and no-auth, redistributable. Canonical symbols map "
+            "to Coinbase's USD pairs, so BTCUSDT here is BTC-USD; the USD/USDT "
+            "difference against Binance is the point, not an error."
+        ),
+    ),
+]
+
+
+def _index_by_name(specs: list[SourceSpec]) -> dict[str, SourceSpec]:
+    """Index specs by name, refusing to let a duplicate silently win.
+
+    A dict comprehension over duplicated names keeps the last one and discards the
+    rest without a word — every lookup would then resolve to a definition the author
+    never intended, and `all_specs()` would still list both, so the registry would
+    disagree with itself. Cheap to check once at import; impossible to debug later.
+    """
+    index: dict[str, SourceSpec] = {}
+    for spec in specs:
+        if spec.name in index:
+            raise ValueError(
+                f"duplicate source name {spec.name!r} in the registry "
+                f"(groups {index[spec.name].group!r} and {spec.group!r}); "
+                "names index the ingestor lookup and must be unique"
+            )
+        index[spec.name] = spec
+    return index
+
+
+# Registry indexed by source name for O(1) lookup, batch groups only.
+SOURCES: dict[str, SourceSpec] = _index_by_name(_SPECS)
 
 
 def get_spec(name: str) -> SourceSpec:
@@ -357,8 +424,14 @@ def get_spec(name: str) -> SourceSpec:
 
 
 def all_specs() -> list[SourceSpec]:
-    """Return every registered :class:`SourceSpec`."""
-    return list(_SPECS)
+    """Return every registered :class:`SourceSpec`, streamed venues included.
+
+    Consumers that drive *batch* work must filter by group (they all do) — there is
+    no ingestor behind a streamed venue. Consumers that describe or gate the data —
+    the catalogue, the licence audit, the publisher's allowlist — want the whole
+    book, which is the point of the book.
+    """
+    return [*_SPECS, *_STREAM_SPECS]
 
 
 def declared_series(group: str | None = None) -> list[tuple[str, str, str]]:
@@ -412,6 +485,6 @@ def dim_sources() -> pd.DataFrame:
             "redistributable": spec.redistributable,
             "license_note": spec.license_note,
         }
-        for spec in _SPECS
+        for spec in all_specs()
     ]
     return pd.DataFrame(rows).sort_values(["group", "name"], ignore_index=True)

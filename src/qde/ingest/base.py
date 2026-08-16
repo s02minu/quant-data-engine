@@ -23,6 +23,7 @@ Adding a source is then those three small methods plus a registry row.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Hashable
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,13 @@ import pandas as pd
 
 from qde.loaders.exceptions import NoNewData
 from qde.registry.spec import SourceSpec
+
+# A ceiling on one series' walk. Deliberately far above any legitimate pull — a
+# full daily-bar history at the smallest page size any venue uses is a few hundred
+# pages — so reaching it means the walk is not converging, not that the range was
+# ambitious. Paired with the repeated-cursor check below: that catches a cursor
+# stuck in place, this catches one that advances but never arrives.
+MAX_PAGES = 10_000
 
 
 @dataclass
@@ -82,7 +90,32 @@ class BaseIngestor(ABC):
         """
         rows: list[Any] = []
         cursor = self.first_cursor(symbol, start, end, interval)
+        seen_cursors: set[Any] = set()
+        pages = 0
+
         while cursor is not None:
+            # A cursor that does not move means the source is handing back the same
+            # page forever. Unguarded, that is an infinite loop against a remote API
+            # with an ever-growing list in memory — and the failure mode is a nightly
+            # that never finishes rather than one that fails, so nothing alerts and
+            # the process looks alive the entire time. Better to stop and say why.
+            key = cursor if isinstance(cursor, Hashable) else repr(cursor)
+            if key in seen_cursors:
+                raise ValueError(
+                    f"{self.spec.name} pagination stalled at cursor {cursor!r} for "
+                    f"symbol={symbol!r}: the source returned a cursor it had already "
+                    "issued, so the walk would never terminate"
+                )
+            seen_cursors.add(key)
+
+            pages += 1
+            if pages > MAX_PAGES:
+                raise ValueError(
+                    f"{self.spec.name} exceeded {MAX_PAGES} pages for symbol={symbol!r} "
+                    f"(start={start!r}, end={end!r}) — refusing to keep walking. Widen "
+                    "the page size or narrow the range."
+                )
+
             page = self.fetch_page(symbol, cursor, start, end, interval)
             rows.extend(page.rows)
             cursor = page.next_cursor
