@@ -1,9 +1,13 @@
+import os
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 
 from qde.loaders import NoNewData, load_ohlcv
+from qde.log import get_logger
+
+log = get_logger(__name__)
 
 
 def _bars_path(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> Path:
@@ -56,8 +60,22 @@ def _write_frame_atomic(df: pd.DataFrame, path: Path, index: bool = True) -> Non
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
-    df.to_parquet(tmp, engine="pyarrow", index=index)
-    tmp.replace(path)  # os.replace: atomic overwrite on the same filesystem
+    try:
+        df.to_parquet(tmp, engine="pyarrow", index=index)
+        # The rename is atomic, but atomicity is not durability: without this the
+        # kernel may carry out the rename while the temp file's *contents* are still
+        # in the page cache, so a power loss can leave a complete-looking file with
+        # missing bytes at the destination. Flushing before the swap is what makes
+        # the "crash-safe" claim above actually true.
+        # "rb+", not "rb": Windows refuses to flush a handle opened read-only.
+        with open(tmp, "rb+") as fh:
+            os.fsync(fh.fileno())
+        tmp.replace(path)  # os.replace: atomic overwrite on the same filesystem
+    finally:
+        # A failed write must not leave a half-file behind for the next run to trip
+        # over. Named with a leading dot and a .tmp suffix so no lake glob would
+        # match it either way, but cleaning up is cheaper than relying on that.
+        tmp.unlink(missing_ok=True)
 
 
 def _watermark(path: Path) -> pd.Timestamp | None:
@@ -75,6 +93,30 @@ def _watermark(path: Path) -> pd.Timestamp | None:
     return df.index.max()
 
 
+def _warn_on_schema_drift(existing: pd.DataFrame, incoming: pd.DataFrame, path: Path) -> None:
+    """Say something when a pull's columns stop matching what is already stored.
+
+    ``concat`` reconciles mismatched columns by filling NaN, which is exactly the
+    wrong behaviour to have happen quietly. If a source drops a field, every
+    re-fetched row overwrites a real value with NaN — last-write-wins means the
+    incoming row is the one that survives — and the file keeps its full column list,
+    so nothing downstream looks broken until someone notices a column has gone
+    hollow for recent dates. A new column is usually legitimate growth; a
+    disappearing one almost never is. Both are reported, neither is fatal: refusing
+    the write would turn a cosmetic API change into an outage.
+    """
+    lost = [c for c in existing.columns if c not in incoming.columns]
+    gained = [c for c in incoming.columns if c not in existing.columns]
+    if lost or gained:
+        log.warning(
+            "schema_drift",
+            path=str(path),
+            columns_missing_from_pull=lost,
+            new_columns=gained,
+            note="missing columns become NaN for every overwritten row",
+        )
+
+
 def _upsert_frame(df: pd.DataFrame, path: Path) -> int:
     """Merge ``df`` into the file at ``path`` idempotently; return the row count.
 
@@ -87,6 +129,7 @@ def _upsert_frame(df: pd.DataFrame, path: Path) -> int:
     """
     if path.exists():
         existing = pd.read_parquet(path, engine="pyarrow")  # type: ignore[call-overload]
+        _warn_on_schema_drift(existing, df, path)
         combined = pd.concat([existing, df])
     else:
         combined = df

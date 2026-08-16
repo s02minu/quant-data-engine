@@ -62,6 +62,32 @@ def test_compaction_is_idempotent(tmp_path):
     assert len(pd.read_parquet(part)) == 12
 
 
+def test_the_temp_file_is_invisible_to_parquet_globs(tmp_path):
+    # Readers across the platform glob `*.parquet` — the dbt basis mart reads
+    # `date=*/*.parquet` straight off local bronze. A temp ending in `.parquet` is
+    # matched by every one of them, so an interrupted compaction would be read
+    # alongside the originals it was merging and double-count until recovery ran.
+    assert not TEMP_NAME.endswith(".parquet")
+
+    partition = tmp_path / "date=2024-01-01"
+    partition.mkdir(parents=True)
+    (partition / TEMP_NAME).write_bytes(b"partial")
+    assert list(partition.glob("*.parquet")) == []
+
+
+def test_a_temp_left_by_an_older_build_is_cleaned_up(tmp_path):
+    # The previous name ended in .parquet, so a file left behind by an older build
+    # sits inside those same globs with nothing left that knows to remove it.
+    from qde.compact import _LEGACY_TEMP_NAME
+
+    partition = tmp_path / "bronze" / "group=microstructure" / "date=2024-01-01"
+    partition.mkdir(parents=True)
+    (partition / _LEGACY_TEMP_NAME).write_bytes(b"partial")
+
+    compact_bronze(base_dir=str(tmp_path), today=date(2024, 6, 1))
+    assert not (partition / _LEGACY_TEMP_NAME).exists()
+
+
 def test_recovery_discards_temp_when_originals_survived(tmp_path):
     part = _write_part(tmp_path, "trades", "SOLUSDT", "2026-07-24", "part-0.parquet", 3)
     _write_part(tmp_path, "trades", "SOLUSDT", "2026-07-24", "part-1.parquet", 3)

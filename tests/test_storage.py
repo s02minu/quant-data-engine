@@ -207,6 +207,47 @@ def test_upsert_leaves_no_temp_file(tmp_path):
     assert list(partition.glob(".*.tmp")) == []
 
 
+def test_a_failed_write_leaves_no_temp_file_behind(tmp_path, monkeypatch):
+    # A half-written temp file surviving a crash is debris the next run has to step
+    # around; cleaning up in `finally` means a failure costs nothing but the write.
+    import qde.storage as storage_mod
+
+    path = _bars_path("BTCUSDT", "binance", "1d", base_dir=str(tmp_path))
+
+    def boom(*_a, **_k):
+        raise ValueError("disk full")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+    with pytest.raises(ValueError):
+        storage_mod._write_frame_atomic(_sample_bars(["2024-01-01"]), path)
+
+    assert list(path.parent.glob(".*.tmp")) == []
+    assert not path.exists(), "a failed write must not create the destination"
+
+
+def test_a_pull_that_drops_a_column_is_reported(tmp_path, capsys):
+    # concat fills the gap with NaN and last-write-wins keeps the incoming row, so a
+    # source quietly dropping a field hollows out recent dates while the file keeps
+    # its full column list — nothing downstream looks broken.
+    upsert_bars(_sample_bars(["2024-01-01"]), "BTCUSDT", "binance", base_dir=str(tmp_path))
+    capsys.readouterr()  # discard the first write's output
+
+    thinner = _sample_bars(["2024-01-02"]).drop(columns=["volume"])
+    upsert_bars(thinner, "BTCUSDT", "binance", base_dir=str(tmp_path))
+
+    out = capsys.readouterr().out
+    assert "schema_drift" in out
+    assert "volume" in out
+
+
+def test_a_stable_schema_says_nothing(tmp_path, capsys):
+    # The warning is only useful if a normal night is silent.
+    upsert_bars(_sample_bars(["2024-01-01"]), "BTCUSDT", "binance", base_dir=str(tmp_path))
+    capsys.readouterr()
+    upsert_bars(_sample_bars(["2024-01-02"]), "BTCUSDT", "binance", base_dir=str(tmp_path))
+    assert "schema_drift" not in capsys.readouterr().out
+
+
 def test_bars_watermark_none_when_absent(tmp_path):
     assert bars_watermark("BTCUSDT", "binance", base_dir=str(tmp_path)) is None
 

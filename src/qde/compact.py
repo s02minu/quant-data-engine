@@ -24,7 +24,18 @@ import pyarrow.parquet as pq
 
 from qde.log import configure, get_logger
 
-TEMP_NAME = ".compact.tmp.parquet"
+# No `.parquet` suffix, deliberately. Readers across the platform glob `*.parquet`
+# — the dbt basis mart reads `date=*/*.parquet` straight off local bronze — and a
+# temp file ending in `.parquet` is matched by every one of them. Between an
+# interrupted compaction and the next recovery pass, those readers would pick up a
+# partially written merge *alongside* the originals it was merging, double-counting
+# silently. pyarrow does not care about the extension; the globs do.
+TEMP_NAME = ".compact.tmp"
+
+# The name used before that reasoning landed. Recovery still sweeps it so a file
+# left by an older build is cleaned up rather than orphaned forever — it would
+# otherwise sit inside those same globs with nothing left that knows to remove it.
+_LEGACY_TEMP_NAME = ".compact.tmp.parquet"
 
 log = get_logger(__name__)
 
@@ -35,6 +46,11 @@ def _stamp() -> str:
 
 def _recover_partition(partition_dir: Path) -> None:
     """Resolve a temp file left behind by an interrupted compaction."""
+    legacy = partition_dir / _LEGACY_TEMP_NAME
+    if legacy.exists():
+        log.warning("legacy_compact_temp_removed", path=str(legacy))
+        legacy.unlink()
+
     tmp = partition_dir / TEMP_NAME
     if not tmp.exists():
         return
@@ -117,6 +133,7 @@ def compact_bronze(base_dir: str = "data", today: date | None = None) -> dict:
     # Directories holding part files, plus any left mid-recovery with only a temp.
     partition_dirs = {p.parent for p in bronze.rglob("part-*.parquet")}
     partition_dirs |= {p.parent for p in bronze.rglob(TEMP_NAME)}
+    partition_dirs |= {p.parent for p in bronze.rglob(_LEGACY_TEMP_NAME)}
 
     partitions_compacted = 0
     files_merged = 0
