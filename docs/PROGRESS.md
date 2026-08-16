@@ -579,15 +579,54 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
         deliberate cycle is not a reason for the lake to claim continuity it does
         not have. Venue-neutral by construction (the recycle lives in the shared
         loop, not an adapter), so Coinbase gets it too.
-  - [x] **`close_timeout` lowered to 2s** — found by measuring the recycle against
-        the live feed instead of trusting the estimate. The first implementation
-        left a **9.05s mean** hole, not the ~2s predicted from historical reconnect
-        records. Isolating the phases showed why: connect costs ~1.2s, but
-        **Binance never replies to a close frame**, so `websockets`' 10s default
-        `close_timeout` was burned in full on every cycle. It is a cap rather than
-        a delay — a venue that does reply closes immediately — and abandoning the
-        handshake risks nothing, because buffered rows are flushed before the
-        close. Re-measured live: **9.05s → 3.28s mean**, still zero sequence jumps.
+  - [x] **Zero-loss handover (make-before-break)** — the recycle above still left a
+        measured **9.05s** hole per cycle, so it was replaced rather than tuned.
+        The successor connection is opened, subscribed and **already buffering**
+        before the predecessor is closed, so the window that was a gap is now
+        covered by both sockets; what remains is an *overlap*, and an overlap is
+        recoverable because every message in it carries an id already seen.
+        Three things this needed, each found by measuring against the live feed
+        rather than reasoning about it:
+        1. **Drain the predecessor first.** Opening the successor takes ~1.2s, and
+           the predecessor keeps receiving into a buffer nobody is reading. Closing
+           it then discards precisely the messages the successor never saw — the
+           first implementation still logged a real `sequence_jump` every cycle.
+        2. **Detect "caught up" by receive latency**, not by timestamps or idleness.
+           Rows are stamped when read, not when they arrived, so a recovered
+           backlog message looks current (that stopped the drain after one
+           message); and a busy stream never falls idle, so an idle timeout just
+           ran to the ceiling. A queued frame returns instantly while a live one
+           costs the wait — so drain until the first receive that has to wait.
+        3. **`max_queue` raised from the library default of 16.** The whole scheme
+           rests on the successor buffering through the close, and 16 frames is a
+           fraction of a second. Over-running it does not raise — the socket simply
+           stops draining, which is how a venue decides you are a slow consumer.
+        **Verified on the live feed across 17 handovers:** trades 0 breaks / 0
+        missing / 0 duplicates, the depth `first_update_id → final_update_id` chain
+        **unbroken**, no duplicate book-ticker ids, and gap records containing only
+        `handover` — zero `reconnect`, zero `sequence_jump`. Sequence tracking
+        deliberately continues across the seam, so a handover that *did* lose data
+        would still be caught; that is asserted by a test.
+  - [x] **Capability-gated, not venue-hardcoded.** Overlapping is only safe where
+        every configured stream carries a monotonic id, so the adapter declares its
+        `unsequenced_kinds` and the collector derives `supports_overlap` from the
+        kinds actually configured. Coinbase's `l2update` has no update id — a
+        replayed diff is indistinguishable from a new one, and replaying an old one
+        silently rewinds the book — so a Coinbase capture *including depth* falls
+        back to close-then-reopen and records the resulting hole honestly. The same
+        venue configured without depth qualifies automatically. Verified live on
+        both venues.
+  - [x] **`close_timeout` lowered to 2s** — connect costs ~1.2s but **Binance never
+        replies to a close frame**, so `websockets`' 10s default was burned in full
+        on every cycle. It is a cap rather than a delay (Coinbase, which does reply,
+        closes in 0.82s), and abandoning the handshake risks nothing because the
+        data is buffered locally before the close.
+  - [x] **A clean close by the peer is no longer silent** — found while restructuring
+        the loop. `async for` over a websocket raises on an *abnormal* close but
+        simply ends on a polite one, and only the `except` branch set the
+        disconnect marker. A venue closing the socket properly therefore
+        reconnected with **no gap record at all** — an outage that left no trace in
+        a lake whose entire promise is that holes are visible. Now recorded.
 - [x] **Step 5b — Snapshot anchoring**
   - [x] REST depth snapshot stored under its own `kind=snapshot` partition
   - [x] Snapshot taken on every connect, so each connection is anchored

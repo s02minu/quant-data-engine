@@ -18,6 +18,12 @@ Continuity guarantees differ by kind:
 
 SEQUENCE_JUMP = "sequence_jump"
 RECONNECT = "reconnect"
+# A planned connection change that lost nothing: the successor was already open and
+# buffering before the predecessor closed, and the overlap was de-duplicated by
+# sequence id. Recorded despite costing no data because "the connection changed
+# here" is exactly what someone auditing a suspicious hour needs to know, and
+# because its ABSENCE around a recycle would mean the handover silently failed.
+HANDOVER = "handover"
 
 SESSION_START = "start"
 SESSION_STOP = "stop"
@@ -60,11 +66,17 @@ def _gap_record(
     missing_count: int | None,
     gap_start_ms: int | None,
     gap_end_ms: int,
+    duplicates: int | None = None,
 ) -> dict:
     """Assemble one gap record.
 
     `stream_kind` names the stream the gap occurred in; the record itself is
     stored under the `gaps` partition.
+
+    `duplicates` counts overlap messages discarded during a handover and is None
+    for every other reason. It is a column of its own rather than a reused
+    sequence field because a reader should never have to know the `reason` to
+    know what a column means. Older partitions predate it and read back as null.
     """
     return {
         "stream_kind": stream_kind,
@@ -75,6 +87,7 @@ def _gap_record(
         "missing_count": missing_count,
         "gap_start_ms": gap_start_ms,
         "gap_end_ms": gap_end_ms,
+        "duplicates": duplicates,
     }
 
 
@@ -101,11 +114,47 @@ def reconnect_gap(
     )
 
 
+def handover_record(stream_kind: str, symbol: str, at_ms: int, duplicates: int) -> dict:
+    """Record a zero-loss connection handover on one stream.
+
+    Deliberately *not* a :data:`RECONNECT`: no data was missed, so the two must
+    stay distinguishable or a genuine outage and a routine maintenance event
+    become the same row. ``missing_count`` is 0 rather than None — None means
+    "unknowable" elsewhere in this module, and here it is known to be none.
+
+    Args:
+        duplicates: overlap messages discarded on this stream, carried as the
+            evidence the overlap actually happened. A handover reporting zero
+            duplicates means the successor connected but the sockets never
+            overlapped, which is worth being able to see.
+    """
+    return _gap_record(
+        stream_kind=stream_kind,
+        symbol=symbol,
+        reason=HANDOVER,
+        last_seq=None,
+        next_seq=None,
+        missing_count=0,
+        gap_start_ms=at_ms,
+        gap_end_ms=at_ms,
+        duplicates=duplicates,
+    )
+
+
 class SequenceTracker:
     """Remembers the last sequence id per stream and reports discontinuities."""
 
     def __init__(self) -> None:
         self._last: dict[tuple[str, str], int] = {}
+
+    def positions(self) -> dict[tuple[str, str], int]:
+        """A copy of the last id seen per stream.
+
+        Taken before an overlapped handover so the successor's replay of the
+        overlap can be recognised and discarded. A copy, not the live mapping,
+        because tracking continues while the copy is being used as a floor.
+        """
+        return dict(self._last)
 
     def reset(self) -> list[tuple[str, str]]:
         """Forget every tracked position.

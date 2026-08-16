@@ -75,6 +75,38 @@ class VenueAdapter(ABC):
         `rest_snapshots` is True; the base implementation is never reached."""
         raise NotImplementedError
 
+    @property
+    def unsequenced_kinds(self) -> frozenset[str]:
+        """Configurable kinds this venue sends without a monotonic id.
+
+        Such a stream cannot be de-duplicated, which is what decides whether the
+        collector may overlap two connections during a handover (see
+        ``StreamCollector.supports_overlap``). Empty for a venue whose every
+        stream is sequenced.
+        """
+        return frozenset()
+
+    def dedup_key(self, kind: str, row: dict) -> int | None:
+        """A per-stream monotonic id for ``row``, or None if it has none.
+
+        Used to discard messages already captured from the previous connection
+        during an overlapped handover. The default reads the ids the bronze
+        contract already standardises, which covers every sequenced stream both
+        current venues emit; a venue only overrides this if it names them
+        differently. Returning None means "cannot de-duplicate" — such kinds
+        must be declared in :attr:`unsequenced_kinds`.
+        """
+        if kind == "trades":
+            return row.get("trade_id")
+        if kind == "depth":
+            # The chain's upper bound: the last id this message accounts for.
+            return row.get("final_update_id")
+        if kind == "book_ticker":
+            return row.get("update_id")
+        if kind == "heartbeat":
+            return row.get("sequence")
+        return None
+
     @abstractmethod
     def route(self, message: dict, received_at: int) -> tuple[str, dict] | None:
         """Decode one raw (already JSON-parsed) message into a bronze row.

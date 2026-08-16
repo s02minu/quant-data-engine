@@ -169,6 +169,19 @@ class CoinbaseAdapter(VenueAdapter):
         # websockets default limit; 16 MiB leaves headroom for a deeper book.
         return 16 * 2**20
 
+    @property
+    def unsequenced_kinds(self) -> frozenset[str]:
+        # `l2update` carries no update id (only a wall-clock `time`), so two
+        # copies of the same diff are indistinguishable from two genuine diffs.
+        # That rules out overlapping connections for a capture including depth:
+        # duplicated absolute level-sizes are idempotent, but replaying an OLD
+        # one after a NEWER one silently rewinds the book, and arrival order
+        # across two sockets is not guaranteed. The inline snapshot rides on the
+        # same channel, so it is covered by naming depth here. Such a capture
+        # falls back to close-then-reopen, which for this venue is sub-second
+        # anyway (measured 0.82s) because Coinbase answers the close handshake.
+        return frozenset({"depth"})
+
     def subscribe_frames(self, config: StreamConfig) -> list[dict]:
         channels = [_CHANNEL_FOR_KIND[k] for k in config.kinds if k in _CHANNEL_FOR_KIND]
         channels.append("heartbeat")  # always on: the liveness/continuity beacon

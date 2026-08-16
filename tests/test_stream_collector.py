@@ -6,7 +6,13 @@ import pandas as pd
 import qde.stream.collector as collector_mod
 from qde.stream.collector import SESSION_SYMBOL, StreamCollector
 from qde.stream.config import StreamConfig
-from qde.stream.gaps import RECONNECT, SEQUENCE_JUMP, SESSION_START, SESSION_STOP
+from qde.stream.gaps import (
+    HANDOVER,
+    RECONNECT,
+    SEQUENCE_JUMP,
+    SESSION_START,
+    SESSION_STOP,
+)
 
 
 def _trade_msg(trade_id):
@@ -33,8 +39,9 @@ class _FakeConn:
     a dropped connection."""
 
     def __init__(self, messages, raise_exc=None):
-        self._messages = messages
+        self._messages = list(messages)
         self._raise_exc = raise_exc
+        self._i = 0
 
     async def __aenter__(self):
         return self
@@ -42,14 +49,21 @@ class _FakeConn:
     async def __aexit__(self, *exc):
         return False
 
-    def __aiter__(self):
-        return self._stream()
-
-    async def _stream(self):
-        for message in self._messages:
-            yield message
+    async def recv(self):
+        """The handover drains a retiring socket with recv(), not iteration."""
+        if self._i < len(self._messages):
+            message = self._messages[self._i]
+            self._i += 1
+            return message
         if self._raise_exc is not None:
             raise self._raise_exc
+        raise StopAsyncIteration
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await self.recv()
 
 
 def _fake_connect(scripts):
@@ -132,11 +146,12 @@ def test_collector_records_session_start_and_stop(tmp_path, monkeypatch):
     assert stop["message_count"] == 2
 
 
-# --- deliberate connection recycling -------------------------------------------
+# --- deliberate connection handover --------------------------------------------
 #
 # Binance drops a burst of messages on a connection open ~48h WITHOUT closing it
 # (measured: 2,931 depth messages, six streams, same millisecond, no disconnect).
-# The collector pre-empts that by cycling the connection on its own schedule.
+# The collector pre-empts that by replacing the connection on its own schedule —
+# opening the successor first, so the overlap is de-duplicated rather than a gap.
 
 
 def _fake_clock(monkeypatch, step_ms):
@@ -164,12 +179,25 @@ def test_recycle_waits_for_the_full_age():
     assert collector._should_recycle(connected_at=0, now=100_000) is True
 
 
-def test_aged_connection_is_cycled_and_the_hole_is_recorded(tmp_path, monkeypatch):
-    # Two connections' worth of script: the collector should abandon the first
-    # one itself, without the socket ever erroring.
+def _gaps_of(tmp_path, source="binance", symbol="BTCUSDT"):
+    return pd.read_parquet(
+        tmp_path / f"bronze/group=microstructure/source={source}/kind=gaps/symbol={symbol}"
+    )
+
+
+def _trades_of(tmp_path, source="binance", symbol="BTCUSDT"):
+    return pd.read_parquet(
+        tmp_path / f"bronze/group=microstructure/source={source}/kind=trades/symbol={symbol}"
+    )
+
+
+def test_handover_loses_nothing_and_drops_the_replayed_overlap(tmp_path, monkeypatch):
+    # The successor is opened while the predecessor is still live, so it replays
+    # the overlap: trades 3 and 4 arrive on BOTH connections. Every trade must be
+    # stored exactly once, with no hole and no duplicate.
     scripts = [
-        ([_trade_msg(1), _trade_msg(2), _trade_msg(3)], None),
-        ([_trade_msg(4), _trade_msg(5), _trade_msg(6)], None),
+        ([_trade_msg(i) for i in (1, 2, 3, 4)], None),
+        ([_trade_msg(i) for i in (3, 4, 5, 6)], None),
     ]
     monkeypatch.setattr(collector_mod.websockets, "connect", _fake_connect(scripts))
     _fake_clock(monkeypatch, step_ms=600)
@@ -179,40 +207,127 @@ def test_aged_connection_is_cycled_and_the_hole_is_recorded(tmp_path, monkeypatc
         kinds=["trades"],
         base_dir=str(tmp_path),
         flush_seconds=100,
-        max_connection_seconds=1,  # 1s, so the fake clock trips it after two reads
+        max_connection_seconds=2,
     )
     collector = StreamCollector(cfg)
-    asyncio.run(collector.run(max_messages=4))
+    asyncio.run(collector.run(max_messages=8))
 
-    # It moved to the second connection on its own — the first never raised.
-    assert collector.count == 4
+    # 1..6 exactly once: the seam is invisible in the data, which is the point.
+    assert list(_trades_of(tmp_path)["trade_id"]) == [1, 2, 3, 4, 5, 6]
 
-    gaps = pd.read_parquet(
-        tmp_path / "bronze/group=microstructure/source=binance/kind=gaps/symbol=BTCUSDT"
-    )
-    # The cycle is deliberate, but the ~2s hole it leaves is real and must be
-    # recorded as a reconnect — the lake should not claim continuity it lacks.
-    assert list(gaps["reason"]) == [RECONNECT]
+    gaps = _gaps_of(tmp_path)
+    assert list(gaps["reason"]) == [HANDOVER]
+    # Nothing was missed, and the two discarded replays prove the sockets really
+    # did overlap rather than the successor merely starting where the other left off.
+    assert int(gaps.iloc[0]["missing_count"]) == 0
+    assert int(gaps.iloc[0]["duplicates"]) == 2
 
 
-def test_cycling_does_not_look_like_missed_data(tmp_path, monkeypatch):
-    # The whole point is trading a silent sequence_jump for a known reconnect.
-    # If the cycle itself logged a jump it would be a worse deal, not a better one.
-    scripts = [([_trade_msg(1), _trade_msg(2)], None), ([_trade_msg(3), _trade_msg(4)], None)]
+def test_handover_is_not_recorded_as_an_outage(tmp_path, monkeypatch):
+    # A handover and a dropped connection must stay distinguishable: if a routine
+    # maintenance event logs as a reconnect, real outages lose their meaning.
+    scripts = [
+        ([_trade_msg(i) for i in (1, 2, 3, 4)], None),
+        ([_trade_msg(i) for i in (3, 4, 5, 6)], None),
+    ]
     monkeypatch.setattr(collector_mod.websockets, "connect", _fake_connect(scripts))
     _fake_clock(monkeypatch, step_ms=600)
 
     cfg = StreamConfig(
-        symbols=["BTCUSDT"],
-        kinds=["trades"],
-        base_dir=str(tmp_path),
-        flush_seconds=100,
-        max_connection_seconds=1,
+        symbols=["BTCUSDT"], kinds=["trades"], base_dir=str(tmp_path),
+        flush_seconds=100, max_connection_seconds=2,
     )
     collector = StreamCollector(cfg)
-    asyncio.run(collector.run(max_messages=3))
+    asyncio.run(collector.run(max_messages=8))
 
-    gaps = pd.read_parquet(
-        tmp_path / "bronze/group=microstructure/source=binance/kind=gaps/symbol=BTCUSDT"
+    reasons = set(_gaps_of(tmp_path)["reason"])
+    assert RECONNECT not in reasons
+    assert SEQUENCE_JUMP not in reasons
+    # Nor should it inflate the session's gap tally.
+    assert collector.gap_count == 0
+
+
+def test_a_handover_that_did_lose_data_is_still_caught(tmp_path, monkeypatch):
+    # Sequence tracking deliberately continues across an overlapped handover, so
+    # the mechanism cannot hide a real hole behind its own maintenance record.
+    scripts = [
+        ([_trade_msg(i) for i in (1, 2, 3, 4)], None),
+        ([_trade_msg(i) for i in (90, 91, 92, 93)], None),  # a genuine jump
+    ]
+    monkeypatch.setattr(collector_mod.websockets, "connect", _fake_connect(scripts))
+    _fake_clock(monkeypatch, step_ms=600)
+
+    cfg = StreamConfig(
+        symbols=["BTCUSDT"], kinds=["trades"], base_dir=str(tmp_path),
+        flush_seconds=100, max_connection_seconds=2,
     )
-    assert SEQUENCE_JUMP not in list(gaps["reason"])
+    collector = StreamCollector(cfg)
+    asyncio.run(collector.run(max_messages=8))
+
+    gaps = _gaps_of(tmp_path)
+    assert SEQUENCE_JUMP in set(gaps["reason"])
+    jump = gaps[gaps["reason"] == SEQUENCE_JUMP].iloc[0]
+    assert int(jump["missing_count"]) == 85  # 90 follows 4
+
+
+def test_a_failed_handover_keeps_the_working_connection(tmp_path, monkeypatch):
+    # Losing the feed because the *replacement* could not be opened would be a
+    # self-inflicted outage — strictly worse than the problem being pre-empted.
+    calls = {"n": 0}
+
+    def connect(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the successor
+            raise OSError("successor refused")
+        return _FakeConn([_trade_msg(i) for i in (1, 2, 3, 4, 5, 6)], None)
+
+    monkeypatch.setattr(collector_mod.websockets, "connect", connect)
+    _fake_clock(monkeypatch, step_ms=600)
+
+    cfg = StreamConfig(
+        symbols=["BTCUSDT"], kinds=["trades"], base_dir=str(tmp_path),
+        flush_seconds=100, max_connection_seconds=2,
+    )
+    collector = StreamCollector(cfg)
+    asyncio.run(collector.run(max_messages=6))
+
+    # It kept reading the original socket straight through the failed attempt.
+    assert list(_trades_of(tmp_path)["trade_id"]) == [1, 2, 3, 4, 5, 6]
+    assert collector.gap_count == 0
+
+
+def test_a_clean_close_by_the_peer_is_recorded(tmp_path, monkeypatch):
+    # A server closing the socket politely raises nothing at all, so this used to
+    # reconnect with no gap record whatsoever — an outage that left no trace.
+    scripts = [
+        ([_trade_msg(1), _trade_msg(2)], None),  # ends without raising
+        ([_trade_msg(3), _trade_msg(4)], None),
+    ]
+    monkeypatch.setattr(collector_mod.websockets, "connect", _fake_connect(scripts))
+
+    cfg = StreamConfig(
+        symbols=["BTCUSDT"], kinds=["trades"], base_dir=str(tmp_path), flush_seconds=100,
+    )
+    collector = StreamCollector(cfg)
+    asyncio.run(collector.run(max_messages=4))
+
+    assert RECONNECT in set(_gaps_of(tmp_path)["reason"])
+
+
+def test_unsequenced_capture_refuses_to_overlap():
+    # Coinbase's l2update carries no update id, so a replayed diff is
+    # indistinguishable from a new one — and replaying an old one rewinds the book.
+    with_depth = StreamCollector(
+        StreamConfig(source="coinbase", symbols=["BTCUSDT"], kinds=["trades", "depth"])
+    )
+    assert with_depth.supports_overlap is False
+
+    # The same venue without depth is entirely sequenced, so it may overlap.
+    without_depth = StreamCollector(
+        StreamConfig(source="coinbase", symbols=["BTCUSDT"], kinds=["trades", "book_ticker"])
+    )
+    assert without_depth.supports_overlap is True
+
+    assert StreamCollector(
+        StreamConfig(symbols=["BTCUSDT"], kinds=["trades", "depth", "book_ticker"])
+    ).supports_overlap is True  # binance: every stream carries an id
