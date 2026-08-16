@@ -29,6 +29,9 @@ class StreamConfig(BaseSettings):
         snapshot_seconds: Interval between REST order-book snapshots, which
             anchor the diff-depth stream.
         snapshot_depth: Price levels per snapshot.
+        max_connection_seconds: Age at which a healthy connection is deliberately
+            cycled. 0 disables. See the collector's recycle logic for why an
+            indefinitely long-lived connection is not the safe default.
         base_dir: Root of the data lake; bronze output is written under it.
         ws_base_url: Binance websocket base URL.
         rest_base_url: Binance REST API base URL, used for snapshots.
@@ -49,6 +52,10 @@ class StreamConfig(BaseSettings):
     flush_seconds: int = 30
     snapshot_seconds: int = 300
     snapshot_depth: int = 1000
+    # 23h. Binance silently drops a burst of messages on a connection that has been
+    # open ~48.2h (measured; see StreamCollector._should_recycle), and 24h is the
+    # conventional exchange connection lifetime, so cycle comfortably inside both.
+    max_connection_seconds: int = 82_800
     base_dir: str = "data"
     ws_base_url: str = "wss://stream.binance.com:9443"
     rest_base_url: str = "https://api.binance.com"

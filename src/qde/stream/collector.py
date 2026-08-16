@@ -105,6 +105,8 @@ class StreamCollector:
                         # for venues that deliver the snapshot inline.
                         await self._snapshot_all()
 
+                        connected_at = now_ms()
+
                         # Yields one message per push and pauses in between without
                         # blocking the process; runs until the socket closes.
                         async for raw in ws:
@@ -114,6 +116,9 @@ class StreamCollector:
                             self._handle(json.loads(raw), received_at)
                             if max_messages is not None and self.count >= max_messages:
                                 return
+                            if self._should_recycle(connected_at, received_at):
+                                self._begin_recycle(received_at)
+                                break  # closes the socket; the outer loop reconnects
 
                 except (WebSocketException, OSError) as exc:
                     # Buffered rows are written before waiting, so an outage never
@@ -135,6 +140,44 @@ class StreamCollector:
             snapshot_task.cancel()
             self._record_session(SESSION_STOP, now_ms(), self.count, self.gap_count)
             self.flush()
+
+    def _should_recycle(self, connected_at: int, now: int) -> bool:
+        """Has this connection been open long enough to be worth replacing?
+
+        A connection that never closes is not the safe state it looks like. Binance
+        drops a burst of messages on a long-lived one **without closing it**: measured
+        on this lake, every 48.2-48.9h of continuous connection, all six streams jumped
+        their sequence numbers within 2ms of each other and carried on — 2,931 depth
+        messages gone in the worst case, no disconnect, no error, nothing to catch. It
+        went unnoticed for weeks because frequent deploys kept restarting the collector
+        and no connection ever survived long enough to reach it.
+
+        Cycling on our own schedule turns that into a reconnect we control: the outer
+        loop's existing path flushes, records a ``reconnect`` gap (benign, ~2s wide,
+        already tolerated by the DQ checks) and re-anchors depth from a fresh snapshot.
+        A known 2-second hole beats a silent 3,000-message one.
+
+        Reuses the caller's receive timestamp rather than reading the clock again —
+        this runs once per message, and the message already carries the time.
+        """
+        limit = self.config.max_connection_seconds
+        return limit > 0 and (now - connected_at) >= limit * 1000
+
+    def _begin_recycle(self, at_ms: int) -> None:
+        """Mark a deliberate reconnect so it is recorded like any other outage.
+
+        Sets the same field an unexpected drop sets, so ``_on_connected`` writes the
+        reconnect gap records and resets sequence state through one code path. The
+        cycle is deliberate; the hole it leaves is real, and it gets recorded either
+        way — the lake should not claim continuity it does not have.
+        """
+        log.info(
+            "connection_recycle",
+            after_s=self.config.max_connection_seconds,
+            reason="pre-empt long-connection message loss",
+        )
+        self._disconnected_at = at_ms
+        self.flush()
 
     def _handle(self, message: dict, received_at: int) -> None:
         """Decode one message, buffer it, and check sequence continuity.

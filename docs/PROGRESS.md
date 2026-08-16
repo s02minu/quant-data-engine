@@ -557,6 +557,28 @@ two-model strategy, free + redistributable) is underway, starting with FRED.
   - [x] Verified: synthetic sequences detect correctly, live feed reports no
         false positives
   - [x] Reconnect path verified with the mocked socket in Step 6
+  - [x] **Deliberate connection recycling (2026-08-16)** — the collector now closes
+        and reopens a healthy connection once it reaches
+        `max_connection_seconds` (default 23h; `0` disables). Found by following
+        the nightly's own gap records: Binance drops a burst of messages on a
+        long-lived connection **without closing it**, on a clock that starts at
+        connect. Measured across seven incidents — every **48.2–48.9 hours**, all
+        six streams (3 symbols × trades/depth) jumping sequence within *2 ms* of
+        each other, worst case 2,931 depth messages gone, no disconnect and no
+        error. The simultaneity is what rules out anything local: a blocked flush
+        or slow write would hit streams unevenly and would not wait two days.
+        It hid for three weeks because frequent deploys kept restarting the
+        collector and no connection ever survived long enough to reach 48h —
+        visible in the data as a 150h hole in the incident series across the
+        08-05→08-09 deploy flurry, and as the clock re-basing to each new session
+        marker. Cycling on our own schedule routes it through the existing
+        reconnect path: flush, one `reconnect` gap record (~2s, already treated as
+        benign by the DQ checks), sequence state reset, depth re-anchored from a
+        fresh snapshot. **A known 2-second hole in place of a silent
+        3,000-message one** — and the gap is still *recorded*, because a
+        deliberate cycle is not a reason for the lake to claim continuity it does
+        not have. Venue-neutral by construction (the recycle lives in the shared
+        loop, not an adapter), so Coinbase gets it too.
 - [x] **Step 5b — Snapshot anchoring**
   - [x] REST depth snapshot stored under its own `kind=snapshot` partition
   - [x] Snapshot taken on every connect, so each connection is anchored
