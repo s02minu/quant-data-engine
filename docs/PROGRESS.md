@@ -974,7 +974,10 @@ crossed / 0 negative / 0 gaps across ~4.3M quotes.
 
 The "users can actually use it" half. Serving decision settled (§5.1): **serve files,
 not queries** — a public Parquet lake on R2 that anyone queries with their own DuckDB
-(zero egress, ~$0 to run). Front-end split (with owner): a **React showcase site** as
+(zero egress, ~$0 to run — **no longer accurate since microstructure went public on
+2026-08-16**: serving is still free, but storing ~16 GB and growing ~0.7 GB/day across
+two buckets is not. Cost now tracks how much history is kept, not how many people read
+it). Front-end split (with owner): a **React showcase site** as
 the front door + a **Streamlit dashboard** for interactive exploration, both reading a
 static `catalogue.json`. The catalogue-as-live-service [open] question resolved to a
 **static artifact** (cheaper, fits serve-files).

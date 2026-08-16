@@ -15,9 +15,19 @@ mounted from `./data` on the host (see `docker-compose.yml`).
 
 ## What `maintain.sh` does
 
-Four steps, all as one-off `docker compose run --rm collector …` containers:
+Five steps, all as one-off `docker compose run --rm collector …` containers.
 
-1. **Bars + series + events update** — `python -m qde.daily_update`: watermark-driven
+**The order matters and is not arbitrary.** Compaction runs *first*, before the
+data-quality pass inspects the lake. Run the other way round, the small-files check
+looks at yesterday's partition while it is still thousands of uncompacted part files
+and reports a failure this very script repairs ninety seconds later — it fired ten
+times on 2026-08-16 for exactly that reason. Compacting first also earns the check its
+meaning: afterwards, a small-files violation is real.
+
+1. **Compaction** — `python -m qde.compact`: merges the many small microstructure part
+   files in settled partitions into one. Non-fatal — a compaction problem must not
+   abort the run before the sync, or settled data would never reach R2.
+2. **Bars + series + events update** — `python -m qde.daily_update`: watermark-driven
    incremental pull of every stored bar *and* scalar series, a full-refresh of each
    seeded events calendar (release history, which revises), then rebuilds
    `quality_summary.csv`, then runs the **data-quality pass** (`qde.checks`:
@@ -29,19 +39,29 @@ Four steps, all as one-off `docker compose run --rm collector …` containers:
    `secrets/*.env`, which reach the container via the read-only `./secrets` mount
    (see below). The job still exits 0 even on a DQ violation, so a stale series
    never blocks the compact/sync that follow — the alert is what surfaces it.
-2. **dbt build (gold)** — rebuilds the gold marts from the freshly-updated bronze
+3. **dbt build (gold)** — rebuilds the gold marts from the freshly-updated bronze
    into the mounted `/data/gold` lake, in one container invocation: regenerate the
    `dim_sources` seed from the current registry, `mkdir -p` the gold dirs (DuckDB's
    `COPY` won't create them), then `cd transform && DBT_PROFILES_DIR=. dbt build
    --vars 'lake_root: /data'`. Non-fatal — a transform failure must not block the
    sync of bronze. Needs no secrets (reads/writes local `/data`). See `transform/`.
-3. **Compaction** — `python -m qde.compact`: merges the many small microstructure
-   part files in settled partitions.
 4. **Sync** — `python -m qde.sync`: ships settled microstructure to R2 and prunes
    it locally (`sync_bronze`), mirrors the mutable bars files to R2 with overwrite
    while keeping the local copy (`publish_bars`), does the same for the scalar
    series (`publish_series`), the events calendar (`publish_events`), and the gold
    marts (`publish_gold`), and publishes `quality_summary.csv`.
+5. **Public publish** — `python -m qde.publish_public`: mirrors the redistributable
+   slice to the PUBLIC bucket, generates `catalogue.json`, and copies the
+   microstructure archive **bucket-to-bucket**. That last part cannot read the local
+   lake, because step 4 has just pruned it — the only microstructure left on disk is
+   a half-written current day, so publishing from there would silently serve a
+   fragment. Objects already present at the same size are skipped, so only the first
+   run moves the full archive. Guarded on `QDE_R2_PUBLIC_BUCKET`; a missing
+   `QDE_R2_BUCKET` is logged loudly rather than silently skipping the mirror.
+
+   **Both bucket names must be passed into this container.** They are separate `-e`
+   flags, and omitting `QDE_R2_BUCKET` once produced a run that published no
+   microstructure at all while reporting `mirrored=0 failed=0` and exiting 0.
 
 R2 credentials are read from `secrets/r2.env` (gitignored, VPS-only) and passed
 into the sync container with `-e`. Source keys (FRED) live in `secrets/fred.env`

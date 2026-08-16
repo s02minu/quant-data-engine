@@ -58,8 +58,8 @@ public lake → in-browser query. Dashed = still planned (full plan and reasonin
 - Cleans and standardizes every DataFrame: lowercase columns, UTC-aware index, canonical OHLCV order — regardless of source.
 - Stores data locally as Parquet files with incremental updates — fetch once, refresh daily, never re-download history.
 - Queries stored data instantly via DuckDB SQL or direct DataFrame load — no API calls, no internet required.
-- Monitors data quality automatically every night — freshness graded against each source's own cadence, null tolerance, bitemporal ordering, and microstructure sanity — alerting to Discord and recording every result so violations can be tracked over time, not just noticed once.
-- Captures live Binance microstructure — trades, order-book deltas, and top-of-book quotes — over WebSockets into a hive-partitioned bronze lake, buffering and flushing micro-batches, reconnecting on drops, and recording gaps so a hole in the tape is never silent.
+- Monitors data quality automatically every night — freshness graded against each source's own cadence, null tolerance, bitemporal ordering, microstructure sanity, host disk pressure, and whether each declared stream captured **at all** — alerting to Discord and recording every result so violations can be tracked over time, not just noticed once. That last check exists because every other one reasons about data that is present, so the one thing none of them could see was a collector that stopped writing entirely.
+- Captures live microstructure from **two venues** — Binance and Coinbase, trades, order-book deltas and top-of-book quotes — over WebSockets into a hive-partitioned bronze lake, buffering and flushing micro-batches, reconnecting on drops, and recording every gap so a hole in the tape is never silent. Connections are replaced on a schedule before they can degrade, and where every stream carries a sequence id the replacement is **lossless**: the successor socket is open and buffering before the old one closes, and the overlap is de-duplicated by id.
 - Runs autonomously: the collector runs 24/7 in Docker on a VPS, and a daily cron job compacts each settled day's small files, syncs them to Cloudflare R2, and prunes local copies — so the disk stays flat and the box is disposable.
 - Serves files, not queries: query the R2 lake directly with your own DuckDB (partition pruning, column pushdown), pushing compute to the client so marginal cost per user is near zero — R2's zero egress fees make this viable.
 
@@ -109,10 +109,12 @@ python -m qde.backfill --source binance --symbol BTCUSDT --from 2015-01-01
 
 ### Streaming collector (microstructure)
 
-Captures live Binance data — trades, L2 order-book deltas, and top-of-book quotes —
-into a hive-partitioned bronze Parquet lake. It buffers in memory and flushes
-micro-batches on a fixed interval, reconnects with exponential backoff, and records
-sequence gaps and session boundaries so downtime is always visible rather than silent.
+Captures live data from Binance and Coinbase — trades, L2 order-book deltas, and
+top-of-book quotes — into a hive-partitioned bronze Parquet lake. It buffers in memory
+and flushes micro-batches on a fixed interval, reconnects with exponential backoff, and
+records sequence gaps and session boundaries so downtime is always visible rather than
+silent. `QDE_SOURCE` selects the venue; the two collectors run side by side and write to
+the same lake, with `source=` keeping them apart.
 Unlike the batch OHLCV data, streamed microstructure is un-backfillable — the design
 prioritizes never losing what can never be re-fetched.
 

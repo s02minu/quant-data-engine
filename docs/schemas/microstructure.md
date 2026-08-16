@@ -46,7 +46,7 @@ of the cross-venue analytics).
 | `depth` | `first_update_id`, `final_update_id`, `event_time`, `bids`, `asks` | update-id chain (contiguous) |
 | `book_ticker` | `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `update_id` | `update_id` (ordering only) |
 | `snapshot` | `last_update_id`, `bids`, `asks` | anchors the depth stream |
-| `gaps` | detected sequence gaps | — |
+| `gaps` | continuity records — see [The `gaps` kind](#the-gaps-kind) | — |
 | `session` | start/stop markers (`symbol=_all`) | bounds restart downtime |
 
 `bids`/`asks` are preserved as lists of `[price, quantity]` string pairs; the book
@@ -67,7 +67,7 @@ casts and reconciles per source. (See [`qde.stream.venues.coinbase`](../../src/q
 | `book_ticker` | `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `update_id`, plus last-trade `price`, `last_size`, `trade_id`, `side`, `event_time` | `update_id` (= per-product `sequence`, ordering only) |
 | `snapshot` | `bids`, `asks`, `snapshot_time` | anchors the depth stream (inline, no id) |
 | `heartbeat` | `last_trade_id`, `sequence`, `heartbeat_time` | once/sec liveness beacon |
-| `gaps` | detected gaps (reconnects; no sequence jumps for depth) | — |
+| `gaps` | continuity records (reconnects; no per-message depth jumps) | — |
 | `session` | start/stop markers (`symbol=_all`) | bounds restart downtime |
 
 Three structural differences from Binance, each a deliberate venue fidelity choice:
@@ -86,6 +86,49 @@ Because the per-venue schemas differ, a query spanning both venues reads with
 `union_by_name=true` (missing columns fill NULL) — which `qde.lake`'s microstructure
 views do, so `SELECT ... FROM book_ticker WHERE source IN ('binance','coinbase')`
 just works.
+
+## The `gaps` kind
+
+Both venues write to the same `gaps` partition, and it is the one place the lake
+admits to its own holes. A consumer that ignores it will silently treat a missing
+stretch of tape as a quiet market.
+
+| Column | Meaning |
+|---|---|
+| `stream_kind` | which stream the record concerns (`trades`, `depth`, `book_ticker`) |
+| `symbol` | canonical symbol |
+| `reason` | `sequence_jump`, `reconnect`, or `handover` — see below |
+| `last_seq` / `next_seq` | the ids either side of a `sequence_jump` |
+| `missing_count` | messages lost, where countable; `0` for a handover; null when unknowable |
+| `gap_start_ms` / `gap_end_ms` | wall-clock bounds of the window |
+| `duplicates` | overlap messages discarded during a `handover`; null otherwise |
+
+**`sequence_jump`** — real missed data. The id chain skipped, so messages the venue
+sent never arrived. Un-backfillable: this is the honest record that a hole exists.
+
+**`reconnect`** — the socket dropped and was re-established. Nothing was received in
+the window, so the loss is bounded by wall clock rather than by id.
+
+**`handover`** — a *planned* connection replacement that lost nothing, recorded
+because "the connection changed here" is what someone auditing a suspicious hour
+needs to know, and because its absence around a scheduled cycle would mean the
+handover silently failed. `missing_count` is `0` rather than null: null means
+"unknowable" elsewhere in this table, and here it is known to be none.
+
+The collector replaces a connection roughly daily, because **a connection left open
+too long degrades without closing**: measured on this lake, Binance dropped a burst
+of messages every 48.2–48.9 hours of continuous connection — all streams jumping
+within 2 ms of each other, worst case ~2,900 depth messages, with no disconnect and
+no error. The successor socket is opened and buffering *before* the predecessor is
+closed, so the window that would have been a gap is covered by both; the overlap is
+then discarded by id, and `duplicates` records how much was discarded.
+
+That is only sound where every captured stream carries a monotonic id. A Coinbase
+capture **including `depth`** cannot do it — `l2update` has no update id, so a
+replayed diff is indistinguishable from a new one, and replaying an old one silently
+rewinds the book. Those captures fall back to close-then-reopen and record an honest
+`reconnect` instead. So expect `handover` rows from Binance, and `reconnect` rows
+from Coinbase, for the same scheduled event.
 
 ## Why the shape differs
 
