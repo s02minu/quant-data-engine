@@ -116,6 +116,7 @@ def backfill_bars(
     interval: str | None = None,
     base_dir: str = "data",
     use_registry: bool = False,
+    failures: list[str] | None = None,
 ) -> dict[Series, int]:
     """Backfill every matching bar series over ``[start, end]``.
 
@@ -148,6 +149,8 @@ def backfill_bars(
                 error=type(exc).__name__,
                 detail=str(exc),
             )
+            if failures is not None:
+                failures.append(f"{s_source}/{s_symbol}/{s_interval}: {type(exc).__name__}")
             continue
 
         results[(s_symbol, s_source, s_interval)] = rows
@@ -201,6 +204,7 @@ def backfill_series_group(
     series_id: str | None = None,
     base_dir: str = "data",
     use_registry: bool = False,
+    failures: list[str] | None = None,
 ) -> dict[SeriesId, int]:
     """Backfill every matching scalar series over ``[start, end]``.
 
@@ -230,6 +234,8 @@ def backfill_series_group(
                 error=type(exc).__name__,
                 detail=str(exc),
             )
+            if failures is not None:
+                failures.append(f"{s_source}/{s_series_id}: {type(exc).__name__}")
             continue
 
         results[(s_source, s_series_id)] = rows
@@ -254,6 +260,7 @@ def backfill_events_group(
     end: str | None = None,
     source: str | None = None,
     base_dir: str = "data",
+    failures: list[str] | None = None,
 ) -> dict[EventSeries, int]:
     """Backfill every events-source's release calendar over ``[start, end]``.
 
@@ -302,6 +309,8 @@ def backfill_events_group(
                     error=type(exc).__name__,
                     detail=str(exc),
                 )
+                if failures is not None:
+                    failures.append(f"{spec.name}/{series_id}: {type(exc).__name__}")
                 continue
 
             added = total - calendar_base[key]
@@ -349,6 +358,9 @@ def main() -> None:
     args = parser.parse_args()
 
     configure()
+    # Collected across whichever group runs, so the exit code can reflect reality.
+    failures: list[str] = []
+
     if args.group == "bars":
         results: dict = backfill_bars(
             start=args.start,
@@ -358,6 +370,7 @@ def main() -> None:
             interval=args.interval,
             base_dir=args.base_dir,
             use_registry=args.use_registry,
+            failures=failures,
         )
     elif args.group == "series":
         # A series source (FRED) needs its API key; load it from the gitignored
@@ -370,6 +383,7 @@ def main() -> None:
             series_id=args.symbol,  # --symbol is the series id for the series group
             base_dir=args.base_dir,
             use_registry=args.use_registry,
+            failures=failures,
         )
     else:  # events
         # The events calendar is FRED/ALFRED-backed, so it needs the same key.
@@ -379,6 +393,7 @@ def main() -> None:
             end=args.end,
             source=args.source,
             base_dir=args.base_dir,
+            failures=failures,
         )
 
     log.info(
@@ -386,7 +401,17 @@ def main() -> None:
         group=args.group,
         series=len(results),
         total_rows=sum(results.values()),
+        failed=len(failures),
     )
+
+    # A failing series is skipped rather than raised, so that one bad symbol cannot
+    # discard a long backfill's real work. But exiting 0 regardless made a run where
+    # EVERY series failed look identical to a clean one — including to any script or
+    # operator reading the exit code. The work that succeeded is still on disk; the
+    # non-zero exit only reports that the run was incomplete.
+    if failures:
+        log.error("backfill_incomplete", failed=len(failures), series=failures[:20])
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

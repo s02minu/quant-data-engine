@@ -74,3 +74,39 @@ def test_backfill_series_from_registry_seeds_all(tmp_path, offline_fred):
     )
     assert len(results) == len(get_spec("fred").symbols)  # the full curated spine
     assert all(src == "fred" for (src, _sid) in results)
+
+
+def test_a_failing_series_is_recorded_not_just_skipped(tmp_path, monkeypatch):
+    # A failure is skipped so one bad symbol cannot discard a long backfill's real
+    # work — but skipping it *and* forgetting it made a run where every series
+    # failed look identical to a clean one, exit code included.
+    import qde.backfill as backfill_mod
+
+    def boom(*_a, **_k):
+        raise ValueError("upstream refused")
+
+    monkeypatch.setattr(backfill_mod, "backfill_series", boom)
+
+    failures: list[str] = []
+    results = backfill_bars(
+        "2024-01-01", source="binance", symbol="BTCUSDT",
+        base_dir=str(tmp_path), use_registry=True, failures=failures,
+    )
+
+    assert results == {}
+    assert len(failures) == 1
+    assert "binance/BTCUSDT" in failures[0] and "ValueError" in failures[0]
+
+
+def test_callers_that_do_not_ask_for_failures_still_work(tmp_path, monkeypatch):
+    # The parameter is optional precisely so every existing caller is untouched.
+    import qde.backfill as backfill_mod
+
+    def boom(*_a, **_k):
+        raise ValueError("upstream refused")
+
+    monkeypatch.setattr(backfill_mod, "backfill_series", boom)
+    assert backfill_bars(
+        "2024-01-01", source="binance", symbol="BTCUSDT",
+        base_dir=str(tmp_path), use_registry=True,
+    ) == {}
