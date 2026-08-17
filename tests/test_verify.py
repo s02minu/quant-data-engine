@@ -9,7 +9,7 @@ correctly typed, and plausible, and is simply not the data anyone asked for.
 import pandas as pd
 import pytest
 
-from qde.verify import verify_frame
+from qde.verify import cross_check, verify_frame
 
 
 def _bars(**overrides) -> pd.DataFrame:
@@ -300,3 +300,123 @@ def test_callers_that_do_not_ask_for_violations_are_unaffected(tmp_path, monkeyp
     monkeypatch.setattr(storage_mod, "load_ohlcv", lambda *a, **k: broken)
 
     update_ohlcv("BTCUSDT", source="binance", base_dir=str(tmp_path))  # no violations list
+
+
+# --- tier 3: the second opinion ---------------------------------------------------
+#
+# Every check above compares a frame to itself, and all of them pass for a source
+# that returns confidently wrong numbers. These are the failures only an
+# independent feed can reveal. The loader is injected throughout — the suite must
+# run offline (US CI runners are geo-blocked from Binance).
+
+
+def _series(values, start="2024-01-01") -> pd.DataFrame:
+    idx = pd.DatetimeIndex(pd.date_range(start, periods=len(values), freq="D", tz="UTC"),
+                           name="date")
+    return pd.DataFrame(
+        {"open": values, "high": [v * 1.01 for v in values],
+         "low": [v * 0.99 for v in values], "close": values,
+         "volume": [1.0] * len(values)},
+        index=idx,
+    )
+
+
+_TRUTH = [100.0, 103.0, 99.0, 105.0, 108.0, 104.0, 110.0, 107.0]
+
+
+def _peer(_symbol, start=None, end=None, interval=None, source=None):
+    return _series(_TRUTH)
+
+
+def _cross(frame, **kw):
+    return cross_check(frame, "BTCUSDT", "binance", peers=["bybit"], loader=_peer, **kw)
+
+
+def test_an_honest_frame_agrees_with_its_peer():
+    assert _cross(_series(_TRUTH)) == []
+
+
+def test_a_small_basis_between_venues_is_not_a_defect():
+    # A USDT pair against a USD one carries a real premium. Flagging it would be
+    # policing the market, not the data.
+    assert _cross(_series([v * 1.0007 for v in _TRUTH])) == []
+
+
+def test_a_units_error_is_caught():
+    # Prices in cents. Internally perfect — every ratio preserved — so nothing
+    # before this tier can see it.
+    violations = _cross(_series([v * 100 for v in _TRUTH]))
+    assert violations and violations[0].check == "cross_source"
+    assert "units" in violations[0].detail
+
+
+def test_a_stale_feed_is_caught_by_movement_not_level():
+    # The case that first slipped through: last month's prices sat inside the 5%
+    # level tolerance because the asset had not moved much. What a frozen feed
+    # cannot fake is the day-to-day movement.
+    frozen = [100.0, 100.4, 100.1, 100.6, 100.2, 100.8, 100.3, 100.9]
+    violations = _cross(_series(frozen))
+    assert violations, "a stale feed inside the level tolerance must still fail"
+    assert "correlation" in violations[0].detail
+
+
+def test_reordered_dates_break_the_correlation():
+    shuffled = [107.0, 99.0, 110.0, 100.0, 104.0, 108.0, 103.0, 105.0]
+    assert _cross(_series(shuffled))
+
+
+def test_correlation_is_skipped_when_there_is_too_little_to_correlate():
+    # A correlation over three points is noise; reporting it would be worse than
+    # reporting nothing.
+    short = _TRUTH[:3]
+
+    def peer(_s, start=None, end=None, interval=None, source=None):
+        return _series(short)
+
+    assert cross_check(_series(short), "BTCUSDT", "binance", peers=["bybit"], loader=peer) == []
+
+
+# --- unverifiable must never look like verified -----------------------------------
+
+
+def test_a_symbol_with_no_peer_is_reported_as_unverifiable():
+    # Every equity in this lake has exactly one source. "Nothing disagreed" and
+    # "nothing could disagree" are different states.
+    violations = cross_check(_series(_TRUTH), "SPY", "yfinance", peers=[], loader=_peer)
+    assert len(violations) == 1
+    assert violations[0].severity == "warn"
+    assert "unverifiable" in violations[0].detail
+
+
+def test_an_unreachable_peer_is_reported_not_treated_as_agreement():
+    def down(*_a, **_k):
+        raise ConnectionError("peer is down")
+
+    violations = cross_check(_series(_TRUTH), "BTCUSDT", "binance", peers=["bybit"], loader=down)
+    assert len(violations) == 1
+    assert violations[0].severity == "warn"
+    assert "ConnectionError" in violations[0].detail
+
+
+def test_no_overlapping_dates_is_not_silent_agreement():
+    def elsewhere(*_a, **_k):
+        return _series(_TRUTH, start="2020-01-01")
+
+    violations = cross_check(
+        _series(_TRUTH), "BTCUSDT", "binance", peers=["bybit"], loader=elsewhere
+    )
+    assert violations and "no overlapping dates" in violations[0].detail
+
+
+def test_one_agreeing_peer_ends_the_search():
+    # Polling further peers costs requests and cannot strengthen a verdict that
+    # already rests on an independent feed.
+    calls: list[str] = []
+
+    def counting(_symbol, start=None, end=None, interval=None, source=None):
+        calls.append(source)
+        return _series(_TRUTH)
+
+    cross_check(_series(_TRUTH), "BTCUSDT", "binance",
+                peers=["bybit", "okx", "kucoin"], loader=counting)
+    assert calls == ["bybit"]

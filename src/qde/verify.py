@@ -46,6 +46,23 @@ _REQUIRED_COLUMNS = {
 # so the bar is set where no legitimate daily close-to-close return reaches it.
 _IMPLAUSIBLE_DAILY_RETURN = 5.0  # +400% / -80% in one day
 
+# How far two independent sources may disagree on the same symbol before it stops
+# being market structure and starts being a defect. Deliberately loose: venues
+# genuinely differ — a USDT pair against a USD one carries a real stablecoin
+# premium (~6.5bp on this lake), closes land at different instants, and thin
+# venues print away from the consensus. This is calibrated to catch the wrong
+# ticker, the wrong units, or a stale feed — errors measured in tens of percent —
+# not to police basis. Tightening it would flag the market, not the data.
+_CROSS_SOURCE_TOLERANCE = 0.05  # 5% median relative difference
+
+# Two feeds on the same asset move together day by day, whatever basis separates
+# their levels. Set well below what real venues show (>0.95 in practice) so only a
+# genuine breakdown trips it — a frozen feed, shifted dates, a different instrument.
+_MIN_RETURN_CORRELATION = 0.5
+# Correlation over a handful of points is noise. Below this, skip it rather than
+# report a number that cannot mean anything.
+_MIN_DATES_FOR_CORRELATION = 6
+
 # Expected spacing between rows per requested interval, for the resolution check.
 _INTERVAL_SPACING = {
     "1d": pd.Timedelta(days=1),
@@ -103,6 +120,134 @@ def verify_frame(
     violations += _contract(df, group, source, series_id)
     violations += _plausibility(df, group, source, series_id)
     return violations
+
+
+def cross_check(
+    df: pd.DataFrame,
+    symbol: str,
+    source: str,
+    interval: str = "1d",
+    peers: list[str] | None = None,
+    loader=None,
+    tolerance: float = _CROSS_SOURCE_TOLERANCE,
+) -> list[Violation]:
+    """Compare a frame against the same symbol from an independent source.
+
+    Everything else in this module checks a frame against *itself* — its shape,
+    its internal coherence, its plausibility. All of it passes for a source that
+    returns confidently wrong numbers: a stale feed, a mislabelled ticker, prices
+    in pence where you expected pounds, an index where you asked for the ETF.
+    Those frames are internally perfect. The only way to catch them is a second
+    opinion from a source that would have to be wrong in exactly the same way.
+
+    That is why this is the one tier that costs a network call, and why it is not
+    part of :func:`verify_frame`: a nightly that double-fetched every series would
+    double every rate-limit budget for a check most useful at authoring time.
+
+    Peers come from the registry — the sources that declare the same symbol — so
+    a new source is compared against whatever already covers its ground, with no
+    pairing table to maintain.
+
+    Args:
+        df: the frame to check, indexed by UTC date.
+        symbol / source: what this frame claims to be.
+        interval: bar size, used for the peer fetch.
+        peers: explicit peer sources; defaults to every other registry source
+            declaring this symbol.
+        loader: injected ``load_ohlcv``-alike, so tests need no network.
+        tolerance: median relative difference above which the two disagree.
+
+    Returns:
+        Violations for genuine disagreement, and a ``warn`` when the comparison
+        could not be made at all — an unverifiable frame and a verified one must
+        never look the same.
+    """
+    from qde.registry import declared_series
+
+    if loader is None:  # imported lazily so the module stays importable offline
+        from qde.loaders import load_ohlcv as loader  # type: ignore[assignment]
+
+    if peers is None:
+        peers = sorted(
+            {
+                src
+                for src, sym, iv in declared_series(group="bars")
+                if sym == symbol and iv == interval and src != source
+            }
+        )
+
+    if not peers:
+        # Not a defect — plenty of symbols legitimately have one source. But
+        # "nothing disagreed" and "nothing could disagree" are different states,
+        # and collapsing them is how an unchecked source passes for a checked one.
+        return [_v("bars", source, symbol, "cross_source", "warn",
+                   f"no peer source declares {symbol}; this frame is unverifiable "
+                   "against anything independent")]
+
+    idx = df.index
+    start, end = str(idx.min().date()), str(idx.max().date())
+    ours = pd.to_numeric(df["close"], errors="coerce")
+
+    unreachable: list[str] = []
+    for peer in peers:
+        try:
+            other = loader(symbol, start=start, end=end, interval=interval, source=peer)
+        except Exception as exc:  # a peer being down says nothing about our frame
+            unreachable.append(f"{peer} ({type(exc).__name__})")
+            continue
+
+        theirs = pd.to_numeric(other["close"], errors="coerce")
+        # Compare only dates both sources cover: a venue that lists later, or
+        # closes on a different calendar, is not evidence of a defect.
+        shared = ours.index.intersection(theirs.index)
+        if len(shared) == 0:
+            unreachable.append(f"{peer} (no overlapping dates)")
+            continue
+
+        a, b = ours.loc[shared], theirs.loc[shared]
+        relative = ((a - b).abs() / b.abs()).dropna()
+        if relative.empty:
+            unreachable.append(f"{peer} (no comparable values)")
+            continue
+
+        median = float(relative.median())
+        if median > tolerance:
+            return [_v("bars", source, symbol, "cross_source", "error",
+                       f"disagrees with {peer} by {median:.1%} (median over "
+                       f"{len(shared)} shared date(s), worst {relative.max():.1%}) — "
+                       "check the ticker and the units")]
+
+        # Levels agreeing is not enough. A stale feed serving last month's prices
+        # sits well inside the tolerance whenever the asset has not moved much —
+        # observed: June BTC passed a 5% level check against August. What a stale
+        # feed cannot fake is *movement*: two sources tracking one asset rise and
+        # fall together day by day, so their returns correlate near 1 regardless
+        # of any basis between them. Correlation is what separates a live feed
+        # from a frozen one that happens to be in the right neighbourhood.
+        if len(shared) >= _MIN_DATES_FOR_CORRELATION:
+            ours_ret, theirs_ret = a.pct_change().dropna(), b.pct_change().dropna()
+            common = ours_ret.index.intersection(theirs_ret.index)
+            # Zero variance means a flat series, which `_plausibility` owns;
+            # correlation is undefined there rather than suspicious.
+            comparable = (
+                len(common) >= _MIN_DATES_FOR_CORRELATION - 1
+                and ours_ret.loc[common].std() > 0
+                and theirs_ret.loc[common].std() > 0
+            )
+            if comparable:
+                corr = float(ours_ret.loc[common].corr(theirs_ret.loc[common]))
+                if corr < _MIN_RETURN_CORRELATION:
+                    return [_v("bars", source, symbol, "cross_source", "error",
+                               f"levels match {peer} but daily moves do not "
+                               f"(return correlation {corr:.2f} over {len(common)} "
+                               "days) — the feed is stale, misaligned, or tracking "
+                               "a different instrument")]
+        # One source agreeing is enough. Polling the rest costs requests and
+        # cannot strengthen a verdict that already rests on an independent feed.
+        return []
+
+    return [_v("bars", source, symbol, "cross_source", "warn",
+               f"could not verify {symbol} against any peer: {', '.join(unreachable)}")]
 
 
 def _structural(df: pd.DataFrame, group: str, source: str, series_id: str) -> list[Violation]:
