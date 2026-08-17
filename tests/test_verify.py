@@ -347,7 +347,10 @@ def test_a_units_error_is_caught():
     # before this tier can see it.
     violations = _cross(_series([v * 100 for v in _TRUTH]))
     assert violations and violations[0].check == "cross_source"
-    assert "units" in violations[0].detail
+    assert violations[0].severity == "error"
+    # Only one peer was supplied, so there is nothing to adjudicate with — the
+    # verdict is still an error, but honest that it rests on a single opinion.
+    assert "no other source could adjudicate" in violations[0].detail
 
 
 def test_a_stale_feed_is_caught_by_movement_not_level():
@@ -420,3 +423,49 @@ def test_one_agreeing_peer_ends_the_search():
     cross_check(_series(_TRUTH), "BTCUSDT", "binance",
                 peers=["bybit", "okx", "kucoin"], loader=counting)
     assert calls == ["bybit"]
+
+
+# --- adjudication: disagreement names a conflict, not a culprit -------------------
+
+
+def _panel(**by_source):
+    """A loader serving a different frame per source."""
+    def loader(_symbol, start=None, end=None, interval=None, source=None):
+        return by_source[source]
+    return loader
+
+
+def test_two_peers_agreeing_against_us_convicts_our_frame():
+    ours = _series([v * 100 for v in _TRUTH])
+    loader = _panel(bybit=_series(_TRUTH), okx=_series(_TRUTH))
+    violations = cross_check(ours, "BTCUSDT", "binance", peers=["bybit", "okx"], loader=loader)
+    assert violations[0].severity == "error"
+    assert "two independent sources agree against this frame" in violations[0].detail
+
+
+def test_a_broken_peer_does_not_convict_a_good_frame():
+    # The false-accusation case: our data is fine and the peer polled first is the
+    # broken one. Reporting on one opinion would blame the wrong frame.
+    ours = _series(_TRUTH)
+    loader = _panel(bybit=_series([v * 100 for v in _TRUTH]), okx=_series(_TRUTH))
+    violations = cross_check(ours, "BTCUSDT", "binance", peers=["bybit", "okx"], loader=loader)
+    assert violations[0].severity == "warn", "our frame must not be convicted"
+    assert "bybit is the likely outlier" in violations[0].detail
+
+
+def test_a_source_dropping_days_is_caught_even_though_its_rows_are_perfect():
+    # Every row it returns is impeccable; comparing only the overlap is exactly
+    # how the missing two-thirds stays invisible.
+    thin = _series(_TRUTH).iloc[:2]
+    violations = cross_check(thin, "BTCUSDT", "binance", peers=["bybit"], loader=_peer)
+    assert violations[0].severity == "error"
+    assert "dropping data" in violations[0].detail
+
+
+def test_the_correlation_threshold_matches_measured_reality():
+    # Across every venue pair in this lake over 382 days the worst observed return
+    # correlation was 0.9983. A threshold below that is slack; far below it is
+    # decoration.
+    from qde.verify import _MIN_RETURN_CORRELATION
+
+    assert 0.8 <= _MIN_RETURN_CORRELATION < 0.9983

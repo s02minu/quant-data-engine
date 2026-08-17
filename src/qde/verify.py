@@ -47,18 +47,37 @@ _REQUIRED_COLUMNS = {
 _IMPLAUSIBLE_DAILY_RETURN = 5.0  # +400% / -80% in one day
 
 # How far two independent sources may disagree on the same symbol before it stops
-# being market structure and starts being a defect. Deliberately loose: venues
-# genuinely differ — a USDT pair against a USD one carries a real stablecoin
-# premium (~6.5bp on this lake), closes land at different instants, and thin
-# venues print away from the consensus. This is calibrated to catch the wrong
-# ticker, the wrong units, or a stale feed — errors measured in tens of percent —
-# not to police basis. Tightening it would flag the market, not the data.
+# being market structure and starts being a defect.
+#
+# Measured on this lake, crypto venue pairs agree to within 0.05% — a hundred
+# times tighter than this threshold — which is a strong argument for tightening
+# it, and a trap. The 5% is not sized for crypto: an *adjusted* equity price
+# series and a raw one are both correct and drift apart by cumulative dividends,
+# several percent over a few years. Tightening to what crypto shows would flag
+# every legitimate adjusted-vs-raw pairing as a defect.
+#
+# So this stays deliberately loose and catches only gross wrongness — the wrong
+# ticker, the wrong units, a different instrument. The precise instrument is the
+# return correlation below, which is convention-independent and can be strict.
 _CROSS_SOURCE_TOLERANCE = 0.05  # 5% median relative difference
 
 # Two feeds on the same asset move together day by day, whatever basis separates
-# their levels. Set well below what real venues show (>0.95 in practice) so only a
-# genuine breakdown trips it — a frozen feed, shifted dates, a different instrument.
-_MIN_RETURN_CORRELATION = 0.5
+# their levels. Measured across every venue pair in this lake over 382 days, the
+# WORST observed correlation was 0.9983 — so 0.9 sits an order of magnitude closer
+# to reality than the 0.5 originally guessed, while still leaving room for a
+# thinner venue or a different close convention.
+#
+# Unlike the level tolerance, this can be tightened safely across asset classes:
+# an adjusted price series and a raw one differ in *level* by cumulative dividends,
+# but their daily returns still track almost perfectly. Correlation is the one
+# comparison that does not care which convention a source uses.
+_MIN_RETURN_CORRELATION = 0.9
+
+# A source that silently returns half the days looks fine to every other check —
+# the rows it does return are impeccable. Judged against a peer's coverage of the
+# same window, generously: venues list at different times and close on different
+# calendars, so only a large shortfall means anything.
+_MIN_COVERAGE_RATIO = 0.7
 # Correlation over a handful of points is noise. Below this, skip it rather than
 # report a number that cannot mean anything.
 _MIN_DATES_FOR_CORRELATION = 6
@@ -197,6 +216,16 @@ def cross_check(
             continue
 
         theirs = pd.to_numeric(other["close"], errors="coerce")
+
+        # Coverage, before value. A source returning a third of the days is
+        # invisible to every other check — the rows it does return are impeccable,
+        # and comparing only the overlap is exactly how the gap stays hidden.
+        if len(theirs) and len(ours) / len(theirs) < _MIN_COVERAGE_RATIO:
+            return [_v("bars", source, symbol, "cross_source", "error",
+                       f"returned {len(ours)} row(s) where {peer} has {len(theirs)} "
+                       f"for the same window — the source is dropping data, not "
+                       "merely covering a different calendar")]
+
         # Compare only dates both sources cover: a venue that lists later, or
         # closes on a different calendar, is not evidence of a defect.
         shared = ours.index.intersection(theirs.index)
@@ -212,10 +241,14 @@ def cross_check(
 
         median = float(relative.median())
         if median > tolerance:
-            return [_v("bars", source, symbol, "cross_source", "error",
-                       f"disagrees with {peer} by {median:.1%} (median over "
-                       f"{len(shared)} shared date(s), worst {relative.max():.1%}) — "
-                       "check the ticker and the units")]
+            # Disagreement names two frames and does not say which is wrong. Ours
+            # may be fine and this peer broken — reporting on one opinion turns a
+            # bad peer into a false accusation against good data. A second peer
+            # breaks the tie: if the peers agree with each other, the odd one out
+            # is us; if they disagree, nothing here is conclusive.
+            return _adjudicate(
+                df, symbol, source, interval, peer, median, peers, loader, tolerance
+            )
 
         # Levels agreeing is not enough. A stale feed serving last month's prices
         # sits well inside the tolerance whenever the asset has not moved much —
@@ -248,6 +281,58 @@ def cross_check(
 
     return [_v("bars", source, symbol, "cross_source", "warn",
                f"could not verify {symbol} against any peer: {', '.join(unreachable)}")]
+
+
+def _adjudicate(
+    df: pd.DataFrame,
+    symbol: str,
+    source: str,
+    interval: str,
+    accuser: str,
+    median: float,
+    peers: list[str],
+    loader,
+    tolerance: float,
+) -> list[Violation]:
+    """Ask a third source who is wrong when our frame and a peer disagree.
+
+    Two frames disagreeing is symmetric — it identifies a conflict, not a culprit.
+    With a second peer the question becomes decidable: if the two peers agree with
+    each other, our frame is the outlier; if they do not, the sources genuinely
+    differ and nothing can be concluded from price alone.
+    """
+    ours = pd.to_numeric(df["close"], errors="coerce")
+    start, end = str(df.index.min().date()), str(df.index.max().date())
+
+    for tiebreaker in [p for p in peers if p != accuser]:
+        try:
+            third = pd.to_numeric(
+                loader(symbol, start=start, end=end, interval=interval, source=tiebreaker)[
+                    "close"
+                ],
+                errors="coerce",
+            )
+        except Exception:
+            continue
+
+        shared = ours.index.intersection(third.index)
+        if len(shared) == 0:
+            continue
+
+        against_third = ((ours.loc[shared] - third.loc[shared]).abs() / third.loc[shared].abs())
+        if float(against_third.dropna().median()) > tolerance:
+            return [_v("bars", source, symbol, "cross_source", "error",
+                       f"disagrees with {accuser} by {median:.1%} and with {tiebreaker} "
+                       f"too — two independent sources agree against this frame; "
+                       "check the ticker and the units")]
+
+        return [_v("bars", source, symbol, "cross_source", "warn",
+                   f"disagrees with {accuser} by {median:.1%} but matches {tiebreaker} — "
+                   f"{accuser} is the likely outlier, not this frame")]
+
+    return [_v("bars", source, symbol, "cross_source", "error",
+               f"disagrees with {accuser} by {median:.1%} and no other source could "
+               "adjudicate — treat as suspect until a second opinion is available")]
 
 
 def _structural(df: pd.DataFrame, group: str, source: str, series_id: str) -> list[Violation]:
