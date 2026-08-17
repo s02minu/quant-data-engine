@@ -1135,6 +1135,68 @@ implementations, and the mirror's wiring bug survived a full green test suite.
 
 ---
 
+## Verification tier — 2026-08-17 *(done)*
+
+`src/qde/verify.py`. Every check the platform had reasoned about data *already in the
+lake*, which cannot catch a frame that is internally perfect and simply not the data
+anyone asked for — a mismapped `adjClose`, an epoch-unit error, the wrong resolution,
+a mirror serving stale prices. Four tiers, ordered by what each costs:
+
+- [x] **Structural + contract + plausibility** (`verify_frame`) — free, runs at intake.
+      Wired into `update_ohlcv`, so violations are raised against the frame *as it
+      arrives*, where they are still visible; once merged into history they are not.
+- [x] **Cross-source** (`cross_check`) — costs a fetch. Peers come from the registry,
+      so a new source is compared against whatever already covers its ground with no
+      pairing table to maintain. Disagreement names a *conflict*, not a culprit.
+- [x] **Self-consistency** (`self_consistency`) — the only tier needing no second
+      source, and therefore the one that protects every future source with no peer.
+      Checks all four price columns (not just `close`), volume separately at `warn`
+      (exchanges genuinely restate it), plus vanished and back-filled rows. A uniform
+      ratio across every row is reported as a corporate action rather than corruption.
+- [x] **Proxy** (`proxy_check`) — the last witness for a peerless symbol. Detects gross
+      decoupling only; it cannot confirm a price.
+- [x] **`verification_status`** publishes the result as a *property of the data*, with
+      a plain-English `basis`, and rolls up into `catalogue.json` where the **weakest**
+      symbol sets the source's headline.
+
+**Thresholds are measured, not chosen.** All 190 pairs in the live lake, up to 3,509
+days each: same instrument on another venue 0.979–0.9999, related 0.585–0.932, loosely
+related 0.256–0.440, unrelated −0.172–0.142.
+
+Two findings that changed the design, both from measuring rather than reasoning:
+
+- [x] **A 30-day correlation window is not a check, it is a random number generator.**
+      Pairs that correlate 0.8 for a decade spend whole months near zero — the measured
+      floor on healthy pairs was **−0.268** at 30 days. Only at 180 days does a floor
+      appear (**+0.474**) that a real break could fall through. The window was the
+      problem, not the pairs.
+- [x] **The baseline must exclude the window it judges.** Measured over history that
+      contains the break, a long outage drags the baseline down with it, the pair stops
+      qualifying as related, and the series is reported as having *no proxy* rather than
+      a *broken* one — the defect erasing the evidence of itself. Caught by injecting a
+      frozen feed into the real lake and watching the check stay quiet.
+- [x] **An undefined correlation is the loudest defect arriving by the quietest path.**
+      Zero price variance makes Pearson `NaN`, and `NaN` reads as "nothing to report".
+      That is a frozen feed, so it is now an `error`, not a skip.
+- [x] `verification_status` no longer reports unrelated symbols as `proxies`. They are
+      `proxy_candidates`: whether any is actually related has to be measured, and a
+      field named `proxies` claimed evidence the function had not gathered.
+
+### Weekly cadence
+
+- [x] `qde.weekly_verify` + `scripts/weekly_verify.sh` — runs `self_consistency` and
+      `proxy_check` over every stored daily series. Weekly, not nightly, because the
+      re-fetch doubles the request budget on a platform whose rate limits bind.
+      A separate cron entry, so one rate-limited source cannot delay the compaction and
+      sync that actually keep the lake correct. Exits non-zero on error severity.
+- [x] `dq_runs` / `dq_violations` carry a `cadence` column, so the two passes are never
+      averaged together. Safe to add: the published merge already reads with
+      `union_by_name`.
+- [x] Verified end-to-end against the live lake: 20 series checked, 0 failures, 2 warns —
+      both the honest "GLD and TLT have no usable proxy here", not defects.
+
+---
+
 ## Deliberately not doing
 
 Spark, Kafka, Kubernetes, Snowflake/BigQuery, and serving query compute to users.

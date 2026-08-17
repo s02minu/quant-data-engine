@@ -134,7 +134,30 @@ def _verification_summary(source: str, symbols: str) -> dict[str, Any]:
     # flattery this field exists to prevent.
     order = ("self_only", "proxy_only", "corroborated")
     weakest = next((lvl for lvl in order if lvl in levels), "self_only")
-    return {"level": weakest, "by_level": levels}
+    # A bare level is a verdict without its reasoning — the same failure the
+    # per-symbol status exists to avoid. A stranger reading catalogue.json has no
+    # other place to learn what these words mean, so the meaning ships with them.
+    return {"level": weakest, "by_level": levels, "basis": _LEVEL_BASIS[weakest]}
+
+
+# What each headline actually claims, stated so it cannot be read as stronger than
+# it is. Keyed by level rather than composed per source: the roll-up is a summary,
+# and naming specific peers here would go stale the moment the registry changes.
+_LEVEL_BASIS = {
+    "corroborated": (
+        "every series here also exists on at least one independent source, and its "
+        "prices and daily movement were checked against it"
+    ),
+    "proxy_only": (
+        "at least one series here exists on no other source, so its prices are not "
+        "confirmed by anything external — only its internal contract and its "
+        "agreement with itself over time"
+    ),
+    "self_only": (
+        "at least one series here has nothing in this lake to compare against at "
+        "all; only its internal contract and its agreement with itself over time"
+    ),
+}
 
 
 def _bronze_dataset(group: str, base_dir: str, public_base_url: str, now: pd.Timestamp) -> dict:

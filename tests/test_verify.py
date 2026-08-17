@@ -9,7 +9,13 @@ correctly typed, and plausible, and is simply not the data anyone asked for.
 import pandas as pd
 import pytest
 
-from qde.verify import cross_check, self_consistency, verify_frame
+from qde.verify import (
+    _PROXY_RECENT_DAYS,
+    cross_check,
+    proxy_check,
+    self_consistency,
+    verify_frame,
+)
 
 
 def _bars(**overrides) -> pd.DataFrame:
@@ -563,3 +569,204 @@ def test_a_source_is_only_as_trusted_as_its_weakest_series():
     summary = _verification_summary("yfinance", "BTCUSDT, SPY, QQQ")
     assert summary["level"] == "proxy_only", "must not round up to its best symbol"
     assert summary["by_level"]["corroborated"] == 1
+
+
+# --- self-consistency covers every price column, not just close -------------------
+
+
+def test_a_revision_to_high_is_caught_even_when_close_is_untouched():
+    # Checking one column while trusting four is a spot check reporting as a
+    # guarantee — a source is equally capable of revising a high.
+    stored = _yesterdays(_TRUTH)
+    revised = stored.copy()
+    revised.iloc[1, revised.columns.get_loc("high")] *= 1.05
+    violations = self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: revised)
+    assert violations and violations[0].severity == "error"
+    assert "'high'" in violations[0].detail
+
+
+def test_a_uniform_restatement_reads_as_a_corporate_action_not_corruption():
+    # Every row moving by the same ratio is a split or dividend rewriting an
+    # adjusted series — expected bookkeeping. Reporting it at the same severity
+    # as a broken feed would train the reader to ignore both. It still warns:
+    # a legitimate restatement invalidates an old backtest just as thoroughly.
+    stored = _yesterdays(_TRUTH)
+    adjusted = stored.copy()
+    for column in ("open", "high", "low", "close"):
+        adjusted[column] = adjusted[column] / 2
+    violations = self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: adjusted)
+    assert violations and violations[0].severity == "warn"
+    assert "corporate action" in violations[0].detail
+
+
+def test_a_revision_to_open_is_caught():
+    stored = _yesterdays(_TRUTH)
+    revised = stored.copy()
+    revised.iloc[0, revised.columns.get_loc("open")] = 999.0
+    assert self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: revised)
+
+
+def test_volume_restatement_is_a_warning_not_an_error():
+    # Exchanges restate volume as late prints settle, far more readily than they
+    # restate a price. Folding it in with prices would make routine bookkeeping
+    # look like a broken feed.
+    stored = _yesterdays(_TRUTH)
+    revised = stored.copy()
+    revised["volume"] = revised["volume"] * 10
+    violations = self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: revised)
+    assert violations and all(v.severity == "warn" for v in violations)
+    assert "volume" in violations[0].detail
+
+
+def test_back_filled_history_is_surfaced():
+    # A series that grows retroactively means any backtest run before the fill saw
+    # a different history than the one now on disk.
+    full = _yesterdays(_TRUTH)
+    with_gap = full.drop(full.index[2])
+    violations = self_consistency(with_gap, "SPY", "tiingo", loader=lambda *a, **k: full)
+    assert violations and violations[0].severity == "warn"
+    assert "back-filled" in violations[0].detail
+
+
+def test_a_frame_without_a_date_index_is_skipped_not_crashed():
+    frame = _yesterdays(_TRUTH).reset_index(drop=True)
+    assert self_consistency(frame, "SPY", "tiingo", loader=lambda *a, **k: frame) == []
+
+
+# --- the status must not claim evidence it does not have --------------------------
+
+
+def test_unrelated_symbols_are_candidates_not_proxies():
+    # SPY/QQQ correlate 0.949; SPY/TLT correlate 0.12. Which candidates are
+    # actually related cannot be known from the registry — only by measuring — so
+    # the status must not count them as evidence already in hand.
+    from qde.verify import verification_status
+
+    status = verification_status("SPY", "yfinance")
+    assert "proxies" not in status, "must not imply confirmed proxies"
+    assert "BTCUSDT" in status["proxy_candidates"]
+    assert "has to be measured, not assumed" in status["basis"]
+
+
+# --- proxy: the last witness for a series with no peer ----------------------------
+#
+# Thresholds here are not chosen, they are measured: across all 190 pairs in the
+# live lake, related instruments correlate 0.585-0.932 over full history, and a
+# healthy 180-day window never fell below +0.474. Every number below sits where
+# that measurement put it, so a test passing means the check would behave the same
+# way on the real data.
+
+
+def _walk(n, seed, drift=0.0):
+    """A deterministic random-walk price series, so a 'related' pair can be built."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    return 100.0 * np.exp(np.cumsum(rng.normal(drift, 0.02, n)))
+
+
+def _lake(n=900, related=True, seed=7, rho=0.85):
+    """Two series with a *known* return correlation, as a fake local loader.
+
+    Built in return space, not price space: the check correlates day-to-day
+    movement, and blending two price paths gives no control over that at all — a
+    fixture that looked related by construction could easily correlate at 0.3.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    r1 = rng.normal(0, 0.02, n)
+    indep = rng.normal(0, 0.02, n)
+    r2 = rho * r1 + np.sqrt(1 - rho**2) * indep if related else indep
+
+    base = 100.0 * np.exp(np.cumsum(r1))
+    other = 100.0 * np.exp(np.cumsum(r2))
+    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2),
+                        periods=n, freq="D", tz="UTC")
+
+    def frame(values):
+        return pd.DataFrame({"open": values, "high": values, "low": values,
+                             "close": values, "volume": np.ones(n)}, index=idx)
+
+    store = {"MINE": frame(base), "PEER": frame(other)}
+
+    def loader(symbol, source=None, interval="1d", base_dir="data"):
+        return store[symbol]
+
+    return loader, store
+
+
+def test_a_series_with_a_healthy_proxy_relationship_passes():
+    loader, _ = _lake(related=True)
+    assert proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader) == []
+
+
+def _break_window(store, values):
+    """Replace exactly the window under test, continuing from the last good price.
+
+    Both details matter. Mutating more than the window puts the corruption into the
+    baseline as well, and splicing in a series at a different price level adds one
+    enormous return at the join — a single outlier that dominates Pearson
+    correlation and destroys the baseline on its own. Either mistake makes the
+    check report "no proxy available" instead of "this proxy broke", which is a
+    true statement about a fixture rather than a test of the code.
+    """
+    frame = store["MINE"].copy()
+    column = frame.columns.get_loc("close")
+    anchor = frame["close"].iloc[-_PROXY_RECENT_DAYS - 1]
+    frame.iloc[-_PROXY_RECENT_DAYS:, column] = values / values[0] * anchor
+    store["MINE"] = frame
+
+
+def test_a_frozen_feed_is_an_error_not_a_silent_skip():
+    # Zero variance makes the correlation undefined, and NaN is the one value that
+    # silently reads as "nothing to report". A frozen feed is the loudest defect
+    # this tier exists for and it arrives looking like a missing number.
+    import numpy as np
+
+    loader, store = _lake(related=True)
+    _break_window(store, np.ones(_PROXY_RECENT_DAYS))
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations and violations[0].severity == "error"
+    assert "frozen" in violations[0].detail
+
+
+def test_a_feed_that_stops_tracking_its_instrument_is_caught():
+    loader, store = _lake(related=True)
+    _break_window(store, _walk(_PROXY_RECENT_DAYS, seed=99))
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations and violations[0].severity == "warn"
+    assert "stopped following the market" in violations[0].detail
+
+
+def test_an_unrelated_candidate_is_never_treated_as_evidence():
+    # The whole design rests on this ordering: a check that accepted its own
+    # reference would confirm whatever it was pointed at.
+    loader, _ = _lake(related=False)
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations and "correlates with MINE above" in violations[0].detail
+
+
+def test_the_baseline_never_includes_the_window_it_judges():
+    # Measured over history containing the break, a long outage drags the baseline
+    # down with it, the pair stops qualifying, and the series is reported as having
+    # no proxy rather than a broken one — the defect erasing its own evidence.
+    loader, store = _lake(n=900, related=True)
+    _break_window(store, _walk(_PROXY_RECENT_DAYS, seed=42))
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations, "a break inside the window must still be reported as a break"
+    assert "no instrument" not in violations[0].detail
+
+
+def test_too_little_history_is_reported_rather_than_passed():
+    loader, _ = _lake(n=200, related=True)
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations and violations[0].severity == "warn"
+
+
+def test_an_unreadable_series_is_a_finding_not_a_crash():
+    def loader(symbol, source=None, interval="1d", base_dir="data"):
+        raise FileNotFoundError(symbol)
+
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations and "could not read" in violations[0].detail

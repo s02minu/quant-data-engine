@@ -78,6 +78,11 @@ _MIN_RETURN_CORRELATION = 0.9
 # it is a genuine restatement.
 _SELF_CONSISTENCY_TOLERANCE = 1e-6
 
+# Volume is restated far more readily than price — late prints settle for hours
+# after the close — so it is judged separately and loosely. A 1% shift is an
+# exchange finishing its bookkeeping; a doubling is a different number entirely.
+_VOLUME_REVISION_TOLERANCE = 0.01
+
 # A source that silently returns half the days looks fine to every other check —
 # the rows it does return are impeccable. Judged against a peer's coverage of the
 # same window, generously: venues list at different times and close on different
@@ -86,6 +91,46 @@ _MIN_COVERAGE_RATIO = 0.7
 # Correlation over a handful of points is noise. Below this, skip it rather than
 # report a number that cannot mean anything.
 _MIN_DATES_FOR_CORRELATION = 6
+
+# --- proxy bands ----------------------------------------------------------------
+# Measured across all 190 pairs in this lake (up to 3,509 days each), full-history
+# return correlation falls into four clearly separated bands:
+#
+#   same instrument, another venue   0.979 .. 0.9999   (handled by cross_check)
+#   related instrument              0.585 .. 0.932     (BTC/ETH, SPY/QQQ)
+#   loosely related                 0.256 .. 0.440     (crypto vs equity, GLD/TLT)
+#   unrelated                      -0.172 .. 0.142     (SPY/TLT, BTC/GLD)
+#
+# A proxy can only ever detect a *break*; it can never confirm a price. QQQ will
+# not tell you SPY closed at 512.40.
+#
+# 0.75 rather than the bottom of the related band, because the threshold that
+# matters is not "is this pair related" but "is this pair related *stably enough*
+# that a drop means something" — see _PROXY_BROKEN_MAX.
+_PROXY_RELATED_MIN = 0.75
+
+# Rolling-window floors, measured over every qualifying pair's full history. These
+# are windows with NO data defect in them at all — just markets:
+#
+#    30d window -> legitimate correlation reached -0.268
+#    60d window -> legitimate correlation reached -0.122
+#    90d window -> legitimate correlation reached +0.027
+#   180d window -> legitimate correlation reached +0.474
+#
+# So a 30-day break rule is not a check, it is a random number generator: pairs
+# that correlate 0.8 for a decade spend whole months near zero. Only at 180 days
+# does a floor appear that a real break could fall through.
+_PROXY_RECENT_DAYS = 180
+# Set below the measured 0.474 floor with room to spare. The cost of the margin is
+# sensitivity — a pair drifting from 0.8 to 0.5 will not fire — and that is the
+# right trade here: every fast failure mode is already covered by freshness,
+# self-consistency and cross-source. Proxy is the last resort for a series nothing
+# else can see, and in that role a slow check that is always right beats a fast one
+# that is switched off after its third false alarm.
+_PROXY_BROKEN_MAX = 0.30
+# The baseline must rest on more than one market regime, or "these two are
+# related" is really a statement about last quarter.
+_PROXY_MIN_BASELINE_DAYS = 400
 
 # Expected spacing between rows per requested interval, for the resolution check.
 _INTERVAL_SPACING = {
@@ -288,6 +333,155 @@ def cross_check(
                f"could not verify {symbol} against any peer: {', '.join(unreachable)}")]
 
 
+def proxy_check(
+    symbol: str,
+    source: str,
+    interval: str = "1d",
+    candidates: list[tuple[str, str]] | None = None,
+    base_dir: str = "data",
+    loader=None,
+) -> list[Violation]:
+    """Check a peerless series against a *related* instrument instead of the same one.
+
+    This is the tier for the case the platform will hit constantly as it grows: a
+    symbol only one source carries. :func:`cross_check` has nothing to compare it
+    to and honestly says so, :func:`self_consistency` proves only that the source
+    is stable — a feed frozen at last Tuesday's prices is perfectly self-consistent.
+    Neither notices that the series stopped tracking reality.
+
+    A related instrument does. It cannot confirm a price — QQQ will never tell you
+    what SPY closed at — but two instruments that have moved together for a year
+    do not stop unless something happened, and one of the two is usually the feed.
+
+    The relationship is **measured, never assumed**. Every candidate is scored over
+    the long baseline first; only one that clears :data:`_PROXY_RELATED_MIN` earns
+    the right to be evidence about anything. That ordering is the whole design: a
+    check that picked its own reference would confirm whatever it was pointed at.
+
+    What it catches, stated honestly: gross decoupling — a feed frozen at constant
+    prices, one serving the wrong instrument, one returning noise. It will *not*
+    catch a series drifting from 0.80 to 0.50 correlation, because real pairs do
+    that on their own (see :data:`_PROXY_BROKEN_MAX`). It is a floor under the
+    peerless case, not a precision instrument.
+
+    Reads from the lake, not the network, so it costs nothing to run nightly.
+
+    Args:
+        symbol / source: the series under check.
+        interval: bar size.
+        candidates: explicit ``(source, symbol)`` pairs; defaults to every other
+            bars series the lake holds at this interval.
+        base_dir: lake root.
+        loader: injected ``load_ohlcv_local``-alike, so tests need no lake.
+
+    Returns:
+        A ``warn`` when an established relationship has broken, and a ``warn`` when
+        no relationship could be established at all — because "nothing looked
+        wrong" and "nothing could look wrong" are the two states this module exists
+        to keep apart.
+    """
+    if loader is None:
+        from qde.storage import load_ohlcv_local as loader  # type: ignore[assignment]
+
+    if candidates is None:
+        from qde.registry import declared_series
+
+        candidates = sorted(
+            {
+                (src, sym)
+                for src, sym, iv in declared_series(group="bars")
+                if iv == interval and sym != symbol
+            }
+        )
+
+    try:
+        mine = _returns(loader(symbol, source=source, interval=interval, base_dir=base_dir))
+    except Exception as exc:
+        return [_v("bars", source, symbol, "proxy", "warn",
+                   f"could not read {symbol} from the lake to proxy-check it "
+                   f"({type(exc).__name__}) — relationship unverified")]
+
+    if len(mine) < _PROXY_MIN_BASELINE_DAYS:
+        return [_v("bars", source, symbol, "proxy", "warn",
+                   f"only {len(mine)} settled day(s) of {symbol}; too short to "
+                   "establish a proxy relationship, so nothing here is checked "
+                   "against an external reference")]
+
+    related: list[tuple[str, float, float]] = []
+    for cand_source, cand_symbol in candidates:
+        try:
+            theirs = _returns(
+                loader(cand_symbol, source=cand_source, interval=interval, base_dir=base_dir)
+            )
+        except Exception:
+            continue  # a candidate the lake lacks is not a finding about *this* series
+
+        joined = pd.concat([mine, theirs], axis=1, join="inner").dropna()
+        if len(joined) < _PROXY_MIN_BASELINE_DAYS + _PROXY_RECENT_DAYS:
+            continue
+
+        # The two periods must not overlap. Measured over history that *includes*
+        # the window under test, a long break drags the baseline down with it, the
+        # pair stops clearing the related bar, and the series is reported as having
+        # no proxy rather than a broken one — the defect erases the evidence of
+        # itself. Splitting them is what makes the comparison mean anything: given
+        # how these two behaved before, is the recent stretch anomalous?
+        past, recent = joined.iloc[:-_PROXY_RECENT_DAYS], joined.tail(_PROXY_RECENT_DAYS)
+        baseline = float(past.iloc[:, 0].corr(past.iloc[:, 1]))
+        if pd.isna(baseline) or baseline < _PROXY_RELATED_MIN:
+            continue  # not related — it can say nothing about this series
+
+        current = float(recent.iloc[:, 0].corr(recent.iloc[:, 1]))
+        related.append((f"{cand_source}/{cand_symbol}", baseline, current))
+
+    if not related:
+        # The honest majority case for an exotic symbol, and the one worth saying
+        # out loud: this series has no peer AND no usable proxy, so nothing outside
+        # itself has ever confirmed it moves like the thing it claims to be.
+        return [_v("bars", source, symbol, "proxy", "warn",
+                   f"no instrument in the lake correlates with {symbol} above "
+                   f"{_PROXY_RELATED_MIN:.2f} over {len(mine)} days; it is checkable "
+                   "only against itself, never against the market")]
+
+    # Judge on the strongest relationship available. A weaker one breaking too is
+    # the same event seen twice, and reporting it twice buries the finding.
+    name, baseline, current = max(related, key=lambda r: r[1])
+
+    # An undefined correlation means one side had no variance at all — every return
+    # identical, which for real prices means none. That is a frozen feed, the exact
+    # failure this tier exists for, and it arrives looking like a missing number
+    # rather than a wrong one. Treating NaN as "nothing to report" would let the
+    # loudest possible defect through the quietest possible path.
+    if pd.isna(current):
+        return [_v("bars", source, symbol, "proxy", "error",
+                   f"correlation with {name} is undefined over the last "
+                   f"{_PROXY_RECENT_DAYS} days — {symbol} has no price variance at "
+                   "all, which means the feed is frozen, not that the market is calm")]
+
+    if current < _PROXY_BROKEN_MAX:
+        return [_v("bars", source, symbol, "proxy", "warn",
+                   f"{symbol} has tracked {name} at {baseline:.2f} correlation over its "
+                   f"full history but only {current:.2f} across the last "
+                   f"{_PROXY_RECENT_DAYS} days — below anything observed on a healthy "
+                   "pair in this lake; the feed may have stopped following the market")]
+    return []
+
+
+def _returns(df: pd.DataFrame) -> pd.Series:
+    """Daily close-to-close returns, indexed by date, for correlation work.
+
+    Returns rather than levels because level is convention-dependent — an adjusted
+    series and a raw one differ by cumulative dividends forever — while movement is
+    not. It is the one comparison that survives two sources disagreeing about what
+    a price *means*.
+    """
+    if df.empty or "close" not in df.columns:
+        return pd.Series(dtype="float64")
+    close = pd.to_numeric(df["close"], errors="coerce")
+    close.index = pd.to_datetime(df.index, utc=True, errors="coerce").normalize()
+    return close[close.index.notna()].sort_index().pct_change().dropna()
+
+
 def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
     """How much is actually known about a series' correctness.
 
@@ -306,9 +500,13 @@ def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
     test result.
 
     Returns:
-        ``{"level", "peers", "proxies", "basis"}`` — the strongest verification
-        available for this series, who could provide it, and a sentence a human
-        can read.
+        ``{"level", "peers", "proxy_candidates", "basis"}`` — the strongest
+        verification available for this series, who could provide it, and a
+        sentence a human can read. ``peers`` are established from the registry and
+        really do carry the same symbol; ``proxy_candidates`` are only *eligible*
+        for a proxy check, since whether any of them is actually related has to be
+        measured. The distinction is the point: a field named ``proxies`` would
+        claim evidence this function has not gathered.
     """
     from qde.registry import declared_series
 
@@ -316,38 +514,42 @@ def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
     peers = sorted(
         {s for s, sym, iv in declared if sym == symbol and iv == interval and s != source}
     )
-    # Any other symbol this source's neighbours carry is a candidate proxy: a
-    # related instrument cannot confirm a price, but it can confirm the series is
-    # tracking the asset class it claims to. Measured on this lake, a related
-    # instrument correlates ~0.95 against ~0.998 for the same instrument
-    # elsewhere, and ~0.15 for an unrelated one — three separable bands.
-    proxies = sorted({sym for _s, sym, iv in declared if iv == interval and sym != symbol})
+    # Other symbols in the lake are *candidates* for a proxy check, not proxies.
+    # A related instrument can confirm a series tracks the asset class it claims —
+    # measured here, SPY/QQQ correlate 0.949 against 0.998 for the same instrument
+    # on another venue — but an unrelated one confirms nothing: SPY/TLT is 0.12.
+    # Which candidates are actually related cannot be known from the registry, only
+    # by fetching and measuring, so they are reported as candidates and never
+    # counted as evidence already in hand.
+    candidates = sorted({sym for _s, sym, iv in declared if iv == interval and sym != symbol})
 
     if peers:
         return {
             "level": "corroborated",
             "peers": peers,
-            "proxies": proxies,
+            "proxy_candidates": candidates,
             "basis": (
                 f"prices and daily movement confirmed against {len(peers)} independent "
                 f"source(s): {', '.join(peers)}"
             ),
         }
-    if proxies:
+    if candidates:
         return {
             "level": "proxy_only",
             "peers": [],
-            "proxies": proxies,
+            "proxy_candidates": candidates,
             "basis": (
-                "no source carries this symbol, so its prices are not corroborated. "
-                "It can be checked for self-consistency and for behaving like the "
-                f"asset class it claims, against {len(proxies)} related instrument(s)"
+                "no other source carries this symbol, so its prices are not "
+                "corroborated by anything. It can still be checked against itself "
+                "over time, and against a related instrument if one of the "
+                f"{len(candidates)} other symbols here proves correlated — which "
+                "has to be measured, not assumed"
             ),
         }
     return {
         "level": "self_only",
         "peers": [],
-        "proxies": [],
+        "proxy_candidates": [],
         "basis": (
             "nothing else in the lake can be compared against this series; only "
             "its internal contract and its agreement with itself over time"
@@ -395,7 +597,8 @@ def self_consistency(
     if loader is None:
         from qde.loaders import load_ohlcv as loader  # type: ignore[assignment]
 
-    if stored.empty:
+    if stored.empty or not isinstance(stored.index, pd.DatetimeIndex):
+        # Without a date index there is nothing to line the two fetches up by.
         return []
 
     # Only settled days: today's bar is still forming and *should* differ.
@@ -422,32 +625,72 @@ def self_consistency(
                       f"on re-fetch (e.g. {vanished[0].date()}) — the source is "
                       "dropping history it previously served"))
 
+    # Rows the source did not have before and does now. Not a defect — late data
+    # and gap-filling are real — but a series that grows retroactively means any
+    # backtest run before the fill saw a different history than the one on disk.
+    appeared = again.index.intersection(
+        pd.date_range(settled.index.min(), settled.index.max(), freq="D", tz="UTC")
+    ).difference(settled.index)
+    if len(appeared):
+        out.append(_v("bars", source, symbol, "self_consistency", "warn",
+                      f"{len(appeared)} date(s) inside the stored window appeared only "
+                      f"on re-fetch (e.g. {appeared[0].date()}) — the source back-filled "
+                      "history that was absent when this series was built"))
+
     shared = settled.index.intersection(again.index)
     if len(shared) == 0:
         return out
 
-    before = pd.to_numeric(settled.loc[shared, "close"], errors="coerce")
-    after = pd.to_numeric(again.loc[shared, "close"], errors="coerce")
-    drift = ((before - after).abs() / after.abs()).dropna()
-    changed = drift[drift > tolerance]
+    # Every price column, not just close. A source is equally capable of revising
+    # a high, and checking one column while trusting four is not consistency —
+    # it is a spot check that reports as a guarantee.
+    worst_column, worst_drift, worst_uniform = None, 0.0, False
+    for column in ("open", "high", "low", "close"):
+        if column not in settled.columns or column not in again.columns:
+            continue
+        before = pd.to_numeric(settled.loc[shared, column], errors="coerce")
+        after = pd.to_numeric(again.loc[shared, column], errors="coerce")
+        drift = ((before - after).abs() / after.abs()).dropna()
+        changed = drift[drift > tolerance]
+        if not len(changed):
+            continue
 
-    if len(changed):
         # A uniform ratio across every row is the signature of an adjustment
         # (a split or dividend restating the whole series), not corruption. Worth
         # separating: one is expected bookkeeping, the other is a broken feed —
-        # and both silently invalidate a backtest run against the old numbers.
+        # and both silently invalidate a backtest run against the old values.
         ratio = (before / after).dropna()
         uniform = len(ratio) > 2 and float(ratio.std()) < 1e-6
+        if float(changed.max()) > worst_drift:
+            worst_column, worst_drift, worst_uniform = column, float(changed.max()), uniform
+
+    if worst_column is not None:
         kind = (
             "a corporate action restated the series"
-            if uniform
+            if worst_uniform
             else "the source revised history"
         )
         out.append(_v("bars", source, symbol, "self_consistency",
-                      "warn" if uniform else "error",
-                      f"{len(changed)} of {len(shared)} settled row(s) changed since "
-                      f"they were stored (worst {changed.max():.2%}) — {kind}; "
+                      "warn" if worst_uniform else "error",
+                      f"settled {worst_column!r} values changed since they were stored "
+                      f"(worst {worst_drift:.2%} over {len(shared)} row(s)) — {kind}; "
                       "anything backtested on the old values is now stale"))
+
+    # Volume gets its own verdict at warn. Exchanges genuinely restate volume as
+    # late prints settle, far more often than they restate a price — folding it in
+    # with prices would make routine bookkeeping look like a broken feed.
+    if "volume" in settled.columns and "volume" in again.columns:
+        before = pd.to_numeric(settled.loc[shared, "volume"], errors="coerce")
+        after = pd.to_numeric(again.loc[shared, "volume"], errors="coerce")
+        vol_drift = ((before - after).abs() / after.abs()).replace(
+            [float("inf"), float("-inf")], pd.NA
+        ).dropna()
+        vol_changed = vol_drift[vol_drift > _VOLUME_REVISION_TOLERANCE]
+        if len(vol_changed):
+            out.append(_v("bars", source, symbol, "self_consistency", "warn",
+                          f"settled volume changed on {len(vol_changed)} row(s) "
+                          f"(worst {vol_changed.max():.1%}) — usually late prints "
+                          "settling, but it moves any volume-based signal"))
 
     return out
 

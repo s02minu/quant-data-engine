@@ -33,6 +33,7 @@ _VIOLATIONS = "dq_violations"
 _VIOLATION_COLUMNS = [
     "run_ts",
     "run_date",
+    "cadence",
     "group",
     "source",
     "series_id",
@@ -41,6 +42,15 @@ _VIOLATION_COLUMNS = [
     "severity",
     "detail",
 ]
+
+# Which pass produced a row. Two passes now write here and they check different
+# things, so a chart that pooled them would compare a nightly freshness sweep with
+# a weekly re-fetch and call the difference a trend. Rows written before this
+# column existed carry NULL and are all daily — the weekly pass is newer than the
+# column. Safe to add because the published merge already reads with
+# ``union_by_name``; older partitions simply widen with NULLs.
+DAILY = "daily"
+WEEKLY = "weekly"
 
 
 def _partition(base_dir: str, table: str, day: str) -> Path:
@@ -69,6 +79,7 @@ def record_run(
     violations: list[Violation],
     base_dir: str = "data",
     run_ts: pd.Timestamp | None = None,
+    cadence: str = DAILY,
 ) -> dict:
     """Persist one data-quality pass: its summary row and any violations.
 
@@ -76,6 +87,8 @@ def record_run(
         violations: everything ``run_checks`` and friends produced this pass.
         base_dir: local lake root.
         run_ts: the pass's timestamp; defaults to now (UTC).
+        cadence: which pass this was — :data:`DAILY` or :data:`WEEKLY`. Kept on
+            every row so the two are never averaged together.
 
     Returns:
         Summary counts, mirroring what was written.
@@ -87,6 +100,7 @@ def record_run(
         {
             "run_ts": ts,
             "run_date": day,
+            "cadence": cadence,
             "group": v.group,
             "source": v.source,
             "series_id": v.series_id,
@@ -106,6 +120,7 @@ def record_run(
             {
                 "run_ts": ts,
                 "run_date": day,
+                "cadence": cadence,
                 "n_violations": len(violations),
                 "n_error": n_error,
                 "n_warn": n_warn,
@@ -119,7 +134,9 @@ def record_run(
     runs_dir = _partition(base_dir, _RUNS, day)
     runs_dir.mkdir(parents=True, exist_ok=True)
     runs_path = runs_dir / "runs.parquet"
-    _merge(runs_path, run_row, key=["run_ts"]).to_parquet(runs_path, index=False)
+    # Keyed on cadence too: a re-run must correct its own row, not overwrite the
+    # other pass's, and both land in the same day's partition.
+    _merge(runs_path, run_row, key=["run_ts", "cadence"]).to_parquet(runs_path, index=False)
 
     if rows:
         v_dir = _partition(base_dir, _VIOLATIONS, day)
@@ -128,17 +145,24 @@ def record_run(
         _merge(
             v_path,
             frame,
-            key=["run_ts", "group", "source", "series_id", "metric", "check"],
+            key=["run_ts", "cadence", "group", "source", "series_id", "metric", "check"],
         ).to_parquet(v_path, index=False)
 
     log.info(
         "dq_history_recorded",
         run_date=day,
+        cadence=cadence,
         violations=len(violations),
         errors=n_error,
         warns=n_warn,
     )
-    return {"run_date": day, "violations": len(violations), "errors": n_error, "warns": n_warn}
+    return {
+        "run_date": day,
+        "cadence": cadence,
+        "violations": len(violations),
+        "errors": n_error,
+        "warns": n_warn,
+    }
 
 
 def load_history(base_dir: str = "data") -> pd.DataFrame:
@@ -157,7 +181,15 @@ def load_runs(base_dir: str = "data") -> pd.DataFrame:
     files = sorted(root.rglob("*.parquet"))
     if not files:
         return pd.DataFrame(
-            columns=["run_ts", "run_date", "n_violations", "n_error", "n_warn", "groups"]
+            columns=[
+                "run_ts",
+                "run_date",
+                "cadence",
+                "n_violations",
+                "n_error",
+                "n_warn",
+                "groups",
+            ]
         )
     frame = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
     return frame.sort_values("run_ts", ascending=False).reset_index(drop=True)

@@ -1,12 +1,17 @@
 # VPS deployment & operations
 
-The always-on VPS (Hetzner, EU — chosen to avoid Binance's US-IP block) runs two
+The always-on VPS (Hetzner, EU — chosen to avoid Binance's US-IP block) runs three
 things:
 
 1. **The streaming collector**, 24/7, via `docker compose up -d` — captures
    microstructure (trades, depth, book_ticker) to the local bronze lake.
 2. **Daily lake maintenance**, via a cron job that runs `scripts/maintain.sh` at
    00:30 UTC.
+3. **Weekly deep verification**, via a cron job that runs `scripts/weekly_verify.sh`
+   — re-fetches every stored daily series and confirms the source still returns
+   what it returned before, then checks each series against a related instrument.
+   See [Weekly verification](#weekly-verification) below for why it is a separate
+   entry rather than a Sunday branch inside `maintain.sh`.
 
 Both use the one `qde-collector` image (built from the `Dockerfile`, which
 `pip install .`s the whole package, so every dependency in `pyproject.toml` — batch
@@ -70,6 +75,50 @@ mount** in `docker-compose.yml` — the batch entry points call
 `qde.env.load_env_file("secrets/fred.env")` (WORKDIR is `/app`), which is
 BOM-tolerant and no-ops if the file is absent. No secrets live in the repo, and
 none are baked into the image.
+
+## Weekly verification
+
+`scripts/weekly_verify.sh` → `python -m qde.weekly_verify`. Two checks that the
+nightly structurally cannot do, because both need a second look at the *source*
+rather than at the lake:
+
+- **`self_consistency`** — re-fetches settled history and confirms the source still
+  returns the same numbers. Catches a feed that silently revises history, a
+  non-deterministic backend, or pagination that drops rows depending on where the
+  walk starts. All of those produce individually perfect frames; they are visible
+  only by asking twice.
+- **`proxy_check`** — for a symbol no other source carries, compares it against a
+  *related* instrument. It cannot confirm a price, only detect gross decoupling: a
+  frozen feed, a mislabelled ticker, a mirror serving noise. Reads the lake, so it
+  costs nothing.
+
+**Why a separate cron entry rather than a Sunday branch inside `maintain.sh`:**
+this pass re-fetches every series over the network, making it the slowest and least
+predictable job on the box. Sharing a schedule with the nightly would let one
+rate-limited source delay compaction and sync — the jobs that actually keep the
+lake correct — for a check whose entire premise is that it can wait a week.
+
+Install it alongside the existing nightly (Sundays, well clear of 00:30 UTC):
+
+```
+30 3 * * 0 bash /home/<user>/quant-data-engine/scripts/weekly_verify.sh >> /var/log/qde-weekly.log 2>&1
+```
+
+Invoked via `bash` rather than directly, because the file is committed from Windows
+and arrives mode `100644`: calling it as an executable would fail with "Permission
+denied" on the first Sunday and be discovered a week later.
+
+Unlike the nightly, this one **exits non-zero** when it finds anything
+error-severity, so cron reports it. Nothing runs after it, so failing loudly costs
+nothing downstream. A `warn` does not fail the run: the common warn is the honest
+"this symbol has no peer and no usable proxy", which is a fact about the lake's
+coverage rather than a fault to page on weekly.
+
+Results land in `quality/dq_runs` and `quality/dq_violations` like the nightly's,
+tagged `cadence='weekly'` so the two passes are never averaged together — they
+check different things, and pooling them would compare a nightly freshness sweep
+with a weekly re-fetch and call the difference a trend. Rows written before that
+column existed carry NULL and are all daily.
 
 ## Deploying a change
 

@@ -80,3 +80,42 @@ def test_later_run_same_day_is_kept_separately(tmp_path):
 def test_empty_lake_returns_empty_frames(tmp_path):
     assert load_history(str(tmp_path)).empty
     assert load_runs(str(tmp_path)).empty
+
+
+# --- cadence: two passes now write here, and they check different things ----------
+
+
+def test_a_run_is_labelled_daily_by_default():
+    from qde.dq_history import DAILY
+
+    assert DAILY == "daily"
+
+
+def test_the_weekly_pass_does_not_overwrite_the_daily_one(tmp_path):
+    # Both land in the same day's partition. Keyed on run_ts alone they would be
+    # distinct only by luck of the clock; keyed without cadence a re-run of one
+    # could replace the other's row, and the history would show a week where the
+    # nightly never ran.
+    from qde.dq_history import WEEKLY
+
+    ts = pd.Timestamp("2026-08-16T00:30:00Z")
+    record_run([_violation()], str(tmp_path), ts)
+    record_run([_violation(check="self_consistency")], str(tmp_path), ts, cadence=WEEKLY)
+
+    runs = load_runs(str(tmp_path))
+    assert sorted(runs["cadence"]) == ["daily", "weekly"]
+    assert set(load_history(str(tmp_path))["cadence"]) == {"daily", "weekly"}
+
+
+def test_rerunning_the_weekly_corrects_its_own_row_only(tmp_path):
+    from qde.dq_history import WEEKLY
+
+    ts = pd.Timestamp("2026-08-16T00:30:00Z")
+    record_run([_violation()], str(tmp_path), ts)
+    record_run([_violation(check="proxy"), _violation(check="p2")], str(tmp_path), ts, WEEKLY)
+    record_run([_violation(check="proxy")], str(tmp_path), ts, WEEKLY)
+
+    runs = load_runs(str(tmp_path))
+    assert len(runs) == 2, "a weekly re-run must not add a third run row"
+    assert int(runs[runs["cadence"] == "weekly"]["n_violations"].iloc[0]) == 1
+    assert int(runs[runs["cadence"] == "daily"]["n_violations"].iloc[0]) == 1
