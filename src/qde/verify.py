@@ -73,6 +73,11 @@ _CROSS_SOURCE_TOLERANCE = 0.05  # 5% median relative difference
 # comparison that does not care which convention a source uses.
 _MIN_RETURN_CORRELATION = 0.9
 
+# Settled history should be byte-stable, but sources round and re-round: a close
+# stored as 62824.13 can come back 62824.129999. Below this is float noise, above
+# it is a genuine restatement.
+_SELF_CONSISTENCY_TOLERANCE = 1e-6
+
 # A source that silently returns half the days looks fine to every other check —
 # the rows it does return are impeccable. Judged against a peer's coverage of the
 # same window, generously: venues list at different times and close on different
@@ -281,6 +286,170 @@ def cross_check(
 
     return [_v("bars", source, symbol, "cross_source", "warn",
                f"could not verify {symbol} against any peer: {', '.join(unreachable)}")]
+
+
+def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
+    """How much is actually known about a series' correctness.
+
+    Every check in this module returns evidence, never proof — and the strength of
+    that evidence varies enormously by symbol. A BTC series is corroborated by six
+    independent venues; SPY has exactly one source in this lake and can only ever
+    be checked against itself and its neighbours. Publishing both as simply
+    "stored" tells a consumer nothing about which is which.
+
+    So verification is recorded as a *property of the data* rather than a gate it
+    passed. The same instinct as ``dq_runs`` existing beside ``dq_violations``:
+    absence of evidence and evidence of absence must not look identical.
+
+    This reports what *can* be established, from the registry alone — it runs no
+    fetches. It is the label a consumer needs before trusting a backtest, not a
+    test result.
+
+    Returns:
+        ``{"level", "peers", "proxies", "basis"}`` — the strongest verification
+        available for this series, who could provide it, and a sentence a human
+        can read.
+    """
+    from qde.registry import declared_series
+
+    declared = list(declared_series(group="bars"))
+    peers = sorted(
+        {s for s, sym, iv in declared if sym == symbol and iv == interval and s != source}
+    )
+    # Any other symbol this source's neighbours carry is a candidate proxy: a
+    # related instrument cannot confirm a price, but it can confirm the series is
+    # tracking the asset class it claims to. Measured on this lake, a related
+    # instrument correlates ~0.95 against ~0.998 for the same instrument
+    # elsewhere, and ~0.15 for an unrelated one — three separable bands.
+    proxies = sorted({sym for _s, sym, iv in declared if iv == interval and sym != symbol})
+
+    if peers:
+        return {
+            "level": "corroborated",
+            "peers": peers,
+            "proxies": proxies,
+            "basis": (
+                f"prices and daily movement confirmed against {len(peers)} independent "
+                f"source(s): {', '.join(peers)}"
+            ),
+        }
+    if proxies:
+        return {
+            "level": "proxy_only",
+            "peers": [],
+            "proxies": proxies,
+            "basis": (
+                "no source carries this symbol, so its prices are not corroborated. "
+                "It can be checked for self-consistency and for behaving like the "
+                f"asset class it claims, against {len(proxies)} related instrument(s)"
+            ),
+        }
+    return {
+        "level": "self_only",
+        "peers": [],
+        "proxies": [],
+        "basis": (
+            "nothing else in the lake can be compared against this series; only "
+            "its internal contract and its agreement with itself over time"
+        ),
+    }
+
+
+def self_consistency(
+    stored: pd.DataFrame,
+    symbol: str,
+    source: str,
+    interval: str = "1d",
+    loader=None,
+    tolerance: float = _SELF_CONSISTENCY_TOLERANCE,
+) -> list[Violation]:
+    """Re-fetch settled history and check the source still says the same thing.
+
+    The only verification that needs **no second source at all**, which makes it
+    the one that protects every future source with no peer — the case where every
+    other tier goes quiet. It rests on a property every honest feed has and no
+    broken one does: *settled history does not change*. Yesterday's close was
+    yesterday's close, and a source asked the same question twice must give the
+    same answer.
+
+    What it catches that nothing else can: a feed that silently revises history, a
+    non-deterministic backend, pagination that drops rows depending on where the
+    walk starts, a cache serving stale pages. All of those produce individually
+    perfect frames — they are only visible by asking twice.
+
+    Corporate actions are the honest exception. A split or dividend genuinely
+    rewrites an adjusted series, so a real change is not automatically a defect;
+    it is a fact worth surfacing, because it also silently rewrites every backtest
+    that ran against the old numbers.
+
+    Args:
+        stored: the history already held, indexed by UTC date.
+        symbol / source / interval: what to re-fetch.
+        loader: injected ``load_ohlcv``-alike, so tests need no network.
+        tolerance: relative change per row treated as noise rather than revision.
+
+    Returns:
+        A violation per divergence class found; empty if the source reproduced
+        what it said before.
+    """
+    if loader is None:
+        from qde.loaders import load_ohlcv as loader  # type: ignore[assignment]
+
+    if stored.empty:
+        return []
+
+    # Only settled days: today's bar is still forming and *should* differ.
+    settled = stored[stored.index < pd.Timestamp.now(tz="UTC").normalize()]
+    if len(settled) < 2:
+        return []
+
+    start, end = str(settled.index.min().date()), str(settled.index.max().date())
+    try:
+        again = loader(symbol, start=start, end=end, interval=interval, source=source)
+    except Exception as exc:
+        return [_v("bars", source, symbol, "self_consistency", "warn",
+                   f"could not re-fetch {start}..{end} to confirm history "
+                   f"({type(exc).__name__}) — consistency unverified")]
+
+    out: list[Violation] = []
+
+    # Rows that were there before and are not now. A source quietly dropping
+    # history is invisible to any check that only reads what it currently returns.
+    vanished = settled.index.difference(again.index)
+    if len(vanished):
+        out.append(_v("bars", source, symbol, "self_consistency", "error",
+                      f"{len(vanished)} date(s) present in stored history are missing "
+                      f"on re-fetch (e.g. {vanished[0].date()}) — the source is "
+                      "dropping history it previously served"))
+
+    shared = settled.index.intersection(again.index)
+    if len(shared) == 0:
+        return out
+
+    before = pd.to_numeric(settled.loc[shared, "close"], errors="coerce")
+    after = pd.to_numeric(again.loc[shared, "close"], errors="coerce")
+    drift = ((before - after).abs() / after.abs()).dropna()
+    changed = drift[drift > tolerance]
+
+    if len(changed):
+        # A uniform ratio across every row is the signature of an adjustment
+        # (a split or dividend restating the whole series), not corruption. Worth
+        # separating: one is expected bookkeeping, the other is a broken feed —
+        # and both silently invalidate a backtest run against the old numbers.
+        ratio = (before / after).dropna()
+        uniform = len(ratio) > 2 and float(ratio.std()) < 1e-6
+        kind = (
+            "a corporate action restated the series"
+            if uniform
+            else "the source revised history"
+        )
+        out.append(_v("bars", source, symbol, "self_consistency",
+                      "warn" if uniform else "error",
+                      f"{len(changed)} of {len(shared)} settled row(s) changed since "
+                      f"they were stored (worst {changed.max():.2%}) — {kind}; "
+                      "anything backtested on the old values is now stale"))
+
+    return out
 
 
 def _adjudicate(

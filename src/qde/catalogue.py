@@ -108,8 +108,33 @@ def _sources_section(base_dir: str, now: pd.Timestamp) -> list[dict[str, Any]]:
             "license_note": str(row["license_note"]),
             **live.get(name, {"rows": 0, "freshness": None}),
         }
+        # How much is actually known about this source's correctness. Every check
+        # the platform runs yields evidence, never proof, and its strength varies
+        # enormously: a BTC series is corroborated by six independent venues while
+        # SPY has exactly one source and can only be checked against itself.
+        # Publishing both as merely "stored" tells a reader nothing about which is
+        # which — and which of the two their backtest is standing on.
+        if str(row["group"]) == "bars":
+            s["verification"] = _verification_summary(name, str(row["symbols"]))
         out.append(s)
     return out
+
+
+def _verification_summary(source: str, symbols: str) -> dict[str, Any]:
+    """Roll each symbol's verification level up into one figure per source."""
+    from qde.verify import verification_status
+
+    levels: dict[str, int] = {}
+    for symbol in [s.strip() for s in symbols.split(",") if s.strip()]:
+        level = verification_status(symbol, source)["level"]
+        levels[level] = levels.get(level, 0) + 1
+
+    # The weakest symbol sets the source's headline: a source is only as trusted
+    # as its least-corroborated series, and rounding that up would be the exact
+    # flattery this field exists to prevent.
+    order = ("self_only", "proxy_only", "corroborated")
+    weakest = next((lvl for lvl in order if lvl in levels), "self_only")
+    return {"level": weakest, "by_level": levels}
 
 
 def _bronze_dataset(group: str, base_dir: str, public_base_url: str, now: pd.Timestamp) -> dict:

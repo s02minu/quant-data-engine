@@ -9,7 +9,7 @@ correctly typed, and plausible, and is simply not the data anyone asked for.
 import pandas as pd
 import pytest
 
-from qde.verify import cross_check, verify_frame
+from qde.verify import cross_check, self_consistency, verify_frame
 
 
 def _bars(**overrides) -> pd.DataFrame:
@@ -469,3 +469,97 @@ def test_the_correlation_threshold_matches_measured_reality():
     from qde.verify import _MIN_RETURN_CORRELATION
 
     assert 0.8 <= _MIN_RETURN_CORRELATION < 0.9983
+
+
+# --- self-consistency: the only check needing no second source --------------------
+#
+# Rests on a property every honest feed has and no broken one does: settled history
+# does not change. This is what protects a source with no peer, where every other
+# tier goes quiet.
+
+
+def _yesterdays(values):
+    """A frame ending before today, so nothing is a still-forming bar."""
+    end = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2)
+    idx = pd.DatetimeIndex(
+        pd.date_range(end=end, periods=len(values), freq="D", tz="UTC"), name="date"
+    )
+    return _series(values).set_axis(idx)
+
+
+def test_a_source_that_reproduces_its_history_passes():
+    stored = _yesterdays(_TRUTH)
+    assert self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: stored) == []
+
+
+def test_a_source_that_revises_settled_history_is_caught():
+    stored = _yesterdays(_TRUTH)
+    revised = _yesterdays([v * 1.02 if i == 3 else v for i, v in enumerate(_TRUTH)])
+    violations = self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: revised)
+    assert violations and violations[0].severity == "error"
+    assert "revised history" in violations[0].detail
+
+
+def test_a_uniform_restatement_reads_as_a_corporate_action():
+    # A split or dividend rescales the whole series by one ratio. That is expected
+    # bookkeeping rather than corruption — but it still invalidates any backtest
+    # run on the old numbers, so it is reported, at warn.
+    stored = _yesterdays(_TRUTH)
+    split = _yesterdays([v / 2 for v in _TRUTH])
+    violations = self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: split)
+    assert violations and violations[0].severity == "warn"
+    assert "corporate action" in violations[0].detail
+
+
+def test_history_that_disappears_on_re_fetch_is_caught():
+    # A source quietly dropping history is invisible to anything that only reads
+    # what it currently returns.
+    stored = _yesterdays(_TRUTH)
+    shorter = stored.iloc[2:]
+    violations = self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: shorter)
+    assert any("dropping history" in v.detail for v in violations)
+
+
+def test_rounding_noise_is_not_a_revision():
+    stored = _yesterdays(_TRUTH)
+    noisy = _yesterdays([v * (1 + 1e-12) for v in _TRUTH])
+    assert self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: noisy) == []
+
+
+def test_an_unreachable_re_fetch_is_reported_as_unverified():
+    def down(*_a, **_k):
+        raise TimeoutError("no answer")
+
+    violations = self_consistency(_yesterdays(_TRUTH), "SPY", "tiingo", loader=down)
+    assert violations[0].severity == "warn"
+    assert "unverified" in violations[0].detail
+
+
+# --- verification status: what is knowable, published ------------------------------
+
+
+def test_a_symbol_with_peers_is_corroborated():
+    from qde.verify import verification_status
+
+    status = verification_status("BTCUSDT", "binance")
+    assert status["level"] == "corroborated"
+    assert len(status["peers"]) >= 5
+
+
+def test_a_single_source_symbol_is_not_dressed_up_as_verified():
+    # Every equity in this lake has exactly one source. Reporting it the same way
+    # as a six-venue crypto series is the flattery this field exists to prevent.
+    from qde.verify import verification_status
+
+    status = verification_status("SPY", "yfinance")
+    assert status["level"] == "proxy_only"
+    assert status["peers"] == []
+    assert "not corroborated" in status["basis"]
+
+
+def test_a_source_is_only_as_trusted_as_its_weakest_series():
+    from qde.catalogue import _verification_summary
+
+    summary = _verification_summary("yfinance", "BTCUSDT, SPY, QQQ")
+    assert summary["level"] == "proxy_only", "must not round up to its best symbol"
+    assert summary["by_level"]["corroborated"] == 1
