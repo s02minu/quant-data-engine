@@ -257,7 +257,13 @@ def load_ohlcv_local(
     return df
 
 
-def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str = "data") -> None:
+def update_ohlcv(
+    symbol: str,
+    source: str,
+    interval: str = "1d",
+    base_dir: str = "data",
+    violations: list | None = None,
+) -> None:
     """Incrementally extend a stored bar series with any newer bars.
 
     Reads the series' watermark (its last stored date), fetches only bars after
@@ -280,6 +286,13 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
         source (str): the source.
         interval (str, optional): bar size. Default: '1d'.
         base_dir (str, optional): the lake root. Default: 'data'.
+        violations (list, optional): a list the caller can pass to receive any
+            :class:`~qde.checks.Violation` the fetched frame trips before it is
+            stored. **The frame is stored either way.** Bronze is the replay log,
+            so rejecting a suspect frame would destroy the very evidence needed to
+            diagnose it -- the data lands intact and the violation records what we
+            think of it, in the quality tables, where a verdict can be revised
+            without touching the data.
 
     Raises:
         FileNotFoundError: if the series has not been stored yet -- there is no
@@ -313,6 +326,24 @@ def update_ohlcv(symbol: str, source: str, interval: str = "1d", base_dir: str =
         # daily update counts it as failed instead of silently going stale.
         print(f"{symbol} already up to date through {watermark.date()}")
         return
+
+    if violations is not None:
+        # Verified *before* the upsert, because this is the only moment the frame
+        # exists as the source sent it — once merged, a mismapped column or an
+        # epoch-unit error is indistinguishable from history. Recorded, never
+        # enforced: see the `violations` arg for why bronze still takes the frame.
+        from qde.verify import verify_frame
+
+        violations.extend(
+            verify_frame(
+                df_new,
+                group="bars",
+                source=source,
+                series_id=symbol,
+                start=str(next_day.date()),
+                interval=interval,
+            )
+        )
 
     upsert_bars(df_new, symbol, source, interval, base_dir)
 

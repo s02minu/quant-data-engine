@@ -85,13 +85,21 @@ def run(base_dir: str = "data") -> dict:
     """
     updated = 0
     failures: list[dict] = []
+    # Violations raised by the frames themselves as they arrive, before storage.
+    # Distinct from the lake pass below: these catch defects that are only visible
+    # against what was *requested* (a wrong resolution, an epoch-unit error, a
+    # range the source ignored) and become invisible the moment the frame is
+    # merged into history.
+    intake: list = []
 
     bars = list_bars_series(base_dir)
     for symbol, source, interval in zip(
         bars["symbol"], bars["source"], bars["interval"], strict=True
     ):
         try:
-            update_ohlcv(symbol, source=source, interval=interval, base_dir=base_dir)
+            update_ohlcv(
+                symbol, source=source, interval=interval, base_dir=base_dir, violations=intake
+            )
         except Exception as exc:
             failures.append(
                 {
@@ -186,7 +194,11 @@ def run(base_dir: str = "data") -> dict:
     # records, crossed books) over the last settled day. Read-only; a violation is
     # logged here and surfaced by main()'s alert, never fatal (a DQ issue must not
     # block the compact/sync that follows in maintain.sh).
-    violations = run_checks(base_dir)
+    # Intake violations come first: they were raised against frames as they
+    # arrived and cannot be re-derived from the lake, so they are the findings
+    # most worth reading before the ones any later run could reproduce.
+    violations = list(intake)
+    violations += run_checks(base_dir)
     violations += run_events_checks(base_dir)
     violations += run_microstructure_checks(base_dir)
     # Host health rides the same path: a full disk stops ingestion, compaction and
