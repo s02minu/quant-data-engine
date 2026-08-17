@@ -60,17 +60,27 @@ def _requests_post(url: str, payload: dict) -> int:
 
 
 def format_health(
-    updated: int, failures: list[dict], violations: list, base_dir: str = ""
+    updated: int,
+    failures: list[dict],
+    violations: list,
+    base_dir: str = "",
+    title: str = "qde nightly",
+    verb: str = "updated",
 ) -> str:
-    """Render a compact, Discord-ready health summary of the nightly run.
+    """Render a compact, Discord-ready health summary of a maintenance run.
 
     ``failures`` are the hard fetch errors from the update loop (a bad key, an API
     outage) — the unambiguous, high-priority signal. ``violations`` are
     :class:`~qde.checks.Violation` from the data-quality pass (freshness, nulls).
     A clean run returns a one-line OK, but callers should only send when there is
     something to report.
+
+    Args:
+        title / verb: which pass is reporting. Two now share this formatter, and a
+            weekly verification posting as "qde nightly — updated 20" would state
+            both the wrong job and the wrong action for what it did.
     """
-    lines = [f"**qde nightly** — updated {updated}, {len(failures)} failed, {len(violations)} DQ"]
+    lines = [f"**{title}** — {verb} {updated}, {len(failures)} failed, {len(violations)} DQ"]
     if base_dir:
         lines[0] += f"  `{base_dir}`"
 

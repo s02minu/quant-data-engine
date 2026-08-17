@@ -36,7 +36,7 @@ from qde.dq_history import WEEKLY, record_run
 from qde.env import load_env_file
 from qde.log import configure, get_logger
 from qde.storage import list_bars_series, load_ohlcv_local
-from qde.verify import proxy_check, self_consistency
+from qde.verify import PROXY_UNAVAILABLE, proxy_check, self_consistency
 
 log = get_logger(__name__)
 
@@ -132,12 +132,25 @@ def main() -> None:
     except Exception as exc:
         log.warning("dq_history_failed", error=str(exc))
 
-    if summary["failures"] or summary["violations"]:
+    # Everything is recorded above; only *actionable* findings are sent. The lake
+    # permanently contains series with no usable proxy — GLD and TLT correlate with
+    # nothing else stored here — and those produce the same violation every single
+    # week, forever, with nothing anyone can do about it. Alerting on them would
+    # train the reader to dismiss the channel, and the one week it carried a frozen
+    # feed would be dismissed with the rest. They stay queryable in dq_violations,
+    # which is where a standing property belongs.
+    actionable = [v for v in summary["violations"] if v.check != PROXY_UNAVAILABLE]
+    if summary["failures"] or actionable:
         from qde.alert import format_health, send_discord
 
         send_discord(
             format_health(
-                summary["checked"], summary["failures"], summary["violations"], base_dir=base_dir
+                summary["checked"],
+                summary["failures"],
+                actionable,
+                base_dir=base_dir,
+                title="qde weekly verification",
+                verb="checked",
             )
         )
 

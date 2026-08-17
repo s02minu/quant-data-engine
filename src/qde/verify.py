@@ -132,12 +132,34 @@ _PROXY_BROKEN_MAX = 0.30
 # related" is really a statement about last quarter.
 _PROXY_MIN_BASELINE_DAYS = 400
 
+# The window is the last N *rows*, which equals the last N days only while the
+# series is actually being updated. For one that stopped, the tail is a window from
+# whenever it died — and a dead series' final 180 rows correlate with its peer
+# perfectly well, so it passes clean while claiming to have checked "the last 180
+# days". Staleness itself belongs to the freshness check; what belongs here is
+# refusing to issue a verdict about a period the data does not cover. Generous,
+# because a weekly pass on a daily series can legitimately see a week-old tail
+# across a holiday.
+_PROXY_MAX_WINDOW_AGE_DAYS = 14
+
 # Expected spacing between rows per requested interval, for the resolution check.
 _INTERVAL_SPACING = {
     "1d": pd.Timedelta(days=1),
     "1h": pd.Timedelta(hours=1),
     "1m": pd.Timedelta(minutes=1),
 }
+
+
+# Two different statements share the proxy tier, and conflating them is what makes a
+# monitoring channel get muted. `proxy` is an *event*: a relationship that held for
+# years stopped holding, and someone should look. `proxy_unavailable` is a standing
+# *property of the lake*: GLD and TLT correlate with nothing else stored here, so no
+# proxy verdict is possible — this week, next week, and every week until an unrelated
+# decision adds a related instrument. Both are recorded; only the first is worth
+# waking someone for. Recording without alerting is the point: absence of evidence
+# stays queryable instead of becoming invisible or becoming noise.
+PROXY = "proxy"
+PROXY_UNAVAILABLE = "proxy_unavailable"
 
 
 def _v(
@@ -258,6 +280,7 @@ def cross_check(
     ours = pd.to_numeric(df["close"], errors="coerce")
 
     unreachable: list[str] = []
+    short_against: list[tuple[str, int]] = []
     for peer in peers:
         try:
             other = loader(symbol, start=start, end=end, interval=interval, source=peer)
@@ -270,11 +293,15 @@ def cross_check(
         # Coverage, before value. A source returning a third of the days is
         # invisible to every other check — the rows it does return are impeccable,
         # and comparing only the overlap is exactly how the gap stays hidden.
+        #
+        # Deferred rather than returned, for the same reason the level check
+        # adjudicates: a shortfall is a statement about *two* frames. A peer that
+        # answers a daily request with hourly candles has 24x our rows, and reporting
+        # on its word alone convicts our correct frame of "dropping data". Held until
+        # every peer has been seen, then judged on whether the peers agree.
         if len(theirs) and len(ours) / len(theirs) < _MIN_COVERAGE_RATIO:
-            return [_v("bars", source, symbol, "cross_source", "error",
-                       f"returned {len(ours)} row(s) where {peer} has {len(theirs)} "
-                       f"for the same window — the source is dropping data, not "
-                       "merely covering a different calendar")]
+            short_against.append((peer, len(theirs)))
+            continue
 
         # Compare only dates both sources cover: a venue that lists later, or
         # closes on a different calendar, is not evidence of a defect.
@@ -325,9 +352,38 @@ def cross_check(
                                f"(return correlation {corr:.2f} over {len(common)} "
                                "days) — the feed is stale, misaligned, or tracking "
                                "a different instrument")]
-        # One source agreeing is enough. Polling the rest costs requests and
-        # cannot strengthen a verdict that already rests on an independent feed.
+        # One source agreeing is enough on *value*. Polling the rest costs requests
+        # and cannot strengthen a verdict that already rests on an independent feed.
+        #
+        # But a coverage complaint held from an earlier peer must not be thrown away
+        # by this agreement: the two peers now disagree with each other about how
+        # many rows the window holds, and "one peer says we are short, another does
+        # not" is an unresolved conflict, not a clean bill. Returning [] here would
+        # let a genuine gap vanish the moment any single peer matched on price.
+        if short_against:
+            names = ", ".join(f"{p} ({n} rows)" for p, n in short_against)
+            return [_v("bars", source, symbol, "cross_source", "warn",
+                       f"agrees with {peer} on price, but returned {len(ours)} row(s) "
+                       f"against {names} for the same window — the peers disagree about "
+                       "coverage, so whether this frame is missing days is unresolved")]
         return []
+
+    # Every peer either failed on coverage or could not be reached. If more than one
+    # independent peer says we are short, they are unlikely to be wrong in the same
+    # way and the shortfall is ours — an error. A single peer saying so is one
+    # opinion, and the peer is as likely to be the broken party, so it is reported
+    # as a conflict rather than a conviction.
+    if short_against:
+        names = ", ".join(f"{p} ({n} rows)" for p, n in short_against)
+        if len(short_against) > 1:
+            return [_v("bars", source, symbol, "cross_source", "error",
+                       f"returned {len(ours)} row(s) where {len(short_against)} independent "
+                       f"peers have far more for the same window ({names}) — the source is "
+                       "dropping data, not merely covering a different calendar")]
+        return [_v("bars", source, symbol, "cross_source", "warn",
+                   f"returned {len(ours)} row(s) against {names} for the same window. "
+                   "One peer disagreeing on coverage does not say which of the two is "
+                   "wrong; a second peer would settle it")]
 
     return [_v("bars", source, symbol, "cross_source", "warn",
                f"could not verify {symbol} against any peer: {', '.join(unreachable)}")]
@@ -375,10 +431,14 @@ def proxy_check(
         loader: injected ``load_ohlcv_local``-alike, so tests need no lake.
 
     Returns:
-        A ``warn`` when an established relationship has broken, and a ``warn`` when
-        no relationship could be established at all — because "nothing looked
-        wrong" and "nothing could look wrong" are the two states this module exists
-        to keep apart.
+        Findings under two check names, because they are two different statements.
+        :data:`PROXY` is an event — a relationship that held for years stopped, or
+        the feed is frozen — and is worth alerting on. :data:`PROXY_UNAVAILABLE`
+        says no verdict was possible at all: no related instrument exists, the
+        history is too short, or the series stopped updating so its last rows are
+        not the recent period. That one is a standing property of the lake, true
+        again every week, and alerting on it weekly is how a channel gets muted.
+        Both are recorded; only the first should page anyone.
     """
     if loader is None:
         from qde.storage import load_ohlcv_local as loader  # type: ignore[assignment]
@@ -397,15 +457,26 @@ def proxy_check(
     try:
         mine = _returns(loader(symbol, source=source, interval=interval, base_dir=base_dir))
     except Exception as exc:
-        return [_v("bars", source, symbol, "proxy", "warn",
+        return [_v("bars", source, symbol, PROXY, "warn",
                    f"could not read {symbol} from the lake to proxy-check it "
                    f"({type(exc).__name__}) — relationship unverified")]
 
     if len(mine) < _PROXY_MIN_BASELINE_DAYS:
-        return [_v("bars", source, symbol, "proxy", "warn",
+        return [_v("bars", source, symbol, PROXY_UNAVAILABLE, "warn",
                    f"only {len(mine)} settled day(s) of {symbol}; too short to "
                    "establish a proxy relationship, so nothing here is checked "
                    "against an external reference")]
+
+    # A series that stopped updating still has a full tail, and that tail correlates
+    # with its peer exactly as well as it always did — so it passes clean while the
+    # verdict silently describes a window that ended months ago.
+    age = (pd.Timestamp.now(tz="UTC").normalize() - mine.index.max()).days
+    if age > _PROXY_MAX_WINDOW_AGE_DAYS:
+        return [_v("bars", source, symbol, PROXY_UNAVAILABLE, "warn",
+                   f"{symbol} has no data newer than {mine.index.max().date()} "
+                   f"({age} days), so the most recent {_PROXY_RECENT_DAYS} rows are not "
+                   "the recent period; no proxy verdict is issued for a window the "
+                   "data does not cover")]
 
     related: list[tuple[str, float, float]] = []
     for cand_source, cand_symbol in candidates:
@@ -438,7 +509,7 @@ def proxy_check(
         # The honest majority case for an exotic symbol, and the one worth saying
         # out loud: this series has no peer AND no usable proxy, so nothing outside
         # itself has ever confirmed it moves like the thing it claims to be.
-        return [_v("bars", source, symbol, "proxy", "warn",
+        return [_v("bars", source, symbol, PROXY_UNAVAILABLE, "warn",
                    f"no instrument in the lake correlates with {symbol} above "
                    f"{_PROXY_RELATED_MIN:.2f} over {len(mine)} days; it is checkable "
                    "only against itself, never against the market")]
@@ -453,13 +524,13 @@ def proxy_check(
     # rather than a wrong one. Treating NaN as "nothing to report" would let the
     # loudest possible defect through the quietest possible path.
     if pd.isna(current):
-        return [_v("bars", source, symbol, "proxy", "error",
+        return [_v("bars", source, symbol, PROXY, "error",
                    f"correlation with {name} is undefined over the last "
                    f"{_PROXY_RECENT_DAYS} days — {symbol} has no price variance at "
                    "all, which means the feed is frozen, not that the market is calm")]
 
     if current < _PROXY_BROKEN_MAX:
-        return [_v("bars", source, symbol, "proxy", "warn",
+        return [_v("bars", source, symbol, PROXY, "warn",
                    f"{symbol} has tracked {name} at {baseline:.2f} correlation over its "
                    f"full history but only {current:.2f} across the last "
                    f"{_PROXY_RECENT_DAYS} days — below anything observed on a healthy "

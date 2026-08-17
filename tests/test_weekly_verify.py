@@ -106,3 +106,34 @@ def test_intraday_series_are_skipped(monkeypatch):
         raise AssertionError("must not be read")
 
     assert weekly_verify.run("data", local_loader=local)["checked"] == 0
+
+
+def test_a_standing_no_proxy_finding_is_recorded_but_never_alerted(monkeypatch):
+    # The whole point of splitting the check names: everything reaches dq_violations,
+    # only actionable findings reach Discord.
+    from qde.checks import Violation
+    from qde.verify import PROXY, PROXY_UNAVAILABLE
+
+    sent = []
+    monkeypatch.setattr("qde.alert.send_discord", lambda msg: sent.append(msg))
+    monkeypatch.setattr(weekly_verify, "list_bars_series",
+                        lambda base_dir: pd.DataFrame(columns=["symbol", "source", "interval"]))
+    recorded = []
+    monkeypatch.setattr(weekly_verify, "record_run",
+                        lambda v, b, cadence=None: recorded.extend(v))
+
+    def only(check):
+        return [Violation("bars", "s", "GLD", None, check, "warn", "d")]
+
+    monkeypatch.setattr(weekly_verify, "run", lambda base_dir: {
+        "checked": 1, "failed": 0, "failures": [], "violations": only(PROXY_UNAVAILABLE)})
+    weekly_verify.main()
+    assert recorded, "it must still be recorded"
+    assert not sent, "a standing property must not alert"
+
+    recorded.clear()
+    monkeypatch.setattr(weekly_verify, "run", lambda base_dir: {
+        "checked": 1, "failed": 0, "failures": [], "violations": only(PROXY)})
+    weekly_verify.main()
+    assert sent, "an actual break must alert"
+    assert "weekly" in sent[0], "and must not claim to be the nightly"

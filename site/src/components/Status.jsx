@@ -59,14 +59,25 @@ export default function Status({ catalogue }) {
       setError("The public bucket is not configured for this build.");
       return;
     }
+    // Nightly rows only. A second, weekly pass writes to the same table and runs
+    // different checks — pooling them would put two cells on every Sunday in a strip
+    // whose whole meaning is "one cell per night", and would let a weekly finding
+    // land in `lastRun` and be reported as the latest nightly result.
+    //
+    // Filtered here rather than in SQL on purpose: the published file has no
+    // `cadence` column until the first nightly writes one, and a SQL predicate
+    // against a column that does not exist is a hard error — it would blank the
+    // whole status page in exactly the window between deploying the site and the
+    // next nightly. In JS a missing column is `undefined`, which the default
+    // handles. Rows written before the column existed are all nightly.
     runQuery(`SELECT * FROM read_parquet('${DQ_RUNS_URL}') ORDER BY run_ts DESC`)
-      .then((r) => setRuns(r.rows))
+      .then((r) => setRuns(r.rows.filter((x) => (x.cadence ?? "daily") === "daily")))
       .catch((e) => setError(String(e?.message || e)));
 
     // No violations file exists until something has actually failed, so a 404 here
     // is the healthy case, not an error.
     runQuery(`SELECT * FROM read_parquet('${DQ_VIOLATIONS_URL}') ORDER BY run_ts DESC LIMIT 200`)
-      .then((r) => setViolations(r.rows))
+      .then((r) => setViolations(r.rows.filter((x) => (x.cadence ?? "daily") === "daily")))
       .catch(() => setViolations([]));
   }, []);
 
@@ -206,7 +217,7 @@ export default function Status({ catalogue }) {
           )}
 
           <Evidence
-            sql={`SELECT run_date, n_violations, n_error, n_warn\nFROM read_parquet('${DQ_RUNS_URL ?? "…/quality/dq_runs.parquet"}')\nORDER BY run_ts DESC;`}
+            sql={`-- 'daily' is the nightly pass; a weekly deep-verification pass shares this table\nSELECT run_date, n_violations, n_error, n_warn\nFROM read_parquet('${DQ_RUNS_URL ?? "…/quality/dq_runs.parquet"}')\nWHERE coalesce(cadence, 'daily') = 'daily'\nORDER BY run_ts DESC;`}
           />
         </section>
 

@@ -110,15 +110,36 @@ denied" on the first Sunday and be discovered a week later.
 
 Unlike the nightly, this one **exits non-zero** when it finds anything
 error-severity, so cron reports it. Nothing runs after it, so failing loudly costs
-nothing downstream. A `warn` does not fail the run: the common warn is the honest
-"this symbol has no peer and no usable proxy", which is a fact about the lake's
-coverage rather than a fault to page on weekly.
+nothing downstream. A `warn` does not fail the run.
+
+**What alerts and what does not.** Proxy findings come under two check names,
+because they are two different statements:
+
+- `proxy` — an *event*. A relationship that held for years stopped, or the feed is
+  frozen. Alerts.
+- `proxy_unavailable` — a standing *property of the lake*. No related instrument
+  exists (GLD and TLT correlate with nothing else stored here), the history is too
+  short, or the series stopped updating so its last rows are not the recent period.
+  **Recorded to `dq_violations` but never alerted.** It would be true again every
+  single week with nothing anyone could do about it, and a channel that cries wolf
+  weekly gets muted — including the week it finally carries a frozen feed.
+
+On the current lake that means a healthy week is completely silent: 20 series
+checked, 2 `proxy_unavailable` warns recorded, nothing sent.
 
 Results land in `quality/dq_runs` and `quality/dq_violations` like the nightly's,
 tagged `cadence='weekly'` so the two passes are never averaged together — they
 check different things, and pooling them would compare a nightly freshness sweep
 with a weekly re-fetch and call the difference a trend. Rows written before that
 column existed carry NULL and are all daily.
+
+The public status page filters to `cadence = 'daily'`, so its run strip stays one
+cell per night. Without that filter every Sunday would show two cells, and the
+weekly's 03:30 row would outrank the nightly's 00:30 row as "last run" — reporting
+weekly proxy findings as the latest nightly result. The filter is applied in JS
+rather than SQL on purpose: the published file has no `cadence` column until the
+first nightly writes one, and a SQL predicate on a missing column is a hard error
+that would blank the page between deploying the site and the next nightly.
 
 ## Deploying a change
 

@@ -1195,6 +1195,38 @@ Two findings that changed the design, both from measuring rather than reasoning:
 - [x] Verified end-to-end against the live lake: 20 series checked, 0 failures, 2 warns —
       both the honest "GLD and TLT have no usable proxy here", not defects.
 
+### Second audit pass — six more holes *(2026-08-17)*
+
+Re-reviewed before moving on. Every one of these was introduced by the work above:
+
+- [x] **The public status page would have misreported on the first Sunday.** The weekly
+      writes to the same `dq_runs` the site renders as one-cell-per-night, so Sundays
+      would show two cells and the weekly's 03:30 row would outrank the nightly's 00:30
+      as "last run". Now filtered to `cadence='daily'` — **in JS, not SQL**, because the
+      published file has no `cadence` column until the first nightly writes one and a
+      SQL predicate on a missing column would blank the page during that window.
+- [x] **A series dead for 406 days passed `proxy_check` completely clean.** The window
+      was the last 180 *rows*, which equals the last 180 days only while the series is
+      alive; a dead series' final rows correlate exactly as well as they always did.
+      Now refuses to issue a verdict about a period the data does not cover.
+- [x] **The weekly would have posted as "qde nightly — updated 20"**: wrong job, wrong
+      verb. `format_health` takes a title and verb.
+- [x] **Alert fatigue built in by construction.** GLD and TLT can never have a proxy, so
+      the weekly would have sent the same two unfixable warnings every Sunday forever —
+      exactly the "switched off after its third false alarm" failure the proxy threshold
+      comment warns about. Split into `proxy` (an event, alerts) and `proxy_unavailable`
+      (a standing property, recorded but silent). A healthy week is now completely quiet.
+- [x] **Coverage convicted on one peer's word** while the level check adjudicates a third
+      source precisely to avoid that. A peer answering a daily request with hourly candles
+      has 24x our rows and would have accused a correct frame of dropping data. Now
+      deferred: two peers agreeing convicts, one alone is reported as a conflict.
+- [x] **…and then the deferred complaint could be silently dropped** — a later peer
+      agreeing on price returned clean and discarded it, letting a real gap vanish the
+      moment any single peer matched. Now surfaced as an unresolved conflict.
+- [x] `dq_history._merge` would have **duplicated instead of replaced** on upgrade day:
+      legacy rows have no `cadence`, so a same-day re-run keyed them differently. Legacy
+      rows are back-filled to `daily` before the merge.
+
 ---
 
 ## Deliberately not doing

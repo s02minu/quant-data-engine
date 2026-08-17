@@ -72,6 +72,14 @@ def _merge(path: Path, fresh: pd.DataFrame, key: list[str]) -> pd.DataFrame:
         log.warning("dq_history_unreadable", path=str(path), error=str(exc))
         return fresh
     combined = pd.concat([prior, fresh], ignore_index=True)
+    # `cadence` is newer than the rows already on disk, so a partition written by an
+    # older build has the column absent (NaN after the concat) while this run's rows
+    # say "daily". Keyed as-is those are two different keys, and re-running the
+    # nightly on upgrade day would append a duplicate instead of replacing the
+    # earlier row — the one thing this merge exists to prevent. Everything written
+    # before the column existed was the nightly, so that is what the gap means.
+    if "cadence" in combined.columns:
+        combined["cadence"] = combined["cadence"].fillna(DAILY)
     return combined.drop_duplicates(subset=key, keep="last").reset_index(drop=True)
 
 

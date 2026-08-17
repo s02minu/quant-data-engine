@@ -461,11 +461,24 @@ def test_a_broken_peer_does_not_convict_a_good_frame():
 
 def test_a_source_dropping_days_is_caught_even_though_its_rows_are_perfect():
     # Every row it returns is impeccable; comparing only the overlap is exactly
-    # how the missing two-thirds stays invisible.
+    # how the missing two-thirds stays invisible. Two independent peers are unlikely
+    # to be short in the same way, so agreement between them convicts.
     thin = _series(_TRUTH).iloc[:2]
-    violations = cross_check(thin, "BTCUSDT", "binance", peers=["bybit"], loader=_peer)
+    violations = cross_check(
+        thin, "BTCUSDT", "binance", peers=["bybit", "okx"], loader=_peer
+    )
     assert violations[0].severity == "error"
     assert "dropping data" in violations[0].detail
+
+
+def test_one_peer_alone_cannot_convict_us_of_dropping_data():
+    # A peer that answers a daily request with hourly candles has 24x our rows.
+    # Reporting on its word alone convicts a correct frame — the same false
+    # accusation the level check adjudicates a third source to avoid.
+    thin = _series(_TRUTH).iloc[:2]
+    violations = cross_check(thin, "BTCUSDT", "binance", peers=["bybit"], loader=_peer)
+    assert violations[0].severity == "warn"
+    assert "does not say which of the two is wrong" in violations[0].detail
 
 
 def test_the_correlation_threshold_matches_measured_reality():
@@ -770,3 +783,56 @@ def test_an_unreadable_series_is_a_finding_not_a_crash():
 
     violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
     assert violations and "could not read" in violations[0].detail
+
+
+def test_a_series_that_stopped_updating_gets_no_proxy_verdict():
+    # The window is the last N *rows*, which is the last N days only while the series
+    # is alive. A dead series' final 180 rows correlate with its peer exactly as well
+    # as they always did, so it passes clean while the verdict describes a period the
+    # data does not cover. Confirmed against the real lake: a series dead for 406 days
+    # returned no finding at all.
+    from qde.verify import PROXY_UNAVAILABLE
+
+    loader, store = _lake(n=900, related=True)
+    stale = store["MINE"].copy()
+    stale.index = stale.index - pd.Timedelta(days=400)
+    store["MINE"] = stale
+
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations, "a dead series must not read as verified"
+    assert violations[0].check == PROXY_UNAVAILABLE
+    assert "no data newer than" in violations[0].detail
+
+
+def test_no_usable_proxy_is_a_standing_property_not_an_event():
+    # GLD and TLT correlate with nothing else in this lake — true this week and every
+    # week after. Filed under a separate check so a weekly alert can record it without
+    # sending it; alerting weekly on something nobody can fix is how a channel gets
+    # muted, and the week it carries a frozen feed gets muted with it.
+    from qde.verify import PROXY, PROXY_UNAVAILABLE
+
+    loader, _ = _lake(related=False)
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert violations[0].check == PROXY_UNAVAILABLE
+
+    loader, store = _lake(related=True)
+    _break_window(store, _walk(_PROXY_RECENT_DAYS, seed=5))
+    broken = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    assert broken[0].check == PROXY, "an actual break must stay alertable"
+
+
+def test_a_coverage_complaint_survives_a_later_peer_agreeing_on_price():
+    # Peer A has far more rows than us; peer B matches us and agrees on price. The
+    # value check is satisfied by B and would return clean, throwing away A's
+    # complaint — letting a real gap vanish the moment any one peer matched.
+    full, thin = _series(_TRUTH), _series(_TRUTH).iloc[:2]
+
+    def loader(_symbol, start=None, end=None, interval=None, source=None):
+        return full if source == "rich" else thin
+
+    violations = cross_check(
+        thin, "BTCUSDT", "binance", peers=["rich", "matching"], loader=loader
+    )
+    assert violations, "the unresolved coverage conflict must not be dropped"
+    assert violations[0].severity == "warn"
+    assert "unresolved" in violations[0].detail
