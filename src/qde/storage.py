@@ -340,7 +340,14 @@ def update_ohlcv(
                 group="bars",
                 source=source,
                 series_id=symbol,
-                start=str(next_day.date()),
+                # The WATERMARK, not the day after it, is the range floor. The fetch
+                # asks for watermark+1, but a source returning the boundary row it
+                # already served is normal and harmless — the upsert is idempotent —
+                # while `start=next_day` reads that row as "the range parameters were
+                # ignored". Ten of those fired on the first live run. Anything
+                # genuinely older than the watermark is still caught, which is what
+                # the check is for.
+                start=str(watermark.date()),
                 interval=interval,
             )
         )
@@ -686,7 +693,7 @@ def update_series(
                 group="series",
                 source=source,
                 series_id=series_id,
-                start=next_day,
+                start=str(watermark.date()),  # see update_ohlcv: the boundary row is not a defect
             )
         )
 

@@ -142,3 +142,31 @@ def test_a_defective_series_frame_is_verified_at_intake(tmp_path, monkeypatch, o
     assert any(v.check == "numeric" and v.group == "series" for v in summary["violations"]), (
         "an unparsed series frame must be caught as it arrives"
     )
+
+
+def test_the_boundary_row_a_source_re_serves_is_not_a_range_violation(tmp_path, monkeypatch):
+    # An incremental pull asks for watermark+1, but FRED answers a monthly series with
+    # the period-boundary observation it already served. That is normal and the upsert
+    # is idempotent — yet graded against `next_day` it reads as "the range parameters
+    # were ignored". Ten fired on the first live run of this wiring.
+    from qde.storage import upsert_series
+
+    idx = pd.DatetimeIndex(pd.to_datetime(["2026-07-01"], utc=True), name="date")
+    upsert_series(pd.DataFrame({"value": [1.0]}, index=idx), "PAYEMS", "fred", str(tmp_path))
+
+    resent = pd.DataFrame(
+        {"value": [1.0, 2.0]},
+        index=pd.DatetimeIndex(
+            pd.to_datetime(["2026-07-01", "2026-08-01"], utc=True), name="date"
+        ),
+    )
+
+    class _Ingestor:
+        def load(self, *a, **k):
+            return resent
+
+    monkeypatch.setattr("qde.ingest.get_ingestor", lambda source: _Ingestor())
+    summary = run(str(tmp_path))
+    assert not [v for v in summary["violations"] if v.check == "range"], (
+        "re-serving the watermark row must not read as an ignored date range"
+    )

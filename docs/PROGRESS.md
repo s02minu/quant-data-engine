@@ -1348,6 +1348,36 @@ Also resolved: the long-open `fred/DTWEXBGS` question. Its 10-day freshness warn
 
 ---
 
+## Deploy — 2026-08-18
+
+VPS taken from `0c647ce` to `d6da7b0` (6 commits): the **entire verification tier
+reached production for the first time**, alongside the catalogue and freshness fixes.
+
+- [x] Rebuilt + both collectors restarted — 42 flushes/min, zero errors.
+- [x] **Disk 39% -> 15%**, 9.5 GB of build cache reclaimed. Pruned *after* the rebuild,
+      not before, so the cache the rebuild itself created was included.
+- [x] Weekly verification cron installed (Sundays 03:30 UTC), nightly left intact.
+- [x] `logrotate` rule for `logs/*.log` — `maintain.log` had none and was growing
+      unbounded.
+- [x] Full `maintain.sh` run: `failed=0`, catalogue regenerated.
+- [x] **The catalogue fix is confirmed live**: advertised row counts now equal the bytes
+      actually published, checked over HTTPS for all six datasets (`bars` 40,642 =
+      40,642, previously advertised 57,362). yfinance rows in public gold: 0.
+- [x] The status page now reads **"ALL 14 SOURCES CURRENT"** instead of the false
+      "2 of 14 behind schedule" — CFTC publishes a 504h budget, not a 72h guess.
+- [x] All six stale FRED vintages re-backfilled and re-verified against live FRED:
+      PAYEMS, INDPRO, ICSA, RSAFS, HOUST, DTWEXBGS — every one now clean, with UNRATE
+      and DGS10 as untouched controls.
+
+**The staged run earned its keep again.** Wiring `verify_frame` into the series and
+events intake fired **12 error-severity violations** on first contact with production —
+all one false positive of mine. An incremental pull asks for `watermark + 1 day`, and
+FRED answers a monthly series with the period-boundary observation it already served;
+graded against `next_day` that reads as "the range parameters were ignored". The range
+floor is now the **watermark itself**, so a re-served boundary row is tolerated while
+anything genuinely older is still caught. Fixed and tested locally — **not yet
+deployed**; until it ships the nightly will alert on those 12.
+
 ## Deliberately not doing
 
 Spark, Kafka, Kubernetes, Snowflake/BigQuery, and serving query compute to users.
