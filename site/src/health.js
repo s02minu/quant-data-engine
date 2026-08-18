@@ -5,10 +5,18 @@
 // the same source. A status page that contradicts the page linking to it is worse
 // than no status page, so the rule has exactly one home.
 
-// Expected cadence per group, in hours. Deliberately generous — an unattended
-// health signal must bias to silence, and a source that is genuinely broken keeps
-// aging and trips the threshold within a period or two anyway. This mirrors the
-// reasoning behind the pipeline's own _STALE_FACTOR.
+// FALLBACK cadence per group, in hours, used only when the catalogue does not carry
+// a source's real threshold. The real one is `expected_within_hours`, computed by
+// qde.checks from each series' own observed spacing and published per source — the
+// same number the nightly enforces.
+//
+// These constants used to be the only rule here, and they were a second, competing
+// definition of "late": graded at series=72h, CFTC's weekly COT release looked
+// overdue every single week, so the status page reported "2 of 14 sources behind
+// schedule" on a night the pipeline recorded zero violations. Its real budget is
+// 504h. A status page that contradicts the pipeline it reports on is worse than no
+// status page — the more so on a site whose own copy promises "one definition, many
+// consumers".
 const CADENCE_HOURS = {
   bars: 24,
   series: 72,
@@ -33,6 +41,13 @@ export function healthOf(source, now = Date.now()) {
   const age = ageMs(source, now);
   if (age == null) return "unknown";
   const hours = age / 3.6e6;
+  // The published threshold already includes the pipeline's tolerance factor, so it
+  // is compared directly; only the group fallback needs the 1.5x/3x grading.
+  const published = source?.expected_within_hours;
+  if (typeof published === "number" && published > 0) {
+    if (hours <= published) return "ok";
+    return hours <= published * 2 ? "warn" : "late";
+  }
   const cadence = cadenceFor(source.group);
   if (hours <= cadence * 1.5) return "ok";
   if (hours <= cadence * 3) return "warn";

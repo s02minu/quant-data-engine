@@ -23,14 +23,24 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-from qde.registry import all_specs, dim_sources
+from qde.log import get_logger
+from qde.registry import all_specs, dim_sources, redistributable_sources
 from qde.storage import query
 
 # The bronze groups the catalogue can describe from the LOCAL lake, and the column
 # each dates its freshness by. Microstructure is public but absent here because the
 # sync prunes it from local disk, so nothing about it can be measured at this point —
 # it is described statically instead (see _microstructure_dataset).
+log = get_logger(__name__)
+
 _BRONZE_GROUPS = {"bars": "date", "series": "date", "events": "observed_ts"}
+
+# What identifies one series within a group — the grain a cadence is meaningful at.
+# `series` needs the metric too: CFTC's eleven trader-category metrics share one
+# series_id and identical report dates, so keying on series_id alone pools them, the
+# inter-observation gaps collapse to zero, and a weekly release reads as a 25-hour
+# cadence. The grain has to be the thing that actually has a frequency.
+_SERIES_KEY = {"bars": ["symbol"], "series": ["series_id", "metric"], "events": ["calendar"]}
 
 # Prefix of the mirrored microstructure archive. A prefix rather than a fillable
 # path template because part-file names carry a flush timestamp and cannot be
@@ -90,7 +100,96 @@ def _source_stats(base_dir: str, now: pd.Timestamp) -> dict[str, dict[str, Any]]
         )
         for _, r in rows.iterrows():
             stats[str(r["source"])] = {"rows": int(r["n"]), "freshness": _age(r["last"], now)}
+
+    # Publish the threshold each source is actually judged against, so every surface
+    # grades freshness the same way. Without it the status page applied its own
+    # group-level constants and reported "2 of 14 sources behind schedule" on a night
+    # the pipeline recorded zero violations — a status page contradicting the
+    # pipeline it reports on. The number comes from qde.checks, which is what the
+    # nightly enforces, so the two cannot disagree.
+    for source, expected in _expected_windows(base_dir).items():
+        if source in stats:
+            stats[source]["expected_within_hours"] = expected
     return stats
+
+
+def _has_column(group: str, column: str, base_dir: str) -> bool:
+    """Whether the group's view exposes a column, without assuming a lake's shape."""
+    try:
+        return column in query(f"SELECT * FROM {group} LIMIT 0", base_dir=base_dir).columns
+    except Exception:
+        return False
+
+
+def _expected_windows(base_dir: str) -> dict[str, float]:
+    """Per-source staleness threshold in hours, as ``qde.checks`` computes it.
+
+    Taken over the source's *most recently updated* series: a source is as fresh as
+    its freshest stream, matching how the freshness row is derived above. A source
+    whose series are too short to infer a cadence from is simply omitted, and the
+    consumer falls back to its own default rather than being handed a fabricated
+    number.
+    """
+    from qde.checks import freshness_threshold
+    from qde.registry import all_specs
+
+    floors = {s.name: pd.Timedelta(minutes=s.freshness_sla_minutes) for s in all_specs()}
+    out: dict[str, float] = {}
+    for group, date_col in _BRONZE_GROUPS.items():
+        if not any((Path(base_dir) / "bronze" / f"group={group}").glob("**/*.parquet")):
+            continue
+        # `metric` only exists once at least one metric-partitioned series is stored;
+        # a lake holding solely flat series has no such column and the select fails.
+        # Probed rather than assumed, because the first version wrapped this in a
+        # bare `except: continue` — so on exactly that lake every threshold vanished
+        # silently and the site fell back to its own constants without a word.
+        keys = [k for k in _SERIES_KEY[group] if _has_column(group, k, base_dir)]
+        if not keys:
+            log.warning("expected_window_skipped", group=group, reason="no series key")
+            continue
+        try:
+            rows = query(
+                f"SELECT source, {', '.join(keys)}, {date_col} AS d FROM {group}",
+                base_dir=base_dir,
+            )
+        except Exception as exc:
+            # Non-fatal: the catalogue is still publishable without this field, and
+            # consumers fall back. But it is never silent — a missing threshold means
+            # every surface silently reverts to guessing.
+            log.warning(
+                "expected_window_failed",
+                group=group,
+                error=type(exc).__name__,
+                detail=str(exc),
+            )
+            continue
+
+        # Per *series*, never pooled per source. Pooling interleaves many series'
+        # observation dates into one column, so the gaps between them collapse to
+        # near zero and every source inherits the SLA floor — which read CFTC, a
+        # weekly release, as a 25-hour cadence.
+        best: dict[str, tuple[pd.Timestamp, float]] = {}
+        # dropna=False: `metric` is NULL for single-value sources (FRED, CBOE), and
+        # pandas drops NULL group keys by default — which would silently exclude
+        # every flat series from the calculation.
+        for group_key, chunk in rows.groupby(["source", *keys], dropna=False):
+            source = group_key[0]
+            dates = pd.DatetimeIndex(pd.to_datetime(chunk["d"], utc=True)).dropna()
+            if not len(dates):
+                continue
+            threshold = freshness_threshold(dates, floors.get(str(source), pd.Timedelta(0)))
+            if threshold is None:
+                continue
+            last = dates.max()
+            # The source's published freshness is its newest observation across all
+            # series, so the window it is judged against has to be that same series'
+            # window. Any other pairing compares one series' age to another's budget.
+            prior = best.get(str(source))
+            if prior is None or last > prior[0]:
+                best[str(source)] = (last, round(threshold.total_seconds() / 3600, 1))
+        for source, (_last, hours) in best.items():
+            out[source] = hours
+    return out
 
 
 def _sources_section(base_dir: str, now: pd.Timestamp) -> list[dict[str, Any]]:
@@ -160,10 +259,29 @@ _LEVEL_BASIS = {
 }
 
 
+def _publishable_sql() -> str:
+    """The publishable source names as a SQL IN-list.
+
+    `IN`, never `NOT IN`: an unrecognised source is left out of the count, and a
+    NULL source fails the test rather than passing it, matching the enforcement in
+    :func:`qde.publish_public._publishable_sources` exactly because both read the
+    same registry rule.
+    """
+    names = sorted(redistributable_sources())
+    return ", ".join(f"'{n}'" for n in names) or "''"
+
+
 def _bronze_dataset(group: str, base_dir: str, public_base_url: str, now: pd.Timestamp) -> dict:
     date_col = _BRONZE_GROUPS[group]
+    # Counted over the *publishable* sources only. This describes a file in the
+    # public bucket, and `qde.publish_public` writes that file with the same
+    # `source IN (...)` filter — so counting the whole local lake here advertised
+    # rows nobody could download. It read 57,362 bars against a public file of
+    # 40,642: not a leak, but a 29% overstatement of the product.
     agg = query(
-        f"SELECT count(*) AS n, max({date_col}) AS last FROM {group}", base_dir=base_dir
+        f"SELECT count(*) AS n, max({date_col}) AS last FROM {group} "
+        f"WHERE source IN ({_publishable_sql()})",
+        base_dir=base_dir,
     )
     # Point at the consolidated per-group file, NOT a `**/*.parquet` glob: plain HTTP
     # has no directory listing, so DuckDB cannot expand a glob against an r2.dev URL
@@ -235,7 +353,14 @@ def _gold_dataset(
     if not path.exists():
         return None
     con = duckdb.connect()
-    rel = f"read_parquet('{path.as_posix()}')"
+    # The published mart is row-filtered on `source` by qde.publish_public, so the
+    # local file this reads is wider than the one being described.
+    rel = (
+        f"(SELECT * FROM read_parquet('{path.as_posix()}') "
+        f"WHERE source IN ({_publishable_sql()}))"
+        if spec.get("source_col", True)
+        else f"read_parquet('{path.as_posix()}')"
+    )
     n = con.execute(f"SELECT count(*) AS n FROM {rel}").df()["n"].iloc[0]
     date_col = spec["date_col"]
     fresh = None

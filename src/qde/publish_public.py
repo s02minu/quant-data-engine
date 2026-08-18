@@ -35,7 +35,7 @@ import duckdb
 
 from qde.catalogue import build_catalogue, write_catalogue
 from qde.log import configure, get_logger
-from qde.registry import all_specs
+from qde.registry import all_specs, redistributable_sources
 
 log = get_logger(__name__)
 
@@ -109,7 +109,9 @@ def _publishable_sources() -> frozenset[str]:
     Withholding something that should have been public is a bug fixable by the next
     nightly. Publishing something licensed is not fixable at all.
     """
-    return frozenset(s.name for s in all_specs() if s.redistributable)
+    # Defined in the registry so the catalogue applies the identical rule when it
+    # describes what was published; two copies of this would drift silently.
+    return redistributable_sources()
 
 
 def _excluded_sources() -> list[str]:

@@ -32,6 +32,10 @@ def _lake(monkeypatch, frames):
         [{"symbol": s, "source": src, "interval": "1d"} for (src, s) in frames]
     )
     monkeypatch.setattr(weekly_verify, "list_bars_series", lambda base_dir: listing)
+    monkeypatch.setattr(weekly_verify, "list_series",
+                        lambda base_dir: pd.DataFrame(columns=["source", "series_id"]))
+    monkeypatch.setattr(weekly_verify, "list_series",
+                        lambda base_dir: pd.DataFrame(columns=["source", "series_id"]))
 
     def local(symbol, source=None, interval="1d", base_dir="data"):
         return frames[(source, symbol)]
@@ -73,6 +77,8 @@ def test_one_broken_series_does_not_abort_the_rest(monkeypatch):
          {"symbol": "AAA", "source": "s", "interval": "1d"}]
     )
     monkeypatch.setattr(weekly_verify, "list_bars_series", lambda base_dir: listing)
+    monkeypatch.setattr(weekly_verify, "list_series",
+                        lambda base_dir: pd.DataFrame(columns=["source", "series_id"]))
 
     def local(symbol, source=None, interval="1d", base_dir="data"):
         if symbol == "BAD":
@@ -88,6 +94,8 @@ def test_one_broken_series_does_not_abort_the_rest(monkeypatch):
 def test_a_series_that_could_not_be_checked_is_never_counted_as_passing(monkeypatch):
     listing = pd.DataFrame([{"symbol": "BAD", "source": "s", "interval": "1d"}])
     monkeypatch.setattr(weekly_verify, "list_bars_series", lambda base_dir: listing)
+    monkeypatch.setattr(weekly_verify, "list_series",
+                        lambda base_dir: pd.DataFrame(columns=["source", "series_id"]))
 
     def local(symbol, source=None, interval="1d", base_dir="data"):
         raise OSError("disk gone")
@@ -101,6 +109,8 @@ def test_intraday_series_are_skipped(monkeypatch):
     # hundreds of thousands of rows for nothing.
     listing = pd.DataFrame([{"symbol": "AAA", "source": "s", "interval": "1m"}])
     monkeypatch.setattr(weekly_verify, "list_bars_series", lambda base_dir: listing)
+    monkeypatch.setattr(weekly_verify, "list_series",
+                        lambda base_dir: pd.DataFrame(columns=["source", "series_id"]))
 
     def local(symbol, source=None, interval="1d", base_dir="data"):
         raise AssertionError("must not be read")
@@ -137,3 +147,42 @@ def test_a_standing_no_proxy_finding_is_recorded_but_never_alerted(monkeypatch):
     weekly_verify.main()
     assert sent, "an actual break must alert"
     assert "weekly" in sent[0], "and must not claim to be the nightly"
+
+
+def test_scalar_series_are_checked_for_revisions(monkeypatch):
+    # The blind spot this closes: update_series is watermark-advanced, so a value it
+    # already holds is never re-requested and a revision to it is invisible by design.
+    listing = pd.DataFrame([{"source": "fred", "series_id": "PAYEMS"}])
+    monkeypatch.setattr(weekly_verify, "list_bars_series",
+                        lambda base_dir: pd.DataFrame(columns=["symbol", "source", "interval"]))
+    monkeypatch.setattr(weekly_verify, "list_series", lambda base_dir: listing)
+
+    idx = pd.date_range(
+        end=pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2),
+        periods=6, freq="D", tz="UTC", name="date",
+    )
+    stored = pd.DataFrame({"value": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]}, index=idx)
+    revised = stored.copy()
+    revised.iloc[1, 0] = 99.0
+
+    result = weekly_verify.run(
+        "data",
+        series_local_loader=lambda sid, src, base_dir="data": stored,
+        series_loader=lambda sid, src, start: revised,
+    )
+    assert result["checked"] == 1
+    assert any(v.group == "series" and v.check == "self_consistency"
+               for v in result["violations"])
+
+
+def test_an_unreadable_scalar_series_is_a_failure_not_a_pass(monkeypatch):
+    listing = pd.DataFrame([{"source": "fred", "series_id": "GONE"}])
+    monkeypatch.setattr(weekly_verify, "list_bars_series",
+                        lambda base_dir: pd.DataFrame(columns=["symbol", "source", "interval"]))
+    monkeypatch.setattr(weekly_verify, "list_series", lambda base_dir: listing)
+
+    def missing(sid, src, base_dir="data"):
+        raise FileNotFoundError(sid)
+
+    result = weekly_verify.run("data", series_local_loader=missing)
+    assert result["checked"] == 0 and result["failed"] == 1

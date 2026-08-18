@@ -11,6 +11,7 @@ from qde.registry.sources import (
     declared_series,
     dim_sources,
     get_spec,
+    redistributable_sources,
 )
 from qde.registry.spec import SourceSpec
 
@@ -21,4 +22,5 @@ __all__ = [
     "declared_series",
     "dim_sources",
     "get_spec",
+    "redistributable_sources",
 ]

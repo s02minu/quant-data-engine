@@ -22,6 +22,7 @@ series' history, not of a frame, and they belong to ``qde.checks`` where the
 stored data is in hand.
 """
 
+import numpy as np
 import pandas as pd
 
 from qde.checks import Violation
@@ -82,6 +83,15 @@ _SELF_CONSISTENCY_TOLERANCE = 1e-6
 # after the close — so it is judged separately and loosely. A 1% shift is an
 # exchange finishing its bookkeeping; a doubling is a different number entirely.
 _VOLUME_REVISION_TOLERANCE = 0.01
+
+# A scalar series is legitimately zero or negative — T10Y2Y inverts, real rates go
+# below zero — so a purely relative comparison is undefined at zero and explodes near
+# it. Both tolerances together: relative for the large values, absolute for the small.
+# Validated against live FRED: at these settings the unrevised series (DGS10, UNRATE,
+# FEDFUNDS, GDPC1) show zero changes, so nothing here is float noise, while the genuine
+# revisions in PAYEMS and INDPRO are caught.
+_SERIES_REVISION_RTOL = 1e-6
+_SERIES_REVISION_ATOL = 1e-9
 
 # A source that silently returns half the days looks fine to every other check —
 # the rows it does return are impeccable. Judged against a peer's coverage of the
@@ -389,6 +399,145 @@ def cross_check(
                f"could not verify {symbol} against any peer: {', '.join(unreachable)}")]
 
 
+def series_self_consistency(
+    stored: pd.DataFrame,
+    series_id: str,
+    source: str,
+    loader=None,
+    rtol: float = _SERIES_REVISION_RTOL,
+    atol: float = _SERIES_REVISION_ATOL,
+) -> list[Violation]:
+    """Detect that a stored scalar series has been revised at the source.
+
+    The blind spot this closes is structural, not incidental. ``update_series`` is
+    watermark-advanced: it fetches from the day after the newest stored
+    observation, so a value it already holds is never requested again. A revision
+    to an existing observation is therefore invisible to the nightly *by design* —
+    and macro data revises constantly. Measured against live FRED at the time this
+    was written, the lake already held a stale PAYEMS (off by 66,000 jobs) and five
+    stale INDPRO values, with nothing in the platform able to see either.
+
+    Why this is a ``warn`` and the bars equivalent is an ``error``: an exchange
+    restating a settled close is a broken feed, but a statistical agency revising
+    a first estimate is the data working as designed. GDP is revised for years.
+    Reporting that at error severity would fire on the most important series in the
+    lake, every month, and the channel would be muted inside a quarter.
+
+    That it is normal does not make it harmless. A backtest run against the old
+    numbers used values that no longer exist anywhere, and neither the lake nor the
+    catalogue records which vintage it holds. So it is reported, with the
+    remediation named — ``qde.backfill`` re-pulls the full history and the upsert
+    is idempotent.
+
+    Args:
+        stored: the wide frame as :func:`qde.storage.load_series_local` returns it.
+        series_id / source: what to re-fetch.
+        loader: injected ``(series_id, source, start) -> DataFrame``, so tests need
+            no network.
+        rtol / atol: closeness tolerance. Both are needed: a scalar series is
+            legitimately zero or negative (``T10Y2Y`` inverts), and a purely
+            relative comparison is undefined at zero and explodes near it.
+
+    Returns:
+        One violation per divergence class; empty if the source reproduced what it
+        said before.
+    """
+    if loader is None:
+        def loader(series_id, source, start):  # pragma: no cover - trivial adapter
+            from qde.ingest import get_ingestor
+
+            return get_ingestor(source).load(series_id, start=start)
+
+    settled = _settled(stored)
+    if settled is None:
+        return []
+
+    start = str(settled.index.min().date())
+    try:
+        again = loader(series_id, source, start)
+    except Exception as exc:
+        return [_v("series", source, series_id, "self_consistency", "warn",
+                   f"could not re-fetch {series_id} from {start} to confirm its history "
+                   f"({type(exc).__name__}) — revisions unverified")]
+
+    if again is None or again.empty or not isinstance(again.index, pd.DatetimeIndex):
+        return [_v("series", source, series_id, "self_consistency", "warn",
+                   f"re-fetch of {series_id} returned nothing comparable; "
+                   "revisions unverified")]
+
+    # A naive index cannot be compared against the stored UTC one at all — pandas
+    # raises rather than guessing an offset. That is a real defect in the source (the
+    # lake is UTC end to end), so it is reported as one instead of escaping as a
+    # TypeError that says nothing about the data.
+    if again.index.tz is None:
+        return [_v("series", source, series_id, "self_consistency", "error",
+                   f"re-fetch of {series_id} has a timezone-naive index; it cannot be "
+                   "aligned with stored UTC history, so revisions are unverifiable")]
+
+    again, out = _dedupe_refetch(again, "series", source, series_id)
+    out += _row_divergence(settled, again, "series", source, series_id)
+
+    shared = settled.index.intersection(again.index)
+    if len(shared) == 0:
+        return out
+
+    # Every metric, not just the first. A multi-metric series (CFTC COT carries
+    # eleven trader-category columns) can be revised in one column alone, and
+    # checking one while trusting ten is a spot check reporting as a guarantee.
+    revised: list[tuple[str, int, float]] = []
+    compared = 0
+    for column in settled.columns:
+        if column not in again.columns:
+            out.append(_v("series", source, series_id, "self_consistency", "error",
+                          f"metric {column!r} is stored but absent from the re-fetch — "
+                          "the source stopped serving a series it previously served"))
+            continue
+
+        before = pd.to_numeric(settled.loc[shared, column], errors="coerce")
+        after = pd.to_numeric(again.loc[shared, column], errors="coerce")
+        comparable = before.notna() & after.notna()
+        if not bool(comparable.any()):
+            continue
+
+        compared += int(comparable.sum())
+        x, y = before[comparable], after[comparable]
+        differs = ~np.isclose(x.to_numpy(), y.to_numpy(), rtol=rtol, atol=atol)
+        if differs.any():
+            worst = float((x[differs] - y[differs]).abs().max())
+            revised.append((str(column), int(differs.sum()), worst))
+
+    # The mirror of a vanished metric: the source has started serving one the lake
+    # does not hold. Not a defect in what is stored, but the stored series is now an
+    # incomplete copy of what is available, and only a backfill will widen it.
+    added = [c for c in again.columns if c not in settled.columns]
+    if added:
+        out.append(_v("series", source, series_id, "self_consistency", "warn",
+                      f"the source now serves {len(added)} metric(s) this series does "
+                      f"not store ({', '.join(map(str, added[:4]))}) — a backfill would "
+                      "widen it"))
+
+    if not compared and not out:
+        # Every shared row was null on one side or the other, so the comparison ran
+        # and established nothing. "Nothing disagreed" and "nothing could disagree"
+        # are the two states this module exists to keep apart.
+        out.append(_v("series", source, series_id, "self_consistency", "warn",
+                      f"no value in {series_id} could be compared across the two "
+                      "fetches (every shared date is null on one side); revisions "
+                      "unverified"))
+
+    if revised:
+        revised.sort(key=lambda r: r[2], reverse=True)
+        name, count, worst = revised[0]
+        extra = f" (and {len(revised) - 1} other metric(s))" if len(revised) > 1 else ""
+        out.append(_v("series", source, series_id, "self_consistency", "warn",
+                      f"{count} settled value(s) of {name!r} have been revised since they "
+                      f"were stored (largest change {worst:g}){extra} — normal for macro "
+                      "data, but the stored copy is now an old vintage; re-run "
+                      f"`python -m qde.backfill` for {source}/{series_id} to refresh it"))
+
+    return out
+
+
 def proxy_check(
     symbol: str,
     source: str,
@@ -628,6 +777,77 @@ def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
     }
 
 
+def _settled(stored: pd.DataFrame) -> pd.DataFrame | None:
+    """Rows old enough to be final, or None if there is nothing to compare.
+
+    Today's row is still forming and *should* differ between two fetches, so
+    including it would make every check report a revision every time it ran.
+    """
+    if stored.empty or not isinstance(stored.index, pd.DatetimeIndex):
+        return None  # without a date index there is nothing to line two fetches up by
+    settled = stored[stored.index < pd.Timestamp.now(tz="UTC").normalize()]
+    return settled if len(settled) >= 2 else None
+
+
+def _dedupe_refetch(
+    again: pd.DataFrame, group: str, source: str, series_id: str
+) -> tuple[pd.DataFrame, list[Violation]]:
+    """Collapse a re-fetch that repeats a date, and report that it did.
+
+    A source serving the same date twice is a defect in its own right — the two
+    rows may disagree, and which one is "the" value is then undefined. It also
+    breaks the comparison itself: `.loc[shared]` returns more rows than `shared`
+    has, so a positional comparison raises on the shape mismatch while an aligned
+    one quietly compares a cartesian product. Neither is an answer.
+
+    Deduplicated keeping the last occurrence, matching what the upsert would do, so
+    the rest of the check still produces a verdict instead of only an exception.
+    """
+    if not again.index.has_duplicates:
+        return again, []
+    n = int(again.index.duplicated().sum())
+    return again[~again.index.duplicated(keep="last")], [
+        _v(group, source, series_id, "self_consistency", "error",
+           f"the re-fetch repeats {n} date(s) (e.g. "
+           f"{again.index[again.index.duplicated()][0].date()}) — the source is "
+           "serving the same period more than once, so its value there is ambiguous")
+    ]
+
+
+def _row_divergence(
+    settled: pd.DataFrame, again: pd.DataFrame, group: str, source: str, series_id: str
+) -> list[Violation]:
+    """Rows that disappeared or materialised, independent of any value comparison.
+
+    Shared by both groups because the failure is identical whatever the columns
+    hold: history that a source served once and no longer serves, and history it
+    back-fills after the fact. Neither is visible to a check that only compares
+    the rows the two fetches happen to have in common.
+    """
+    out: list[Violation] = []
+
+    vanished = settled.index.difference(again.index)
+    if len(vanished):
+        out.append(_v(group, source, series_id, "self_consistency", "error",
+                      f"{len(vanished)} date(s) present in stored history are missing "
+                      f"on re-fetch (e.g. {vanished[0].date()}) — the source is "
+                      "dropping history it previously served"))
+
+    # Bounded by the stored window: rows *after* it are simply newer observations,
+    # which is the normal case and not a divergence at all. Compared by membership
+    # rather than a generated daily range, so a monthly or quarterly series is
+    # handled the same as a daily one.
+    lo, hi = settled.index.min(), settled.index.max()
+    inside = again.index[(again.index >= lo) & (again.index <= hi)]
+    appeared = inside.difference(settled.index)
+    if len(appeared):
+        out.append(_v(group, source, series_id, "self_consistency", "warn",
+                      f"{len(appeared)} date(s) inside the stored window appeared only "
+                      f"on re-fetch (e.g. {appeared[0].date()}) — the source back-filled "
+                      "history that was absent when this series was built"))
+    return out
+
+
 def self_consistency(
     stored: pd.DataFrame,
     symbol: str,
@@ -668,13 +888,8 @@ def self_consistency(
     if loader is None:
         from qde.loaders import load_ohlcv as loader  # type: ignore[assignment]
 
-    if stored.empty or not isinstance(stored.index, pd.DatetimeIndex):
-        # Without a date index there is nothing to line the two fetches up by.
-        return []
-
-    # Only settled days: today's bar is still forming and *should* differ.
-    settled = stored[stored.index < pd.Timestamp.now(tz="UTC").normalize()]
-    if len(settled) < 2:
+    settled = _settled(stored)
+    if settled is None:
         return []
 
     start, end = str(settled.index.min().date()), str(settled.index.max().date())
@@ -685,28 +900,8 @@ def self_consistency(
                    f"could not re-fetch {start}..{end} to confirm history "
                    f"({type(exc).__name__}) — consistency unverified")]
 
-    out: list[Violation] = []
-
-    # Rows that were there before and are not now. A source quietly dropping
-    # history is invisible to any check that only reads what it currently returns.
-    vanished = settled.index.difference(again.index)
-    if len(vanished):
-        out.append(_v("bars", source, symbol, "self_consistency", "error",
-                      f"{len(vanished)} date(s) present in stored history are missing "
-                      f"on re-fetch (e.g. {vanished[0].date()}) — the source is "
-                      "dropping history it previously served"))
-
-    # Rows the source did not have before and does now. Not a defect — late data
-    # and gap-filling are real — but a series that grows retroactively means any
-    # backtest run before the fill saw a different history than the one on disk.
-    appeared = again.index.intersection(
-        pd.date_range(settled.index.min(), settled.index.max(), freq="D", tz="UTC")
-    ).difference(settled.index)
-    if len(appeared):
-        out.append(_v("bars", source, symbol, "self_consistency", "warn",
-                      f"{len(appeared)} date(s) inside the stored window appeared only "
-                      f"on re-fetch (e.g. {appeared[0].date()}) — the source back-filled "
-                      "history that was absent when this series was built"))
+    again, out = _dedupe_refetch(again, "bars", source, symbol)
+    out += _row_divergence(settled, again, "bars", source, symbol)
 
     shared = settled.index.intersection(again.index)
     if len(shared) == 0:
@@ -822,6 +1017,17 @@ def _structural(df: pd.DataFrame, group: str, source: str, series_id: str) -> li
     """Shape: is this even the right kind of object to store?"""
     out: list[Violation] = []
 
+    # An unrecognised group has no contract to be checked against, so every check
+    # below either skips it or finds nothing — and the caller receives an empty
+    # list, which in this module means "verified". A typo (`bars` -> `bar`) would
+    # therefore switch verification off entirely and report success. Refusing an
+    # unknown group is the difference between "nothing was wrong" and "nothing was
+    # checked", which is the distinction this whole module exists to preserve.
+    if group not in _REQUIRED_COLUMNS:
+        return [_v(group, source, series_id, "group", "error",
+                   f"unknown group {group!r}; expected one of "
+                   f"{', '.join(sorted(_REQUIRED_COLUMNS))} — nothing was verified")]
+
     if df.empty:
         # Not a defect on its own — the ingestor contract raises NoNewData for a
         # caught-up pull — but a frame that reached verification empty means the
@@ -935,10 +1141,20 @@ def _parseable(df: pd.DataFrame, group: str, source: str, series_id: str) -> lis
     for *parseability* before anything is allowed to compare it.
     """
     out: list[Violation] = []
-    if group != "bars":
+    # `series` is checked here too. It was originally skipped, which left the group
+    # with no parse check at all: a frame whose `value` column was FRED's literal
+    # missing marker "." — or comma-formatted strings, or entirely null — passed
+    # with zero violations. FRED's own ingestor coerces correctly, which is exactly
+    # why this matters: the contract exists to hold *generated* ingestors to what
+    # the hand-written one already does.
+    columns = {
+        "bars": ("open", "high", "low", "close", "volume"),
+        "series": ("value",),
+    }.get(group, ())
+    if not columns:
         return out
 
-    for column in ("open", "high", "low", "close", "volume"):
+    for column in columns:
         if column not in df.columns:
             continue
         raw = df[column]
@@ -954,11 +1170,24 @@ def _parseable(df: pd.DataFrame, group: str, source: str, series_id: str) -> lis
                           f"(e.g. {sample!r}) — needs parsing before storage"))
             continue
 
-        # OHLCV carries no nulls: a missing price is a defect, not a gap.
         nulls = int(coerced.isna().sum())
-        if nulls:
+        if not nulls:
+            continue
+
+        if group == "bars":
+            # OHLCV carries no nulls: a missing price is a defect, not a gap.
             out.append(_v(group, source, series_id, "nulls", "error",
                           f"{nulls} null value(s) in {column!r}; OHLCV tolerates none"))
+        elif nulls == len(coerced):
+            # A scalar series legitimately has holes — FRED keeps the row and nulls
+            # the value, deliberately, so the gap stays visible. Per-source null
+            # tolerance is `qde.checks`' job against stored history. But a window
+            # where *every* observation is missing is not a gap, it is a pull that
+            # returned nothing and should have raised NoNewData.
+            out.append(_v(group, source, series_id, "nulls", "warn",
+                          f"all {nulls} value(s) are null; the window carries no "
+                          "observation at all, which a caught-up pull should report "
+                          "as NoNewData rather than as data"))
 
     return out
 

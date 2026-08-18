@@ -21,7 +21,7 @@ Live source freshness and the nightly data-quality record are at
 ```mermaid
 flowchart TD
     subgraph SRC["Sources"]
-      REST["12 sources · REST APIs<br/>6 crypto venues · FRED · CBOE · CFTC · yfinance"]
+      REST["12 REST sources · batch APIs<br/>6 crypto venues · FRED · CBOE · CFTC · yfinance"]
       WS["Binance + Coinbase WebSocket<br/>trades · depth · book_ticker"]
     end
 

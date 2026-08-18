@@ -453,3 +453,98 @@ def test_staging_files_cannot_pollute_the_next_merge(tmp_path):
     stray = list((tmp_path / "bronze").rglob("all.parquet"))
     assert stray == [], "a consolidated file must never be left inside the lake tree"
     assert _STAGING not in {p.name for p in (tmp_path / "bronze").rglob("*")}
+
+
+# --- the catalogue must describe the file it publishes, not the lake it read -------
+
+
+def test_catalogue_row_counts_exclude_withheld_sources(tmp_path):
+    # Found live: catalogue.json advertised 57,362 bars rows against a public file
+    # holding 40,642. Nothing leaked — the publish filter was correct — but the
+    # published *description* of the product overstated it by 29%, because the count
+    # was taken over the whole local lake including yfinance.
+    _tiny_lake(str(tmp_path))
+    cat = build_catalogue(str(tmp_path), public_base_url="https://data.test")
+
+    bars = next(d for d in cat["datasets"] if d["id"] == "bars")
+    assert bars["row_count"] == 2, "binance only; the two yfinance rows are never published"
+
+    gold = next(d for d in cat["datasets"] if d["id"] == "fct_bars_daily")
+    assert gold["row_count"] == 1, "the gold mart is row-filtered on publish too"
+
+
+def test_the_advertised_count_matches_what_publish_actually_uploads(tmp_path):
+    # The invariant that makes the bug impossible rather than merely fixed: whatever
+    # the catalogue claims, read the bytes the publisher uploaded and count them.
+    _tiny_lake(str(tmp_path))
+    fake = FakeS3()
+    publish_public(str(tmp_path), "pub", fake, public_base_url="https://data.test")
+
+    blob = fake.blobs[("pub", "bronze/group=bars/all.parquet")]
+    uploaded = duckdb.connect().execute(
+        "SELECT count(*) FROM read_parquet(?)", [_spill(tmp_path, blob)]
+    ).fetchone()[0]
+
+    cat = build_catalogue(str(tmp_path), public_base_url="https://data.test")
+    advertised = next(d for d in cat["datasets"] if d["id"] == "bars")["row_count"]
+    assert advertised == uploaded, (
+        f"catalogue advertises {advertised} rows, public file holds {uploaded}"
+    )
+
+
+def _spill(tmp_path, blob: bytes) -> str:
+    path = Path(tmp_path) / "_uploaded.parquet"
+    path.write_bytes(blob)
+    return path.as_posix()
+
+
+# --- one definition of "late", published so every surface can share it ------------
+
+
+def _write_weekly_series(base, source, series_id, weeks=12):
+    part = Path(base) / "bronze" / "group=series" / f"source={source}" / f"series_id={series_id}"
+    part.mkdir(parents=True, exist_ok=True)
+    idx = pd.DatetimeIndex(
+        pd.date_range("2024-01-05", periods=weeks, freq="7D", tz="UTC"), name="date"
+    )
+    pd.DataFrame({"value": range(weeks)}, index=idx).to_parquet(part / "series.parquet")
+
+
+def test_the_catalogue_publishes_the_threshold_the_pipeline_enforces(tmp_path):
+    # The status page graded freshness with its own group constants (series = 72h),
+    # so CFTC's weekly release looked overdue every week and the page reported
+    # "2 of 14 sources behind schedule" on a night the pipeline logged zero
+    # violations. The threshold now ships with the data, from qde.checks itself.
+    from qde.checks import freshness_threshold
+    from qde.registry import get_spec
+
+    _write_weekly_series(str(tmp_path), "cftc", "ES")
+    cat = build_catalogue(str(tmp_path), public_base_url="https://data.test")
+
+    cftc = next(s for s in cat["sources"] if s["name"] == "cftc")
+    published = cftc["expected_within_hours"]
+
+    dates = pd.DatetimeIndex(pd.date_range("2024-01-05", periods=12, freq="7D", tz="UTC"))
+    floor = pd.Timedelta(minutes=get_spec("cftc").freshness_sla_minutes)
+    expected = freshness_threshold(dates, floor).total_seconds() / 3600
+
+    assert published == round(expected, 1)
+    assert published > 168, "a weekly release must not be judged on a daily budget"
+
+
+def test_a_multi_metric_series_is_measured_at_the_metric_grain(tmp_path):
+    # CFTC's eleven metrics share one series_id and identical report dates. Keyed on
+    # series_id alone they pool, the gaps collapse to zero, and a weekly release
+    # inherits the 25-hour SLA floor.
+    base = Path(tmp_path) / "bronze" / "group=series" / "source=cftc" / "series_id=ES"
+    idx = pd.DatetimeIndex(
+        pd.date_range("2024-01-05", periods=12, freq="7D", tz="UTC"), name="date"
+    )
+    for metric in ("dealer_long", "dealer_short", "lev_long"):
+        part = base / f"metric={metric}"
+        part.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"value": range(12)}, index=idx).to_parquet(part / "series.parquet")
+
+    cat = build_catalogue(str(tmp_path), public_base_url="https://data.test")
+    cftc = next(s for s in cat["sources"] if s["name"] == "cftc")
+    assert cftc["expected_within_hours"] > 168, "pooled metrics collapsed the cadence"

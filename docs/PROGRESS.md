@@ -27,7 +27,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 12 | Catalogue and publishing | **Done and live** — public bucket, catalogue, site + `/status` at <https://quant-data-engine.israeladetola.workers.dev> |
 
 **Current focus (from 2026-08-16): none — the build is paused deliberately.** Every
-phase that gates the platform being *usable* has landed: 12 sources across four group
+phase that gates the platform being *usable* has landed: 14 sources across four group
 shapes, streaming + batch ingestion running nightly on the VPS, dbt marts for all four
 groups, data-quality and host-health checks with alerting and history, a public lake,
 a catalogue, and a live site with a `/status` page. What remains is genuinely optional
@@ -997,7 +997,7 @@ static `catalogue.json`. The catalogue-as-live-service [open] question resolved 
       rows + freshness + redistributable flag, and per-dataset (3 bronze groups + 3 gold
       marts) schema, row count, freshness, and a **copyable DuckDB query** against the
       public URL. Published alongside the data by `publish_public`. Verified on the real
-      lake: 12 sources, 6 datasets.
+      lake: 14 sources, 7 datasets.
 - [x] **React showcase site (`site/`)** — Vite + React app, **console-first**: the
       DuckDB-WASM console *is* the hero. On load the opening query types itself in, the
       WASM engine boots, and a real query runs against real data before the visitor
@@ -1182,6 +1182,72 @@ Two findings that changed the design, both from measuring rather than reasoning:
       `proxy_candidates`: whether any is actually related has to be measured, and a
       field named `proxies` claimed evidence the function had not gathered.
 
+### Third audit pass — the contract was two-thirds unenforced *(2026-08-17)*
+
+- [x] **`verify_frame` had exactly one production call site.** Only `update_ohlcv`
+      passed an intake list, so the `series` and `events` contracts were written,
+      tested, and never applied to anything the running system fetched. `update_series`
+      and `update_events` now take the same optional `violations` list, and
+      `daily_update` passes `intake` to all three groups.
+- [x] **An unknown group returned "no violations" — i.e. verified.** Every check either
+      skips an unrecognised group or finds nothing in it, so a typo (`bars` → `bar`)
+      switched verification off entirely *and reported success*. Now refused outright:
+      "nothing was wrong" and "nothing was checked" must not look alike.
+- [x] **The `series` group had no parse check at all.** A `value` column of FRED's
+      literal missing marker `"."`, of comma-formatted strings, or entirely null passed
+      with zero violations. FRED's own ingestor coerces correctly — which is exactly the
+      point, since this contract exists to hold *generated* ingestors to what the
+      hand-written one already does.
+- [x] Deliberately **not** added: a variance check for `series`. A policy rate held flat
+      for months is the most important kind of macro series, not a broken one — the check
+      that catches a constant *price* would fire on every one of them.
+
+Validated against production rather than fixtures: all **233 stored series partitions**
+and the full **33,447-row events file** clear the newly-enforced contract on first
+application, with zero findings. Events verification costs 682 ms.
+
+**Known limitation, not fixed:** a revision to an already-stored `series` observation is
+invisible to both passes. `update_series` is watermark-advanced and documents this;
+`self_consistency` is bars-shaped (open/high/low/close). Macro data revises constantly,
+so this is a real gap — the `events` group captures revisions bitemporally for the
+calendars that have one, but a plain FRED series has no such record.
+
+### Series revision detection — the last known gap, closed *(2026-08-17)*
+
+The gap flagged in the third pass and left open for a decision. `update_series` is
+watermark-advanced: it fetches from the day after the newest stored observation, so a
+value it already holds is never requested again and **a revision to it is invisible to
+the nightly by design** — while macro data revises constantly.
+
+- [x] `qde.storage.load_series_local` — reads a stored series back as the *wide* frame
+      an ingestor returns, the exact inverse of `upsert_series_frame`, so a single-value
+      source round-trips to one `value` column and a multi-metric one (CFTC COT's eleven
+      trader categories) to one column per metric. Outer-joined: a metric added later
+      legitimately starts later, and an inner join would silently truncate every other
+      metric to its history.
+- [x] `qde.verify.series_self_consistency` — every metric, not just the first; a metric
+      that disappears is an `error`; vanished and back-filled rows reuse the same shared
+      helpers as the bars check, which was refactored onto them with no behaviour change.
+- [x] Wired into the weekly pass. **Full history** is re-fetched rather than a bounded
+      window: measured at 0.4-3.0s per source, so bounding it would trade a real
+      capability — catching a benchmark revision that restates decades — for a saving
+      the box does not need.
+- [x] Severity is `warn`, not `error`: a statistical agency revising a first estimate is
+      the data working as designed. GDP is revised for years, and reporting that at error
+      severity would fire on the most important series in the lake every month. The
+      finding names its own remediation instead.
+- [x] Tolerance is `rtol=1e-6` **plus** `atol=1e-9`. A scalar series is legitimately zero
+      or negative — `T10Y2Y` inverts — and a purely relative comparison is undefined at
+      zero and explodes near it.
+
+**It found six live stale vintages on first run.** Measured against live FRED:
+`PAYEMS` (off by 66,000 jobs), `INDPRO` (5 values), `ICSA` (3), `RSAFS` (4), `HOUST` (2),
+`DTWEXBGS` (1). Every unrevised series — `DGS10`, `UNRATE`, `FEDFUNDS`, `GDPC1`,
+`CPIAUCSL`, `T10Y2Y` — came back clean, so none of it is float noise. The full pass is
+70 series in 45 seconds with zero failures.
+
+**Action outstanding:** those six series need a re-backfill to refresh the stored vintage.
+
 ### Weekly cadence
 
 - [x] `qde.weekly_verify` + `scripts/weekly_verify.sh` — runs `self_consistency` and
@@ -1226,6 +1292,59 @@ Re-reviewed before moving on. Every one of these was introduced by the work abov
 - [x] `dq_history._merge` would have **duplicated instead of replaced** on upgrade day:
       legacy rows have no `cadence`, so a same-day re-run keyed them differently. Legacy
       rows are back-filled to `daily` before the merge.
+
+---
+
+## Full-system audit — 2026-08-18
+
+Local, VPS, R2, and the public site, end to end.
+
+**Healthy, verified live:** both collectors capturing (7,665 part files in 3h); nightly
+cron running as `deploy` with six consecutive `failed=0` runs and **violations=0** on
+2026-08-18; make-before-break handover active (20 events, 3 routine reconnects with gaps
+correctly recorded); private and public buckets both current; site live at 70ms with all
+three DuckDB-WASM presets executing against the public bucket and zero console errors;
+no orphaned data — every source in the lake is registry-declared.
+
+Also resolved: the long-open `fred/DTWEXBGS` question. Its 10-day freshness warning on
+2026-08-17 cleared on 2026-08-18.
+
+**Fixed in this pass:**
+
+- [x] **The catalogue advertised data nobody could download.** `row_count` was measured
+      over the whole local lake while describing the *public* file, so `bars` read
+      57,362 against a public file of 40,642 — a 29% overstatement, live on the site.
+      No leak: yfinance was correctly absent from both public bronze and gold. The
+      redistributable rule now has one home (`qde.registry.redistributable_sources`)
+      used by both the publisher and the catalogue, and a test asserts the advertised
+      count equals the bytes actually uploaded.
+- [x] **The status page contradicted the pipeline.** It graded freshness with its own
+      group constants (series = 72h), so CFTC's weekly COT release looked overdue every
+      week — "2 of 14 sources behind schedule" on a night the pipeline logged zero
+      violations, on a page whose own copy promises "one definition, many consumers".
+      `qde.checks.freshness_threshold` is now the single definition, published per
+      source as `expected_within_hours`; CFTC resolves to 504h (3 x weekly).
+- [x] Measured at the **metric grain**, not per source: CFTC's eleven trader-category
+      metrics share one `series_id` and identical dates, so pooling them collapsed the
+      gaps and read a weekly release as a 25-hour cadence.
+- [x] A bare `except: continue` in the new threshold code hid a real failure on a lake
+      holding only flat series — every threshold vanished silently and consumers
+      reverted to guessing. Now probed and logged.
+- [x] Stale doc counts (12 -> 14 sources).
+
+**Open, needing a decision:**
+
+- **The VPS is 5 commits behind** `main` — none of the verification tier is deployed.
+- **Weekly verification cron is not installed** on the box.
+- **7.1 GB reclaimable Docker build cache** (disk 22% -> 39% since 2026-08-16); the
+  documented remedy is `docker builder prune -af`.
+- `maintain.log` has **no logrotate rule** (1.4 MB and growing unbounded).
+- The public **status page lists yfinance** with row counts read from the private lake,
+  under a heading promising "nothing is asserted that you cannot re-run yourself".
+  Untouched deliberately — the site's visual design is the owner's to change.
+- **5 declared-but-unseeded bars symbols** (`kraken/ETHUSDT`, four yfinance): the
+  catalogue advertises symbols with no data behind them.
+- **6 FRED series are stale vintages** and need a re-backfill (see the section above).
 
 ---
 

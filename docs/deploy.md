@@ -8,8 +8,9 @@ things:
 2. **Daily lake maintenance**, via a cron job that runs `scripts/maintain.sh` at
    00:30 UTC.
 3. **Weekly deep verification**, via a cron job that runs `scripts/weekly_verify.sh`
-   — re-fetches every stored daily series and confirms the source still returns
-   what it returned before, then checks each series against a related instrument.
+   — re-fetches every stored daily bar *and* scalar series, confirms each source
+   still returns what it returned before, and checks peerless symbols against a
+   related instrument.
    See [Weekly verification](#weekly-verification) below for why it is a separate
    entry rather than a Sunday branch inside `maintain.sh`.
 
@@ -78,15 +79,24 @@ none are baked into the image.
 
 ## Weekly verification
 
-`scripts/weekly_verify.sh` → `python -m qde.weekly_verify`. Two checks that the
-nightly structurally cannot do, because both need a second look at the *source*
-rather than at the lake:
+`scripts/weekly_verify.sh` → `python -m qde.weekly_verify`. Three checks the nightly
+structurally cannot do, because each needs a second look at the *source* rather than
+at the lake:
 
 - **`self_consistency`** — re-fetches settled history and confirms the source still
   returns the same numbers. Catches a feed that silently revises history, a
   non-deterministic backend, or pagination that drops rows depending on where the
   walk starts. All of those produce individually perfect frames; they are visible
   only by asking twice.
+- **`series_self_consistency`** — the same question asked of scalar series, and it
+  closes a blind spot that is structural rather than incidental. `update_series` is
+  watermark-advanced: it fetches from the day after the newest stored observation, so
+  a value already held is never requested again and a **revision to it is invisible
+  to the nightly by design** — while macro data revises constantly. Full history is
+  re-fetched (measured at 0.4-3.0s per source), so even a benchmark revision that
+  restates decades is caught. Reported at `warn`: a statistical agency revising a
+  first estimate is the data working as designed, not a broken feed, but the stored
+  copy becomes an old vintage and the finding names its own fix (`qde.backfill`).
 - **`proxy_check`** — for a symbol no other source carries, compares it against a
   *related* instrument. It cannot confirm a price, only detect gross decoupling: a
   frozen feed, a mislabelled ticker, a mirror serving noise. Reads the lake, so it
@@ -124,8 +134,10 @@ because they are two different statements:
   single week with nothing anyone could do about it, and a channel that cries wolf
   weekly gets muted — including the week it finally carries a frozen feed.
 
-On the current lake that means a healthy week is completely silent: 20 series
-checked, 2 `proxy_unavailable` warns recorded, nothing sent.
+On the current lake a full pass checks **70 series (20 bars + 50 scalars) in ~45
+seconds**. The `proxy_unavailable` pair (GLD, TLT) is recorded and stays silent;
+a revised series *does* alert, because re-backfilling it is a real action someone
+should take.
 
 Results land in `quality/dq_runs` and `quality/dq_violations` like the nightly's,
 tagged `cadence='weekly'` so the two passes are never averaged together — they

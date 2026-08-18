@@ -106,3 +106,39 @@ def test_run_skips_a_failing_series(tmp_path, monkeypatch):
 
     assert summary["updated"] == 0 and summary["failed"] == 1
     assert (Path(tmp_path) / "quality_summary.csv").exists()
+
+
+# --- intake verification must reach all three groups, not just bars ---------------
+#
+# `verify_frame` had exactly one production call site (bars). The series and events
+# contracts were written, tested, and never applied to anything the running system
+# fetched — two thirds of the contract was dead code in production.
+
+
+def test_a_defective_series_frame_is_verified_at_intake(tmp_path, monkeypatch, offline_fred):
+    from qde.storage import upsert_series
+
+    idx = pd.DatetimeIndex(pd.to_datetime(["2023-12-01"], utc=True), name="date")
+    upsert_series(
+        pd.DataFrame({"value": [1.0]}, index=idx), "DGS10", "fred", base_dir=str(tmp_path)
+    )
+
+    # An ingestor that forgot to coerce FRED's "." missing marker. Every row is
+    # present and the frame looks entirely normal.
+    unparsed = pd.DataFrame(
+        {"value": ["."] * 3},
+        index=pd.DatetimeIndex(
+            pd.to_datetime(["2023-12-02", "2023-12-03", "2023-12-04"], utc=True), name="date"
+        ),
+    )
+
+    class _Ingestor:
+        def load(self, *a, **k):
+            return unparsed
+
+    monkeypatch.setattr("qde.ingest.get_ingestor", lambda source: _Ingestor())
+
+    summary = run(str(tmp_path))
+    assert any(v.check == "numeric" and v.group == "series" for v in summary["violations"]), (
+        "an unparsed series frame must be caught as it arrives"
+    )

@@ -69,6 +69,33 @@ class Violation:
         return "/".join(parts)
 
 
+def freshness_threshold(
+    dates: pd.DatetimeIndex, sla_floor: pd.Timedelta
+) -> pd.Timedelta | None:
+    """How old this series' newest observation may be before it counts as stale.
+
+    ``max(floor, factor x typical_gap)``, where ``typical_gap`` is a high percentile
+    of recent inter-observation spacings — so a daily series tolerates weekends, a
+    weekly one tolerates about a fortnight, and an 8-hourly one is held to hours,
+    without any of them being told their frequency.
+
+    Public because it is *the* definition of "late" on this platform and it must have
+    exactly one home. The status page previously graded freshness with its own
+    group-level constants (bars 24h, series 72h) and so reported "2 of 14 sources
+    behind schedule" on a night the pipeline recorded zero violations — the site
+    contradicting the pipeline it reports on, while advertising "one definition,
+    many consumers" three sections further up the same page.
+
+    Returns None when there are too few observations to infer a cadence at all.
+    """
+    if len(dates) < 3:
+        return None
+    ordered = dates.sort_values()
+    gaps = ordered.to_series().diff().dropna().tail(_CADENCE_WINDOW)
+    typical = pd.Timedelta(gaps.quantile(0.9))  # the largest *ordinary* gap
+    return max(typical * _STALE_FACTOR, sla_floor)
+
+
 def _freshness_detail(
     dates: pd.DatetimeIndex, now: pd.Timestamp, sla_floor: pd.Timedelta
 ) -> str | None:
@@ -79,14 +106,11 @@ def _freshness_detail(
     tolerates weekends, a weekly one tolerates ~a fortnight, and an 8-hourly one is
     held to hours, all without being told its frequency.
     """
-    if len(dates) < 3:
+    threshold = freshness_threshold(dates, sla_floor)
+    if threshold is None:
         return None  # too few points to infer a cadence; nothing to judge against
 
     ordered = dates.sort_values()
-    gaps = ordered.to_series().diff().dropna().tail(_CADENCE_WINDOW)
-    typical = pd.Timedelta(gaps.quantile(0.9))  # the largest *ordinary* gap (absorbs weekends)
-    threshold: pd.Timedelta = max(typical * _STALE_FACTOR, sla_floor)
-
     age = now - ordered[-1]
     if age > threshold:
         return (

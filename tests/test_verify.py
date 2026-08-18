@@ -14,6 +14,7 @@ from qde.verify import (
     cross_check,
     proxy_check,
     self_consistency,
+    series_self_consistency,
     verify_frame,
 )
 
@@ -836,3 +837,225 @@ def test_a_coverage_complaint_survives_a_later_peer_agreeing_on_price():
     assert violations, "the unresolved coverage conflict must not be dropped"
     assert violations[0].severity == "warn"
     assert "unresolved" in violations[0].detail
+
+
+# --- the group name itself is part of the contract --------------------------------
+
+
+def test_an_unknown_group_is_refused_rather_than_silently_passed():
+    # Every check either skips an unrecognised group or finds nothing in it, so the
+    # caller got back an empty list — which in this module means "verified". A typo
+    # switched verification off entirely and reported success.
+    violations = verify_frame(_bars(), "bar", "tiingo", "SPY")
+    assert violations and violations[0].check == "group"
+    assert "nothing was verified" in violations[0].detail
+
+
+@pytest.mark.parametrize("group", ["bars", "series", "events"])
+def test_every_real_group_is_still_accepted(group):
+    assert "group" not in _checks(_bars(), group=group)
+
+
+# --- the series group had no parse check at all -----------------------------------
+
+
+def _series_frame(values):
+    idx = pd.DatetimeIndex(
+        pd.date_range("2024-01-01", periods=len(values), freq="D", tz="UTC"), name="date"
+    )
+    return pd.DataFrame({"value": values}, index=idx)
+
+
+def test_freds_missing_marker_left_unparsed_is_caught():
+    # FRED sends a missing observation as the string ".". Its own ingestor coerces
+    # correctly — which is the point: this contract exists to hold a *generated*
+    # ingestor to what the hand-written one already does.
+    violations = verify_frame(_series_frame(["."] * 5), "series", "fred", "UNRATE")
+    assert violations and violations[0].check == "numeric"
+
+
+def test_comma_formatted_numbers_in_a_series_are_caught():
+    assert "numeric" in _checks(_series_frame(["1,234.5"] * 5), group="series")
+
+
+def test_a_window_with_no_observation_at_all_is_surfaced():
+    violations = verify_frame(_series_frame([None] * 5), "series", "fred", "UNRATE")
+    assert violations and violations[0].severity == "warn"
+    assert "NoNewData" in violations[0].detail
+
+
+def test_a_genuine_hole_in_a_series_is_not_a_defect():
+    # Unlike OHLCV, a scalar series legitimately has gaps — FRED keeps the row and
+    # nulls the value on purpose, so the gap stays visible.
+    assert verify_frame(_series_frame([1.0, 2.0, None, 4.0, 5.0]), "series") == []
+
+
+def test_a_constant_series_is_not_a_defect():
+    # A policy rate held flat for months is the most important kind of macro series,
+    # not a broken one. The variance check that catches a constant *price* would
+    # fire on every one of them.
+    assert verify_frame(_series_frame([3.5] * 5), "series") == []
+
+
+# --- series self-consistency: the revision blind spot ------------------------------
+#
+# `update_series` is watermark-advanced, so a value it already holds is never asked
+# for again and a revision to it is invisible to the nightly *by design*. Measured
+# against live FRED when this was written, the lake held six stale series.
+
+
+def _scalar(values, columns=("value",), start="2020-01-01"):
+    idx = pd.DatetimeIndex(
+        pd.date_range(start, periods=len(values), freq="D", tz="UTC"), name="date"
+    )
+    data = {c: list(values) for c in columns}
+    return pd.DataFrame(data, index=idx)
+
+
+_OBS = [3.5, 3.6, 3.4, 3.9, 4.1, 4.0, 3.8, 3.7]
+
+
+def _past(frame):
+    """Shift a frame so every row is settled (dated before today)."""
+    end = pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2)
+    idx = pd.date_range(end=end, periods=len(frame), freq="D", tz="UTC", name="date")
+    return frame.set_axis(idx)
+
+
+def test_a_series_that_reproduces_itself_passes():
+    stored = _past(_scalar(_OBS))
+    assert series_self_consistency(stored, "UNRATE", "fred", loader=lambda *a: stored) == []
+
+
+def test_a_revised_observation_is_reported_with_its_remediation():
+    # Normal for macro data, which is why it is a warn — but the stored copy is now
+    # an old vintage, and nothing else in the platform records which vintage it is.
+    stored = _past(_scalar(_OBS))
+    revised = stored.copy()
+    revised.iloc[2, 0] = 99.0
+    violations = series_self_consistency(stored, "PAYEMS", "fred", loader=lambda *a: revised)
+    assert violations and violations[0].severity == "warn"
+    assert "old vintage" in violations[0].detail
+    assert "qde.backfill" in violations[0].detail, "a finding should name its fix"
+
+
+def test_a_revision_in_one_metric_of_many_is_caught():
+    # CFTC COT carries eleven trader-category columns. Checking one while trusting
+    # ten is a spot check reporting as a guarantee.
+    columns = ("dealer_long", "dealer_short", "lev_long")
+    stored = _past(_scalar(_OBS, columns=columns))
+    revised = stored.copy()
+    revised.iloc[3, revised.columns.get_loc("lev_long")] = 12345.0
+    violations = series_self_consistency(stored, "VIX", "cftc", loader=lambda *a: revised)
+    assert violations and "lev_long" in violations[0].detail
+
+
+def test_a_metric_that_disappears_is_an_error():
+    stored = _past(_scalar(_OBS, columns=("dealer_long", "dealer_short")))
+    shrunk = stored[["dealer_long"]]
+    violations = series_self_consistency(stored, "VIX", "cftc", loader=lambda *a: shrunk)
+    assert violations and violations[0].severity == "error"
+    assert "dealer_short" in violations[0].detail
+
+
+def test_zero_and_negative_values_do_not_break_the_comparison():
+    # T10Y2Y inverts and real rates go below zero. A purely relative comparison is
+    # undefined at zero and explodes near it, so the tolerance carries an absolute
+    # floor as well — this frame must read as clean, not as infinitely revised.
+    stored = _past(_scalar([0.0, -0.5, 0.25, 0.0, -1.2, 0.75, 0.0, -0.1]))
+    assert series_self_consistency(stored, "T10Y2Y", "fred", loader=lambda *a: stored) == []
+
+
+def test_a_genuine_change_at_zero_is_still_caught():
+    stored = _past(_scalar([0.0, -0.5, 0.25, 0.0, -1.2, 0.75, 0.0, -0.1]))
+    revised = stored.copy()
+    revised.iloc[0, 0] = 0.4
+    assert series_self_consistency(stored, "T10Y2Y", "fred", loader=lambda *a: revised)
+
+
+def test_dropped_series_history_is_an_error():
+    stored = _past(_scalar(_OBS))
+    assert any(
+        v.severity == "error"
+        for v in series_self_consistency(
+            stored, "UNRATE", "fred", loader=lambda *a: stored.drop(stored.index[3])
+        )
+    )
+
+
+def test_newer_observations_are_not_a_divergence():
+    # The normal case: the source has moved on since the watermark. Rows *after* the
+    # stored window are new data, not a back-fill.
+    stored = _past(_scalar(_OBS))
+    extra = pd.DataFrame(
+        {"value": [4.4]},
+        index=pd.DatetimeIndex([stored.index.max() + pd.Timedelta(days=1)], name="date"),
+    )
+    assert series_self_consistency(
+        stored, "UNRATE", "fred", loader=lambda *a: pd.concat([stored, extra])
+    ) == []
+
+
+def test_an_unreachable_source_is_unverified_not_clean():
+    stored = _past(_scalar(_OBS))
+
+    def boom(*a):
+        raise TimeoutError("fred down")
+
+    violations = series_self_consistency(stored, "UNRATE", "fred", loader=boom)
+    assert violations and "unverified" in violations[0].detail
+
+
+def test_an_empty_refetch_is_unverified_not_clean():
+    stored = _past(_scalar(_OBS))
+    violations = series_self_consistency(
+        stored, "UNRATE", "fred", loader=lambda *a: stored.iloc[0:0]
+    )
+    assert violations and violations[0].severity == "warn"
+
+
+def test_a_repeated_date_in_the_refetch_is_reported_not_a_crash():
+    # `.loc[shared]` returns more rows than `shared` has, so a positional comparison
+    # raises on the shape mismatch and an aligned one quietly compares a cartesian
+    # product. Neither is an answer, and the duplicate is itself the defect.
+    stored = _past(_scalar(_OBS))
+    doubled = pd.concat([stored, stored.iloc[[2]]])
+    violations = series_self_consistency(stored, "UNRATE", "fred", loader=lambda *a: doubled)
+    assert violations and violations[0].severity == "error"
+    assert "more than once" in violations[0].detail
+
+
+def test_bars_reports_a_repeated_date_the_same_way():
+    stored = _yesterdays(_TRUTH)
+    doubled = pd.concat([stored, stored.iloc[[1]]])
+    assert any(
+        v.severity == "error" and "more than once" in v.detail
+        for v in self_consistency(stored, "SPY", "tiingo", loader=lambda *a, **k: doubled)
+    )
+
+
+def test_a_timezone_naive_refetch_is_a_finding_not_a_typeerror():
+    stored = _past(_scalar(_OBS))
+    naive = stored.copy()
+    naive.index = naive.index.tz_localize(None)
+    violations = series_self_consistency(stored, "UNRATE", "fred", loader=lambda *a: naive)
+    assert violations and violations[0].severity == "error"
+    assert "timezone-naive" in violations[0].detail
+
+
+def test_nothing_comparable_does_not_read_as_verified():
+    # Every shared date null on one side: the comparison ran and established nothing.
+    import numpy as np
+
+    stored = _past(_scalar(_OBS))
+    stored["value"] = np.nan
+    violations = series_self_consistency(stored, "UNRATE", "fred", loader=lambda *a: stored)
+    assert violations and "unverified" in violations[0].detail
+
+
+def test_a_metric_the_source_added_is_surfaced():
+    stored = _past(_scalar(_OBS))
+    wider = stored.copy()
+    wider["new_metric"] = 1.0
+    violations = series_self_consistency(stored, "VIX", "cftc", loader=lambda *a: wider)
+    assert violations and "new_metric" in violations[0].detail

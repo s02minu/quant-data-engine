@@ -4,20 +4,26 @@ The nightly pass (``qde.daily_update``) reads the lake. Everything it can catch 
 a property of what is already stored — staleness, nulls, gaps, incoherent bars.
 That is most defects, and it is cheap enough to run every night.
 
-Two failure modes are invisible to it, and they are the two that quietly rot a
+Three failure modes are invisible to it, and they are the ones that quietly rot a
 backtest rather than breaking a job:
 
 - **A source that revises settled history.** Yesterday's close changes; every row
   in the lake still looks perfect, because the frame the source now returns is
   perfect. Only asking twice finds it — :func:`qde.verify.self_consistency`.
+- **A scalar series revised at the source.** ``update_series`` is watermark-driven:
+  it fetches from the day after the newest stored observation, so a value already
+  held is never asked for again. A revision to an existing observation is invisible
+  to the nightly *by design* — and macro data revises constantly. When this check
+  was written the lake already held a stale PAYEMS (off by 66,000 jobs) and five
+  stale INDPRO values, and nothing in the platform could see either.
 - **A source that stops tracking its instrument.** A frozen feed, a mislabelled
   ticker, a mirror serving stale prices. Internally coherent, plausibly ranged,
   perfectly fresh — and wrong. For a symbol with a peer, ``cross_check`` catches
   it. For a symbol with none, the only witness left is a related instrument —
   :func:`qde.verify.proxy_check`.
 
-This runs weekly rather than nightly because the first costs a full re-fetch of
-every series, doubling the request budget on a platform whose rate limits are the
+This runs weekly rather than nightly because the re-fetches cost a full second pull
+of every series, doubling the request budget on a platform whose rate limits are the
 binding constraint. Weekly is the right cadence for a defect measured in "how
 stale is the backtest I ran last month", not in minutes.
 
@@ -35,29 +41,44 @@ import sys
 from qde.dq_history import WEEKLY, record_run
 from qde.env import load_env_file
 from qde.log import configure, get_logger
-from qde.storage import list_bars_series, load_ohlcv_local
-from qde.verify import PROXY_UNAVAILABLE, proxy_check, self_consistency
+from qde.storage import list_bars_series, list_series, load_ohlcv_local, load_series_local
+from qde.verify import (
+    PROXY_UNAVAILABLE,
+    proxy_check,
+    self_consistency,
+    series_self_consistency,
+)
 
 log = get_logger(__name__)
 
 # Only daily bars. An intraday series would re-fetch hundreds of thousands of rows
 # per pass to answer the same question, and the sources that revise history revise
-# it at daily granularity anyway.
+# it at daily granularity anyway. Scalar series carry no interval and are all checked.
 _INTERVAL = "1d"
 
 
-def run(base_dir: str = "data", loader=None, local_loader=None) -> dict:
-    """Re-verify every stored daily bars series against its source and its peers.
+def run(
+    base_dir: str = "data",
+    loader=None,
+    local_loader=None,
+    series_loader=None,
+    series_local_loader=None,
+) -> dict:
+    """Re-verify every stored daily bar and scalar series against its own source.
 
     Args:
         base_dir: local lake root.
         loader: injected network ``load_ohlcv``-alike for the re-fetch.
         local_loader: injected ``load_ohlcv_local``-alike for the proxy comparison.
+        series_loader: injected ``(series_id, source, start)`` re-fetch for scalars.
+        series_local_loader: injected ``load_series_local``-alike.
 
     Returns:
-        ``checked`` series count, ``failed`` count, and the ``violations`` found.
+        ``checked`` (bars + scalar series), ``failed``, the ``failures`` details and
+        the ``violations`` found.
     """
     read_local = local_loader or load_ohlcv_local
+    read_series_local = series_local_loader or load_series_local
 
     violations: list = []
     checked = 0
@@ -86,6 +107,33 @@ def run(base_dir: str = "data", loader=None, local_loader=None) -> dict:
                 symbol=symbol,
                 source=source,
                 interval=interval,
+                error=type(exc).__name__,
+                detail=str(exc),
+            )
+            continue
+        checked += 1
+
+    # --- scalar series: the same question, asked of a different shape ---
+    # Full history rather than a recent window: measured across every series source,
+    # a complete re-fetch costs 0.4-3.0s each, so bounding the window would trade a
+    # real capability — catching a benchmark revision that restates decades — for a
+    # saving the box does not need.
+    for source, series_id in zip(
+        (scalars := list_series(base_dir))["source"], scalars["series_id"], strict=True
+    ):
+        label = f"{source}/{series_id}"
+        try:
+            stored = read_series_local(series_id, source, base_dir=base_dir)
+            violations += series_self_consistency(
+                stored, series_id, source, loader=series_loader
+            )
+        except Exception as exc:
+            failures.append({"label": label, "error": type(exc).__name__, "detail": str(exc)})
+            log.warning(
+                "weekly_verify_failed",
+                group="series",
+                series_id=series_id,
+                source=source,
                 error=type(exc).__name__,
                 detail=str(exc),
             )

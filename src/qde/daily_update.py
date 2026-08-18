@@ -126,7 +126,7 @@ def run(base_dir: str = "data") -> dict:
     scalars = list_series(base_dir)
     for source, series_id in zip(scalars["source"], scalars["series_id"], strict=True):
         try:
-            update_series(series_id, source=source, base_dir=base_dir)
+            update_series(series_id, source=source, base_dir=base_dir, violations=intake)
         except Exception as exc:
             failures.append(
                 {
@@ -161,7 +161,9 @@ def run(base_dir: str = "data") -> dict:
             continue  # a calendar in the lake whose source is no longer registered
         for series_id in spec.canonical_symbols:
             try:
-                update_events(series_id, source, calendar, EVENTS_REFRESH_START, base_dir)
+                update_events(
+                    series_id, source, calendar, EVENTS_REFRESH_START, base_dir, intake
+                )
             except NoNewData:
                 continue  # nothing in range; benignly skip (mirrors bars/series)
             except Exception as exc:

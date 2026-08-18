@@ -1,6 +1,7 @@
 """Tests for the `series` group storage (scalar time series)."""
 
 import pandas as pd
+import pytest
 
 from qde.storage import (
     _series_path,
@@ -149,3 +150,57 @@ def test_query_unions_flat_and_metric_series(tmp_path):
     assert ("cftc", "ES", "open_interest", 9000.0) in got
     fred = next(r for r in out.itertuples(index=False) if r.source == "fred")
     assert fred.value == 4.0 and pd.isna(fred.metric)  # flat side: metric filled NULL
+
+
+# --- reading a stored series back as the wide frame an ingestor returns -----------
+
+
+def test_a_single_value_series_round_trips(tmp_path):
+    from qde.storage import load_series_local, upsert_series
+
+    idx = pd.DatetimeIndex(pd.to_datetime(["2024-01-01", "2024-01-02"], utc=True), name="date")
+    upsert_series(pd.DataFrame({"value": [1.0, 2.0]}, index=idx), "UNRATE", "fred", str(tmp_path))
+
+    back = load_series_local("UNRATE", "fred", str(tmp_path))
+    assert list(back.columns) == ["value"]
+    assert back["value"].tolist() == [1.0, 2.0]
+
+
+def test_a_multi_metric_series_is_reassembled_wide(tmp_path):
+    # The exact inverse of upsert_series_frame: it splits a wide frame into one file
+    # per metric, so a comparison against a fresh fetch has to put it back together.
+    from qde.storage import load_series_local, upsert_series_frame
+
+    idx = pd.DatetimeIndex(pd.to_datetime(["2024-01-01", "2024-01-02"], utc=True), name="date")
+    wide = pd.DataFrame({"dealer_long": [10.0, 11.0], "dealer_short": [5.0, 6.0]}, index=idx)
+    upsert_series_frame(wide, "VIX", "cftc", str(tmp_path))
+
+    back = load_series_local("VIX", "cftc", str(tmp_path))
+    assert sorted(back.columns) == ["dealer_long", "dealer_short"]
+    assert back["dealer_short"].tolist() == [5.0, 6.0]
+
+
+def test_a_metric_that_starts_later_does_not_truncate_the_others(tmp_path):
+    # An inner join would silently shorten every other metric to the newest one's
+    # history — losing years of data to a column added last month.
+    from qde.storage import load_series_local, upsert_series
+
+    long_idx = pd.DatetimeIndex(
+        pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"], utc=True), name="date"
+    )
+    short_idx = pd.DatetimeIndex(pd.to_datetime(["2024-01-03"], utc=True), name="date")
+    upsert_series(pd.DataFrame({"value": [1.0, 2.0, 3.0]}, index=long_idx),
+                  "VIX", "cftc", str(tmp_path), metric="old")
+    upsert_series(pd.DataFrame({"value": [9.0]}, index=short_idx),
+                  "VIX", "cftc", str(tmp_path), metric="new")
+
+    back = load_series_local("VIX", "cftc", str(tmp_path))
+    assert len(back) == 3, "the longer metric must keep its full history"
+    assert back["old"].tolist() == [1.0, 2.0, 3.0]
+
+
+def test_an_unstored_series_raises(tmp_path):
+    from qde.storage import load_series_local
+
+    with pytest.raises(FileNotFoundError):
+        load_series_local("NOPE", "fred", str(tmp_path))

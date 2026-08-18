@@ -460,6 +460,22 @@ def declared_series(group: str | None = None) -> list[tuple[str, str, str]]:
     ]
 
 
+def redistributable_sources() -> frozenset[str]:
+    """Source names the registry permits republishing.
+
+    The single definition of the rule. It has two consumers that must never
+    disagree — ``qde.publish_public`` decides what is *uploaded*, and
+    ``qde.catalogue`` describes what was uploaded — and when only the first applied
+    it, the catalogue advertised 57,362 bars rows against a public file holding
+    40,642. Nothing was leaked, but the published description of the data was wrong
+    by 29%, which is its own kind of defect.
+
+    An **allowlist**: an unrecognised source is withheld and uncounted, never
+    published by default.
+    """
+    return frozenset(s.name for s in all_specs() if s.redistributable)
+
+
 def dim_sources() -> pd.DataFrame:
     """Render the registry as the ``dim_sources`` catalogue table.
 

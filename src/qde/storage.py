@@ -552,6 +552,51 @@ def upsert_series_frame(
     return total
 
 
+def load_series_local(
+    series_id: str, source: str, base_dir: str = "data"
+) -> pd.DataFrame:
+    """Read a stored scalar series back as the *wide* frame an ingestor returns.
+
+    The exact inverse of :func:`upsert_series_frame`, and deliberately so: that
+    function splits a wide frame into one file per ``metric=`` partition, and a
+    comparison against a fresh fetch has to put it back together to compare like
+    with like. A single-value source (FRED, CBOE) round-trips to one ``value``
+    column; a multi-metric one (CFTC COT's trader categories) to one column per
+    metric, named as the partition is.
+
+    Raises:
+        FileNotFoundError: nothing stored for this series.
+    """
+    root = (
+        Path(base_dir)
+        / "bronze"
+        / "group=series"
+        / f"source={source}"
+        / f"series_id={series_id}"
+    )
+    flat = root / "series.parquet"
+    if flat.exists():
+        return pd.read_parquet(flat)
+
+    frames = {}
+    for part in sorted(root.glob("metric=*/series.parquet")):
+        metric = part.parent.name.split("=", 1)[1]
+        one = pd.read_parquet(part)
+        if "value" in one.columns:
+            frames[metric] = one["value"]
+    if not frames:
+        raise FileNotFoundError(f"No stored series for {series_id!r}/{source!r}")
+
+    # `join="outer"`: metrics of one series share report dates in practice, but a
+    # metric added later legitimately starts later, and an inner join would silently
+    # truncate every other metric to its history.
+    # `sort=False` stated explicitly: pandas 4 changes the default for a concat of
+    # DatetimeIndexes, and the ordering is established by the sort_index() below
+    # regardless — pinning it here keeps that a deliberate choice rather than a
+    # behaviour that silently flips on an upgrade.
+    return pd.concat(frames, axis=1, join="outer", sort=False).sort_index()
+
+
 def upsert_series(
     df: pd.DataFrame,
     series_id: str,
@@ -580,7 +625,11 @@ def upsert_series(
 
 
 def update_series(
-    series_id: str, source: str, base_dir: str = "data", metric: str | None = None
+    series_id: str,
+    source: str,
+    base_dir: str = "data",
+    metric: str | None = None,
+    violations: list | None = None,
 ) -> None:
     """Incrementally extend a stored scalar series with any newer observations.
 
@@ -624,6 +673,22 @@ def update_series(
     except NoNewData:
         print(f"{series_id} already up to date through {watermark.date()}")
         return
+
+    if violations is not None:
+        # Same reasoning as `update_ohlcv`: the frame is only checkable as the
+        # source sent it. Wired later than bars were, which meant the series group
+        # had a written contract that nothing in the running system ever applied.
+        from qde.verify import verify_frame
+
+        violations.extend(
+            verify_frame(
+                df_new,
+                group="series",
+                source=source,
+                series_id=series_id,
+                start=next_day,
+            )
+        )
 
     upsert_series_frame(df_new, series_id, source, base_dir)
 
@@ -724,6 +789,7 @@ def update_events(
     calendar: str,
     start: str,
     base_dir: str = "data",
+    violations: list | None = None,
 ) -> int:
     """Full-refresh one series' release history into its calendar file.
 
@@ -744,6 +810,19 @@ def update_events(
     from qde.ingest import get_ingestor
 
     df = get_ingestor(source).load(series_id, start)
+
+    if violations is not None:
+        # The events contract is the strictest of the three — bitemporal ordering,
+        # a unique (event_id, revision_seq) key, and a contiguous revision run — and
+        # until now none of it ran outside the tests. `start` is not passed: this is
+        # a deliberate full re-pull from the ALFRED era, so rows before it are the
+        # point rather than a range violation.
+        from qde.verify import verify_frame
+
+        violations.extend(
+            verify_frame(df, group="events", source=source, series_id=series_id)
+        )
+
     return upsert_events(df, source, calendar, base_dir)
 
 
