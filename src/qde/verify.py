@@ -702,7 +702,28 @@ def _returns(df: pd.DataFrame) -> pd.Series:
     return close[close.index.notna()].sort_index().pct_change().dropna()
 
 
-def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
+def _stored_bars(base_dir: str) -> set[tuple[str, str, str]]:
+    """``(source, symbol, interval)`` the lake actually holds.
+
+    A local read of partition metadata, not a fetch — cheap enough to sit in front of
+    every verification claim. On failure it returns an empty set, which downgrades
+    every series to its weakest honest level rather than letting an unreadable lake
+    silently restore the registry's optimism.
+    """
+    try:
+        from qde.storage import list_bars_series
+
+        return {
+            (str(r.source), str(r.symbol), str(r.interval))
+            for r in list_bars_series(base_dir).itertuples(index=False)
+        }
+    except Exception:
+        return set()
+
+
+def verification_status(
+    symbol: str, source: str, interval: str = "1d", base_dir: str = "data"
+) -> dict:
     """How much is actually known about a series' correctness.
 
     Every check in this module returns evidence, never proof — and the strength of
@@ -715,15 +736,19 @@ def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
     passed. The same instinct as ``dq_runs`` existing beside ``dq_violations``:
     absence of evidence and evidence of absence must not look identical.
 
-    This reports what *can* be established, from the registry alone — it runs no
-    fetches. It is the label a consumer needs before trusting a backtest, not a
-    test result.
+    It runs no fetches, but it is **not** registry-only: a peer must both declare the
+    symbol *and* actually hold data for it. The registry is a statement of intent —
+    the set someone meant to backfill — and treating intent as evidence is how this
+    function came to report BTCUSDT as "corroborated" by yfinance, which carries no
+    BTCUSDT data at all, and ETHUSDT as corroborated by kraken and yfinance, neither
+    of which has a row. Published in catalogue.json, that is precisely the flattery
+    the whole tier exists to prevent, committed by the tier itself.
 
     Returns:
         ``{"level", "peers", "proxy_candidates", "basis"}`` — the strongest
         verification available for this series, who could provide it, and a
-        sentence a human can read. ``peers`` are established from the registry and
-        really do carry the same symbol; ``proxy_candidates`` are only *eligible*
+        sentence a human can read. ``peers`` both declare the symbol and hold data
+        for it; ``proxy_candidates`` are only *eligible*
         for a proxy check, since whether any of them is actually related has to be
         measured. The distinction is the point: a field named ``proxies`` would
         claim evidence this function has not gathered.
@@ -731,8 +756,13 @@ def verification_status(symbol: str, source: str, interval: str = "1d") -> dict:
     from qde.registry import declared_series
 
     declared = list(declared_series(group="bars"))
+    stored = _stored_bars(base_dir)
     peers = sorted(
-        {s for s, sym, iv in declared if sym == symbol and iv == interval and s != source}
+        {
+            s
+            for s, sym, iv in declared
+            if sym == symbol and iv == interval and s != source and (s, sym, iv) in stored
+        }
     )
     # Other symbols in the lake are *candidates* for a proxy check, not proxies.
     # A related instrument can confirm a series tracks the asset class it claims —

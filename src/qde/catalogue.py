@@ -214,18 +214,29 @@ def _sources_section(base_dir: str, now: pd.Timestamp) -> list[dict[str, Any]]:
         # Publishing both as merely "stored" tells a reader nothing about which is
         # which — and which of the two their backtest is standing on.
         if str(row["group"]) == "bars":
-            s["verification"] = _verification_summary(name, str(row["symbols"]))
+            s["verification"] = _verification_summary(name, str(row["symbols"]), base_dir)
         out.append(s)
     return out
 
 
-def _verification_summary(source: str, symbols: str) -> dict[str, Any]:
+def _verification_summary(source: str, symbols: str, base_dir: str) -> dict[str, Any]:
     """Roll each symbol's verification level up into one figure per source."""
-    from qde.verify import verification_status
+    # Only symbols this source actually stores. `symbols` comes from the registry,
+    # which states intent — yfinance *declares* BTCUSDT but holds none, and grading
+    # that symbol reported "3 corroborated" for data yfinance does not have. A
+    # verification figure has to describe rows that exist.
+    from qde.verify import _stored_bars, verification_status
+
+    held = {sym for src, sym, _iv in _stored_bars(base_dir) if src == source}
 
     levels: dict[str, int] = {}
     for symbol in [s.strip() for s in symbols.split(",") if s.strip()]:
-        level = verification_status(symbol, source)["level"]
+        if held and symbol not in held:
+            continue
+        # base_dir threaded through: peers are now confirmed against stored data, and
+        # the container lake is /data, so defaulting to "data" would find nothing and
+        # silently downgrade every source to its weakest level.
+        level = verification_status(symbol, source, base_dir=base_dir)["level"]
         levels[level] = levels.get(level, 0) + 1
 
     # The weakest symbol sets the source's headline: a source is only as trusted

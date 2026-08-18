@@ -577,12 +577,58 @@ def test_a_single_source_symbol_is_not_dressed_up_as_verified():
     assert "not corroborated" in status["basis"]
 
 
-def test_a_source_is_only_as_trusted_as_its_weakest_series():
+def test_a_source_is_only_as_trusted_as_its_weakest_series(tmp_path, monkeypatch):
+    # A source holding one corroborated symbol and one peerless one is only as trusted
+    # as the peerless one. Built against an explicit lake rather than the real ./data,
+    # so the assertion means the same thing on a CI runner with no lake at all.
     from qde.catalogue import _verification_summary
 
-    summary = _verification_summary("yfinance", "BTCUSDT, SPY, QQQ")
-    assert summary["level"] == "proxy_only", "must not round up to its best symbol"
-    assert summary["by_level"]["corroborated"] == 1
+    monkeypatch.setattr(
+        "qde.registry.declared_series",
+        lambda group=None: [
+            ("acme", "SHARED", "1d"),
+            ("other", "SHARED", "1d"),  # a real peer for SHARED
+            ("acme", "ALONE", "1d"),  # nobody else carries this
+        ],
+    )
+    monkeypatch.setattr(
+        "qde.storage.list_bars_series",
+        lambda base_dir: pd.DataFrame(
+            [
+                {"source": "acme", "symbol": "SHARED", "interval": "1d"},
+                {"source": "other", "symbol": "SHARED", "interval": "1d"},
+                {"source": "acme", "symbol": "ALONE", "interval": "1d"},
+            ]
+        ),
+    )
+
+    summary = _verification_summary("acme", "SHARED, ALONE", str(tmp_path))
+    assert summary["by_level"]["corroborated"] == 1, "SHARED has a peer that holds data"
+    assert summary["level"] != "corroborated", "must not round up to its best symbol"
+
+
+def test_the_summary_grades_only_symbols_the_source_actually_stores(tmp_path, monkeypatch):
+    # `symbols` comes from the registry, which states intent. yfinance declares BTCUSDT
+    # and holds none, and grading it reported "3 corroborated" for rows that do not
+    # exist — a verification figure describing absent data.
+    from qde.catalogue import _verification_summary
+
+    monkeypatch.setattr(
+        "qde.registry.declared_series",
+        lambda group=None: [("acme", "REAL", "1d"), ("peer", "GHOST", "1d")],
+    )
+    monkeypatch.setattr(
+        "qde.storage.list_bars_series",
+        lambda base_dir: pd.DataFrame(
+            [
+                {"source": "acme", "symbol": "REAL", "interval": "1d"},
+                {"source": "peer", "symbol": "GHOST", "interval": "1d"},
+            ]
+        ),
+    )
+
+    summary = _verification_summary("acme", "REAL, GHOST", str(tmp_path))
+    assert sum(summary["by_level"].values()) == 1, "GHOST is declared but not stored here"
 
 
 # --- self-consistency covers every price column, not just close -------------------
@@ -1059,3 +1105,46 @@ def test_a_metric_the_source_added_is_surfaced():
     wider["new_metric"] = 1.0
     violations = series_self_consistency(stored, "VIX", "cftc", loader=lambda *a: wider)
     assert violations and "new_metric" in violations[0].detail
+
+
+# --- a declaration is not evidence -------------------------------------------------
+
+
+def test_a_peer_that_declares_the_symbol_but_holds_no_data_is_not_a_peer(tmp_path, monkeypatch):
+    # The registry states *intent* — the set someone meant to backfill. Treating that
+    # as evidence reported BTCUSDT as "corroborated" by yfinance, which carries no
+    # BTCUSDT row at all, and published the claim in catalogue.json. The tier built to
+    # stop the platform overclaiming was overclaiming itself.
+    from qde.verify import verification_status
+
+    monkeypatch.setattr(
+        "qde.registry.declared_series",
+        lambda group=None: [("binance", "BTCUSDT", "1d"), ("ghost", "BTCUSDT", "1d")],
+    )
+    monkeypatch.setattr(
+        "qde.storage.list_bars_series",
+        lambda base_dir: pd.DataFrame(
+            [{"source": "binance", "symbol": "BTCUSDT", "interval": "1d"}]
+        ),
+    )
+
+    status = verification_status("BTCUSDT", "binance", base_dir=str(tmp_path))
+    assert status["peers"] == [], "a declaration with no rows behind it is not evidence"
+    assert status["level"] != "corroborated"
+
+
+def test_an_unreadable_lake_downgrades_rather_than_restores_optimism(tmp_path, monkeypatch):
+    # If the lake cannot be read we do not know which peers are real. Falling back to
+    # the registry would quietly reinstate exactly the overclaim above.
+    from qde.verify import verification_status
+
+    monkeypatch.setattr(
+        "qde.registry.declared_series",
+        lambda group=None: [("binance", "BTCUSDT", "1d"), ("okx", "BTCUSDT", "1d")],
+    )
+
+    def boom(base_dir):
+        raise OSError("lake gone")
+
+    monkeypatch.setattr("qde.storage.list_bars_series", boom)
+    assert verification_status("BTCUSDT", "binance", base_dir=str(tmp_path))["peers"] == []
