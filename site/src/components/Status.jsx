@@ -5,7 +5,7 @@ import { tokenize } from "./SqlEditor.jsx";
 import { DQ_RUNS_URL, DQ_VIOLATIONS_URL, GITHUB_URL, USING_SAMPLE } from "../config.js";
 import { runQuery } from "../duck.js";
 import { compact } from "../format.js";
-import { ageMs, healthOf, healthSummary, humanAge } from "../health.js";
+import { ageMs, healthOf, healthSummary, humanAge, verifiableSources } from "../health.js";
 import { useScrollProgress } from "../hooks.js";
 
 // Every panel names the query behind it. A status page is normally an assertion you
@@ -83,15 +83,23 @@ export default function Status({ catalogue }) {
 
   const sources = catalogue?.sources ?? [];
 
+  // Only sources whose data is actually published — see verifiableSources. The
+  // catalogue page is where the platform discloses that yfinance is ingested but not
+  // redistributable; that is a statement about coverage. This page is a statement
+  // about what is verifiable, and the two must not be conflated.
+  const verifiable = useMemo(() => verifiableSources(sources), [sources]);
+
   const rows = useMemo(
     () =>
-      sources
+      verifiable
         .map((s) => ({ ...s, age: ageMs(s, now), state: healthOf(s, now) }))
         .sort((a, b) => (b.age ?? 0) - (a.age ?? 0)),
-    [sources, now],
+    [verifiable, now],
   );
 
-  const { late, warn, degraded } = healthSummary(sources, now);
+  // Summarised over the same list the page renders: counting a source the reader
+  // cannot see would put the headline and the rows beneath it at odds.
+  const { late, warn, degraded } = healthSummary(verifiable, now);
   const lastRun = runs?.[0];
   const overall = late > 0 ? "late" : warn > 0 ? "warn" : "ok";
 

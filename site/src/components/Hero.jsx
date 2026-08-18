@@ -4,7 +4,7 @@ import QueryConsole from "./QueryConsole.jsx";
 import ThemeToggle from "./ThemeToggle.jsx";
 import { GITHUB_URL } from "../config.js";
 import { compact } from "../format.js";
-import { healthSummary } from "../health.js";
+import { healthSummary, verifiableSources } from "../health.js";
 import { useActiveSection, useCountUp, useScrollProgress } from "../hooks.js";
 
 const SECTIONS = [
@@ -20,7 +20,9 @@ const SECTION_IDS = SECTIONS.map((s) => s.id);
 // know it exists, and a number they can see beats a link they have to guess at.
 // Grading comes from health.js so this can never disagree with /status.
 function LiveStatus({ sources }) {
-  const { degraded, total } = healthSummary(sources);
+  // Graded over the same list the status page renders, or the page linking to it
+  // would report a different number of healthy sources than the page it links to.
+  const { degraded, total } = healthSummary(verifiableSources(sources));
 
   return (
     <a className={`live-status ${degraded ? "is-behind" : "is-ok"}`} href="/status">

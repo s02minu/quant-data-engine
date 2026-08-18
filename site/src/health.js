@@ -29,6 +29,21 @@ export function cadenceFor(group) {
   return CADENCE_HOURS[group] ?? DEFAULT_CADENCE;
 }
 
+/** The sources a visitor can actually check for themselves.
+ *
+ * A withheld source (yfinance is code-only, not redistributable) still appears in the
+ * catalogue — that is the platform disclosing what it ingests. But its rows and
+ * freshness are read from the private lake, so there is no public file to verify them
+ * against, and the status page opens by promising the opposite.
+ *
+ * Exported from here, next to the grading rule, for the reason stated at the top of
+ * this file: the home page and the status page must never disagree about the same
+ * source. Filtering on one surface alone would recreate exactly that.
+ */
+export function verifiableSources(sources = []) {
+  return sources.filter((s) => s?.redistributable !== false);
+}
+
 /** Milliseconds since a source's newest observation, or null if unknown. */
 export function ageMs(source, now = Date.now()) {
   const last = source?.freshness?.last ? Date.parse(source.freshness.last) : null;
