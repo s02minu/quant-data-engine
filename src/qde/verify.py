@@ -38,7 +38,14 @@ _OHLC_TOLERANCE = 1e-6
 # missing one of these cannot be stored correctly no matter how clean it looks.
 _REQUIRED_COLUMNS = {
     "bars": ("open", "high", "low", "close", "volume"),
-    "series": ("value",),
+    # `series` is deliberately empty: the group has TWO legal shapes and neither can be
+    # expressed as a fixed column list. `upsert_series_frame` writes a frame of exactly
+    # ["value"] flat, and treats any other column set as one metric per column —
+    # binancefut sends funding_rate/mark_price, CFTC eleven trader categories. Naming
+    # "value" as required rejected every multi-metric source at intake, at error
+    # severity, on a shape the storage layer has always supported. Its real contract is
+    # enforced by _structural below.
+    "series": (),
     "events": ("event_id", "revision_seq", "scheduled_ts", "observed_ts"),
 }
 
@@ -1070,6 +1077,13 @@ def _structural(df: pd.DataFrame, group: str, source: str, series_id: str) -> li
         out.append(_v(group, source, series_id, "columns", "error",
                       f"missing required column(s) for group={group}: {', '.join(missing)}"))
 
+    # A scalar series carries either the single column `value` or one column per metric,
+    # so the invariant is "at least one column to store", not a specific name.
+    if group == "series" and not len(df.columns):
+        out.append(_v(group, source, series_id, "columns", "error",
+                      "a series frame carries no columns; expected `value` or one "
+                      "column per metric"))
+
     # bars and series are keyed by a UTC date index; events are keyed by columns.
     if group in ("bars", "series"):
         idx = df.index
@@ -1177,11 +1191,13 @@ def _parseable(df: pd.DataFrame, group: str, source: str, series_id: str) -> lis
     # with zero violations. FRED's own ingestor coerces correctly, which is exactly
     # why this matters: the contract exists to hold *generated* ingestors to what
     # the hand-written one already does.
-    columns = {
-        "bars": ("open", "high", "low", "close", "volume"),
-        "series": ("value",),
-    }.get(group, ())
-    if not columns:
+    if group == "bars":
+        columns: tuple[str, ...] = ("open", "high", "low", "close", "volume")
+    elif group == "series":
+        # Every metric, whatever it is called. Hardcoding "value" silently skipped the
+        # parse check for exactly the multi-metric sources that carry the most columns.
+        columns = tuple(str(c) for c in df.columns)
+    else:
         return out
 
     for column in columns:

@@ -144,17 +144,35 @@ def test_events_must_not_be_observed_before_they_were_scheduled():
     assert "bitemporal" in _checks(frame, group="events")
 
 
-def test_a_series_frame_needs_a_value_column():
+def test_a_series_frame_may_name_its_column_anything():
+    # This test previously asserted the opposite — that a column not called `value` was
+    # a defect — and that assumption is what rejected binancefut and CFTC at intake in
+    # production. Any column name is a metric name; `upsert_series_frame` stores it
+    # under `metric=<name>`.
     idx = pd.DatetimeIndex(pd.to_datetime(["2024-01-01"], utc=True), name="date")
-    assert "columns" in _checks(pd.DataFrame({"amount": [1.0]}, index=idx), group="series")
+    assert verify_frame(pd.DataFrame({"amount": [1.0]}, index=idx), "series", "s", "X") == []
 
 
-@pytest.mark.parametrize("group", ["bars", "series", "events"])
-def test_every_group_has_a_declared_contract(group):
+@pytest.mark.parametrize("group", ["bars", "events"])
+def test_fixed_shape_groups_declare_their_required_columns(group):
     # A group with no required columns would silently accept anything.
     from qde.verify import _REQUIRED_COLUMNS
 
     assert _REQUIRED_COLUMNS[group]
+
+
+def test_the_series_contract_is_enforced_even_though_it_names_no_columns():
+    # `series` cannot list required columns — it has two legal shapes — so the check
+    # that it is still *checked* has to be behavioural. Asserting the tuple was
+    # non-empty is what made naming "value" look safe.
+    from qde.verify import _REQUIRED_COLUMNS
+
+    assert _REQUIRED_COLUMNS["series"] == ()
+    idx = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=3, freq="D", tz="UTC"))
+    assert verify_frame(pd.DataFrame(index=idx), "series", "s", "X"), "empty must fail"
+    assert verify_frame(
+        pd.DataFrame({"m": ["x", "y", "z"]}, index=idx), "series", "s", "X"
+    ), "unparseable must fail"
 
 
 # --- epoch-unit errors: a perfectly valid index that is entirely wrong ------------
@@ -905,11 +923,11 @@ def test_every_real_group_is_still_accepted(group):
 # --- the series group had no parse check at all -----------------------------------
 
 
-def _series_frame(values):
+def _series_frame(values, columns=("value",)):
     idx = pd.DatetimeIndex(
         pd.date_range("2024-01-01", periods=len(values), freq="D", tz="UTC"), name="date"
     )
-    return pd.DataFrame({"value": values}, index=idx)
+    return pd.DataFrame({c: list(values) for c in columns}, index=idx)
 
 
 def test_freds_missing_marker_left_unparsed_is_caught():
@@ -1148,3 +1166,49 @@ def test_an_unreadable_lake_downgrades_rather_than_restores_optimism(tmp_path, m
 
     monkeypatch.setattr("qde.storage.list_bars_series", boom)
     assert verification_status("BTCUSDT", "binance", base_dir=str(tmp_path))["peers"] == []
+
+
+# --- the series group has TWO legal shapes -----------------------------------------
+#
+# Every fixture above used a single `value` column, so requiring that name passed the
+# whole suite while rejecting binancefut and CFTC at intake, at error severity, in
+# production, for two consecutive nights.
+
+
+def test_a_multi_metric_series_frame_is_accepted():
+    # `upsert_series_frame` writes one file per column under a metric= partition; this
+    # is the shape binancefut (funding_rate, mark_price) and CFTC actually send.
+    frame = _series_frame([1.0, 2.0, 3.0])
+    frame = frame.rename(columns={"value": "funding_rate"})
+    frame["mark_price"] = [10.0, 11.0, 12.0]
+    assert verify_frame(frame, "series", "binancefut", "BTCUSDT") == []
+
+
+def test_a_single_value_series_frame_is_still_accepted():
+    assert verify_frame(_series_frame([1.0, 2.0, 3.0]), "series", "fred", "UNRATE") == []
+
+
+def test_every_metric_is_parse_checked_not_just_one_named_value():
+    # Hardcoding "value" skipped the parse check entirely for the sources carrying the
+    # most columns — the opposite of where it is most needed.
+    frame = _series_frame([1.0, 2.0, 3.0]).rename(columns={"value": "funding_rate"})
+    frame["open_interest"] = ["1,234", "2,345", "3,456"]
+    violations = verify_frame(frame, "series", "binancefut", "BTCUSDT")
+    assert violations and violations[0].check == "numeric"
+    assert "open_interest" in violations[0].detail
+
+
+def test_a_series_frame_with_no_columns_at_all_is_refused():
+    idx = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=3, freq="D", tz="UTC"))
+    assert verify_frame(pd.DataFrame(index=idx), "series", "s", "X")
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [("value",), ("funding_rate", "mark_price"), ("dealer_long", "dealer_short", "lev_long")],
+)
+def test_the_contract_matches_what_storage_accepts(columns):
+    # The invariant that would have caught this: anything upsert_series_frame can write
+    # must pass verification, or intake rejects data the lake has always stored.
+    frame = _series_frame([1.0, 2.0, 3.0], columns=columns)
+    assert verify_frame(frame, "series", "s", "X") == []
