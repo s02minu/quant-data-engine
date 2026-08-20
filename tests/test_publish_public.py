@@ -548,3 +548,74 @@ def test_a_multi_metric_series_is_measured_at_the_metric_grain(tmp_path):
     cat = build_catalogue(str(tmp_path), public_base_url="https://data.test")
     cftc = next(s for s in cat["sources"] if s["name"] == "cftc")
     assert cftc["expected_within_hours"] > 168, "pooled metrics collapsed the cadence"
+
+
+# --- publishing gates on EVERY route to the public bucket -------------------------
+
+
+class FakeMirrorS3:
+    """Minimal S3 double for the server-side copy path."""
+
+    def __init__(self, keys):
+        self._keys = list(keys)
+        self.copied = []
+
+    def get_paginator(self, _op):
+        outer = self
+
+        class _P:
+            def paginate(self, Bucket=None, Prefix=None):
+                yield {"Contents": [{"Key": k, "Size": 10} for k in outer._keys
+                                    if k.startswith(Prefix or "")]}
+
+        return _P()
+
+    def head_object(self, Bucket, Key):
+        raise RuntimeError("absent")
+
+    def copy_object(self, Bucket, Key, CopySource):
+        self.copied.append(Key)
+
+
+def test_the_microstructure_mirror_withholds_unregistered_sources():
+    # This path copies by prefix rather than from the local lake, so it originally
+    # trusted the prefix alone — an unregistered venue, or a licensing change on an
+    # existing one, would have been republished automatically on the next nightly.
+    from qde.publish_public import mirror_private_prefix
+
+    keys = [
+        "bronze/group=microstructure/source=binance/kind=trades/date=2026-01-01/p.parquet",
+        "bronze/group=microstructure/source=ghostvenue/kind=trades/date=2026-01-01/p.parquet",
+    ]
+    fake = FakeMirrorS3(keys)
+    out = mirror_private_prefix(
+        fake, "priv", "pub", "bronze/group=microstructure/",
+        pairs=frozenset({("microstructure", "binance")}),
+    )
+
+    assert out["withheld"] == 1
+    assert all("ghostvenue" not in k for k in fake.copied)
+    assert any("binance" in k for k in fake.copied)
+
+
+def test_a_key_with_unreadable_partitions_is_withheld_not_assumed_safe():
+    from qde.publish_public import mirror_private_prefix
+
+    fake = FakeMirrorS3(["bronze/group=microstructure/mystery-object.parquet"])
+    out = mirror_private_prefix(
+        fake, "priv", "pub", "bronze/group=microstructure/",
+        pairs=frozenset({("microstructure", "binance")}),
+    )
+    assert out["withheld"] == 1 and fake.copied == []
+
+
+def test_permission_in_one_group_does_not_leak_into_another():
+    # The rule is a (group, source) pair precisely because a venue can be
+    # redistributable in one group and not another. Filtering consolidated files on
+    # the bare source name quietly widened that back out.
+    from qde.publish_public import _group_in_list
+
+    pairs = frozenset({("microstructure", "acme"), ("bars", "other")})
+    assert "acme" in _group_in_list(pairs, "microstructure")
+    assert "acme" not in _group_in_list(pairs, "bars"), "cleared for microstructure only"
+    assert _group_in_list(pairs, "events") == "''", "no cleared source matches nothing"

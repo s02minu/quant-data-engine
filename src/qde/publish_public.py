@@ -74,6 +74,13 @@ _PUBLIC_MARTS = {
     "gold/group=events/mart=fct_events_revisions/data.parquet": "source",
 }
 
+# Which group each mart's rows belong to, so the row filter can apply the
+# (group, source) permission rather than the source name alone. Derived from the
+# path so the two cannot drift.
+_MART_GROUPS = {
+    key: key.split("group=", 1)[1].split("/", 1)[0] for key in _PUBLIC_MARTS
+}
+
 
 # Where the consolidated files are staged before upload. Deliberately OUTSIDE
 # `bronze/`, because the group globs below are recursive: a merged file written
@@ -131,7 +138,35 @@ def _source_of(rel_parts: tuple[str, ...]) -> str | None:
     return None
 
 
-def mirror_private_prefix(client, private_bucket: str, public_bucket: str, prefix: str) -> dict:
+def _group_in_list(pairs: frozenset[tuple[str, str]], group: str) -> str:
+    """SQL IN-list of the sources publishable **within one group**.
+
+    `IN`, never `NOT IN`: an unrecognised source is withheld, and a NULL source
+    fails the test rather than passing it. Empty renders as `''`, which matches
+    nothing — the safe direction when a group has no cleared sources at all.
+    """
+    names = sorted(n for (g, n) in pairs if g == group)
+    return ", ".join(f"'{n}'" for n in names) or "''"
+
+
+def _key_pair(key: str) -> tuple[str | None, str | None]:
+    """Pull ``(group, source)`` out of a Hive-partitioned object key."""
+    group = source = None
+    for part in key.split("/"):
+        if part.startswith("group="):
+            group = part[len("group=") :]
+        elif part.startswith("source="):
+            source = part[len("source=") :]
+    return group, source
+
+
+def mirror_private_prefix(
+    client,
+    private_bucket: str,
+    public_bucket: str,
+    prefix: str,
+    pairs: frozenset[tuple[str, str]] | None = None,
+) -> dict:
     """Copy objects straight from the private bucket to the public one.
 
     Everything else here publishes from the local lake, which works because bars,
@@ -150,12 +185,25 @@ def mirror_private_prefix(client, private_bucket: str, public_bucket: str, prefi
 
     Objects already present at the same size are skipped, which is what keeps this
     affordable — without it every nightly would re-copy the entire history.
+
+    **Every key is checked against the same ``(group, source)`` allowlist as the rest
+    of the publish.** This path copies by prefix rather than from the local lake, so
+    it originally trusted the prefix alone — meaning an unregistered venue, or a
+    licensing change on an existing one, would have been republished automatically
+    on the next nightly. Publishing is the one irreversible action here, so the gate
+    belongs on every route to the public bucket, not just the convenient one. A key
+    whose partitions cannot be read is withheld rather than assumed safe.
     """
-    copied = skipped = failed = 0
+    copied = skipped = failed = withheld = 0
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=private_bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             key, size = obj["Key"], obj["Size"]
+            if pairs is not None:
+                group, source = _key_pair(key)
+                if group is None or source is None or (group, source) not in pairs:
+                    withheld += 1
+                    continue
             try:
                 if client.head_object(Bucket=public_bucket, Key=key)["ContentLength"] == size:
                     skipped += 1
@@ -174,8 +222,15 @@ def mirror_private_prefix(client, private_bucket: str, public_bucket: str, prefi
                     "mirror_failed", key=key, error=type(exc).__name__, detail=str(exc)
                 )
                 failed += 1
-    log.info("mirror_complete", prefix=prefix, copied=copied, skipped=skipped, failed=failed)
-    return {"copied": copied, "skipped": skipped, "failed": failed}
+    log.info(
+        "mirror_complete",
+        prefix=prefix,
+        copied=copied,
+        skipped=skipped,
+        failed=failed,
+        withheld=withheld,
+    )
+    return {"copied": copied, "skipped": skipped, "failed": failed, "withheld": withheld}
 
 
 def _upload(client, path: Path, bucket: str, key: str) -> bool:
@@ -273,7 +328,11 @@ def publish_public(
             # IN, not NOT IN: an unrecognised source is withheld, and a NULL source
             # (a file whose hive path lacks the key) fails the test rather than
             # passing it, since `NULL IN (...)` is never true.
-            in_list = ", ".join(f"'{x}'" for x in sorted(publishable)) or "''"
+            # Group-aware: the permission is a (group, source) pair, so a source
+            # cleared for one group must not ride into another on its name alone.
+            # `publishable` is a flat set of names and using it here quietly widened
+            # the rule the rest of the module is careful to state as a pair.
+            in_list = _group_in_list(pairs, group)
             try:
                 con.execute(
                     f"COPY (SELECT * FROM ({body}) WHERE source IN ({in_list})) "
@@ -323,7 +382,8 @@ def publish_public(
         if not src.exists():
             continue
         tmp = staging / rel_key.replace("/", "__")
-        in_list = ", ".join(f"'{x}'" for x in sorted(publishable)) or "''"
+        # Same reasoning as the bronze consolidation: filter on the pair, not the name.
+        in_list = _group_in_list(pairs, _MART_GROUPS.get(rel_key, ""))
         try:
             con.execute(
                 f"COPY (SELECT * FROM read_parquet('{src.as_posix()}') "
@@ -394,6 +454,7 @@ if __name__ == "__main__":
             private_bucket,
             public_bucket,
             _MIRRORED_PREFIX,
+            pairs=_publishable_pairs(),
         )
 
     summary = publish_public(
