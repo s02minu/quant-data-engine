@@ -1445,6 +1445,53 @@ internally coherent, correctly typed and plausibly ranged — a partial bar is a
 bar. Only asking the source the same question twice exposed it, which is precisely the
 gap `self_consistency` was built to cover. The tier justified itself on first contact.
 
+## Repair + verification tuning — 2026-08-20 (continued)
+
+The partial-bar corruption (previous section) repaired in production and the weekly
+verification driven to a trustworthy baseline.
+
+**Repair, verified against live Binance:** all 25 bars series re-backfilled
+(`failed=0`, 68,931 rows). Differing rows vs the source went **16 -> 0**; binance
+BTCUSDT 2026-08-19 volume corrected **150.4 -> 29,054.3**. Today's forming bars cleared
+from all 25 series, gold marts rebuilt on the corrected values, republished.
+
+**The write primitive now owns the rule.** The first fix landed in `update_ohlcv`, and
+then the repair backfill promptly re-stored a forming bar because `qde.backfill` reaches
+the lake through `upsert_bars` directly. Same defect, second route. `upsert_bars` now
+drops any bar whose period has not elapsed (`allow_forming=True` to opt out), so no
+future entry point can miss it. The rule is interval-correct — "the period has elapsed",
+not "not today" — so an hourly bar from three hours ago is settled.
+
+**Weekly verification: 29 errors -> 0.** The remaining 20 errors after the repair were
+two more check bugs, both found only by running against live sources:
+
+- [x] **yfinance's `end` is exclusive**; this platform's contract is inclusive
+      (`qde.backfill` documents the range as `[start, end]`). Unnormalised it silently
+      dropped the final day of every ranged fetch — which is not merely a verification
+      artifact: past yfinance backfills with an explicit end were short by one day.
+      Normalised at the boundary so all sources share one range convention.
+- [x] **Kraken's ~720-candle per-call cap** read as "the source is dropping history".
+      `self_consistency` now bounds its re-fetch window by the registry's declared
+      `max_rows_per_call`, so a capped source gets a meaningful check rather than a
+      permanent error.
+
+Final state: `checked=75 errors=0 failed=0 violations=9`, exit 0. The nine are all
+warnings and all correct — 3 `proxy_unavailable` (GLD/TLT/DX-Y.NYB genuinely correlate
+with nothing stored here), real FRED revisions (ICSA restated by 3,000), and yfinance
+dividend re-adjustment correctly classified as a corporate action rather than corruption.
+
+**Scoreboard worth keeping honest:** across its first live outings the verification tier
+found **1 genuine defect (the partial bars, serious) against 5 false positives of its
+own**. It caught something nothing else could — and it needed this much live tuning
+before its output could be trusted.
+
+**Noted, not a defect:** `binancefut` daily series are sparse (~1,100 gap days over a
+2,537-day span, evenly spread across weekdays with no calendar pattern). A full backfill
+recovered only 5, so the source does not hold them. The two metrics also differ in
+coverage — `funding_rate` complete at 7,610 rows, `mark_price` only 3,074 — which
+`load_series_local`'s outer join correctly surfaces as nulls. A retention
+characteristic of Binance's futures endpoints, not lake corruption.
+
 ## Deliberately not doing
 
 Spark, Kafka, Kubernetes, Snowflake/BigQuery, and serving query compute to users.
