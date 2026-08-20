@@ -261,3 +261,76 @@ def test_bars_watermark_returns_latest_date(tmp_path):
     assert bars_watermark("BTCUSDT", "binance", base_dir=str(tmp_path)) == pd.Timestamp(
         "2024-01-05", tz="UTC"
     )
+
+
+def test_a_still_forming_bar_is_never_stored(tmp_path, monkeypatch):
+    """Storing today's incomplete bar froze 16 consecutive days of corrupt data.
+
+    The nightly runs at 00:30 UTC, so a fetch starting "the day after the watermark"
+    landed on a daily bar thirty minutes old. It was stored as complete, the
+    watermark advanced past it, and it was never re-fetched. Measured on the live
+    lake: binance BTCUSDT 2026-08-19 held volume 150.4 against a true 29,054.3.
+    """
+    import pandas as pd
+
+    from qde.storage import load_ohlcv_local, update_ohlcv, upsert_bars
+
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    yesterday = today - pd.Timedelta(days=1)
+
+    def _frame(index, volume):
+        return pd.DataFrame(
+            {"open": [1.0] * len(index), "high": [2.0] * len(index),
+             "low": [0.5] * len(index), "close": [1.5] * len(index),
+             "volume": [volume] * len(index)},
+            index=pd.DatetimeIndex(index, name="date"),
+        )
+
+    # Seed two days back so there is a watermark to advance from.
+    upsert_bars(_frame([today - pd.Timedelta(days=2)], 10.0), "X", "src", base_dir=str(tmp_path))
+
+    # The source offers a settled bar AND today's partial one.
+    served = _frame([yesterday, today], 99.0)
+    served.loc[today, "volume"] = 0.4  # the tell-tale sliver of a forming bar
+    monkeypatch.setattr(storage, "load_ohlcv", lambda *a, **k: served)
+
+    update_ohlcv("X", source="src", base_dir=str(tmp_path))
+
+    stored = load_ohlcv_local("X", "src", "1d", str(tmp_path))
+    assert today not in stored.index, "a bar for a day that has not closed must not be stored"
+    assert yesterday in stored.index, "the settled bar should still land"
+
+
+def test_the_watermark_day_is_refetched_so_a_partial_bar_self_heals(tmp_path, monkeypatch):
+    # Starting at watermark+1 meant a bar stored while forming could never be
+    # corrected. Starting at the watermark makes the next run overwrite it.
+    import pandas as pd
+
+    from qde.storage import load_ohlcv_local, update_ohlcv, upsert_bars
+
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    yesterday = today - pd.Timedelta(days=1)
+
+    def _frame(index, volume):
+        return pd.DataFrame(
+            {"open": [1.0] * len(index), "high": [2.0] * len(index),
+             "low": [0.5] * len(index), "close": [1.5] * len(index),
+             "volume": [volume] * len(index)},
+            index=pd.DatetimeIndex(index, name="date"),
+        )
+
+    # A partial bar already on disk for yesterday (volume far too small).
+    upsert_bars(_frame([yesterday], 0.4), "X", "src", base_dir=str(tmp_path))
+
+    captured = {}
+
+    def _loader(symbol, start=None, **kw):
+        captured["start"] = start
+        return _frame([yesterday], 5000.0)  # the complete version
+
+    monkeypatch.setattr(storage, "load_ohlcv", _loader)
+    update_ohlcv("X", source="src", base_dir=str(tmp_path))
+
+    assert captured["start"] == str(yesterday.date()), "must re-fetch the watermark day"
+    stored = load_ohlcv_local("X", "src", "1d", str(tmp_path))
+    assert float(stored.loc[yesterday, "volume"]) == 5000.0, "partial bar must be overwritten"

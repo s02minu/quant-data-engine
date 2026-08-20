@@ -1332,19 +1332,12 @@ Also resolved: the long-open `fred/DTWEXBGS` question. Its 10-day freshness warn
       reverted to guessing. Now probed and logged.
 - [x] Stale doc counts (12 -> 14 sources).
 
-**Open, needing a decision:**
-
-- **The VPS is 5 commits behind** `main` — none of the verification tier is deployed.
-- **Weekly verification cron is not installed** on the box.
-- **7.1 GB reclaimable Docker build cache** (disk 22% -> 39% since 2026-08-16); the
-  documented remedy is `docker builder prune -af`.
-- `maintain.log` has **no logrotate rule** (1.4 MB and growing unbounded).
-- The public **status page lists yfinance** with row counts read from the private lake,
-  under a heading promising "nothing is asserted that you cannot re-run yourself".
-  Untouched deliberately — the site's visual design is the owner's to change.
-- **5 declared-but-unseeded bars symbols** (`kraken/ETHUSDT`, four yfinance): the
-  catalogue advertises symbols with no data behind them.
-- **6 FRED series are stale vintages** and need a re-backfill (see the section above).
+**Open items as of 2026-08-18 — all now CLOSED (see "Deploy — 2026-08-18" and
+"Fourth audit — 2026-08-20" below):** VPS deployed to current main · weekly cron
+installed · docker build cache pruned (repeat after every rebuild) · logrotate
+installed for `maintain.log` · status page filtered to verifiable sources
+(`verifiableSources()` in `site/src/health.js`) · 5 declared-but-unseeded symbols
+backfilled · 6 stale FRED vintages re-backfilled.
 
 ---
 
@@ -1377,6 +1370,80 @@ graded against `next_day` that reads as "the range parameters were ignored". The
 floor is now the **watermark itself**, so a re-served boundary row is tolerated while
 anything genuinely older is still caught. Fixed and tested locally — **not yet
 deployed**; until it ships the nightly will alert on those 12.
+
+## Fourth audit — 2026-08-20
+
+Full re-audit before the learning phase begins ([[learning-phase-2026-08]]). Local, VPS,
+both R2 buckets, live site, and registry drift.
+
+**A real mistake, caught by checking rather than assuming.** Backfilled the 5
+declared-but-unseeded bars symbols against the LAPTOP's local `./data` lake first — which
+does nothing for production, since bars/series updates moved to the VPS cron a while ago
+and the laptop is not what publishes to R2. Redone on the VPS itself:
+`kraken/ETHUSDT` (721 rows), `yfinance` BTCUSDT/ETHUSDT/SOLUSDT/DX-Y.NYB
+(3154/3154/2324/2172 rows) — all `failed=0`, synced, republished.
+
+- [x] Registry drift: **zero** unseeded symbols in bars or series, checked against the
+      production lake directly (not the laptop).
+- [x] `kraken/ETHUSDT` reached the public bucket (it's redistributable); the four
+      yfinance symbols stayed code-only, as the licensing rule requires — confirmed 0
+      yfinance rows in the public bronze file.
+- [x] The advertised-vs-published invariant still holds after the new data landed:
+      catalogue says 41,395 bars rows, the public file has exactly 41,395.
+- [x] Live site: "ALL 13 SOURCES CURRENT", zero console errors, kraken's new symbol
+      visible in the freshness list.
+- [x] VPS: `151d4b4` (in sync with main), disk 24%, both collectors up and flushing
+      (42/min), zero errors, cron + logrotate both present, last 5 nightlies all
+      `failed=0`. The binancefut/CFTC series-shape fix (see two sections up) confirmed
+      live: `violations=0` on manual re-run; the automatic cron confirmation lands with
+      tonight's 00:30 UTC run.
+- [x] Local gate: 422 passed, ruff clean, mypy clean.
+- [x] Docs: this file's "Open, needing a decision" block from the 2026-08-18 audit was
+      stale — several items in it (docker cache, logrotate, status-page filter) had
+      already been fixed in later sessions but the list was never updated. Replaced with
+      a closure summary rather than left to imply they were still open.
+
+**Lesson kept:** "backfilled it" is not "backfilled the lake that matters." When a
+project has moved its source of truth (laptop -> VPS), always run write operations
+against the box that actually feeds production, not wherever the CLI happens to be
+convenient to run from — check `qde.storage`'s `base_dir` default before trusting a
+local run did anything real.
+
+## The partial-bar corruption — found 2026-08-20
+
+**The most serious data defect found so far, and the weekly verification caught it on
+its first-ever execution.**
+
+`scripts/weekly_verify.sh` had been installed on cron but never once run. Running it by
+hand returned `checked=75 errors=29 violations=56` — every crypto venue reporting that
+settled `high` values had changed, with suspiciously identical worst-case drift per
+symbol (BTC ~7.5%, ETH ~17.8%, SOL ~11.6%). Six independent exchanges do not coordinate
+revisions, so the uniformity was the tell: this was not the sources revising history.
+
+**Root cause.** `update_ohlcv` fetched from `watermark + 1 day`. The nightly runs at
+00:30 UTC, so that start landed on *today* — a daily bar thirty minutes old. It was
+stored as if complete, the watermark advanced past it, and it was never re-fetched.
+Every nightly since the bars-on-VPS deployment froze one partial bar.
+
+**Measured impact:** 16 consecutive days (2026-08-04 → 2026-08-19) corrupted on every
+venue. binance BTCUSDT 2026-08-19 held `volume` 150.4 against a true 29,054.3 — 0.5% of
+reality, consistent with capturing ~30 of 1440 minutes. `high`, `low` and `close` were
+wrong by the same mechanism. It fed `fct_bars_daily` (and therefore ATR and realized
+vol) and was published to the public bucket.
+
+**Fix.** Fetch from the watermark *itself* rather than the day after it, and drop any
+row dated today before the upsert. Together these make the update self-healing: the last
+stored day is re-fetched and completed on the next run, and a forming bar can never be
+stored, so the watermark always rests on the last settled day.
+
+- [x] Root cause fixed in `qde.storage.update_ohlcv`, two regression tests.
+- [x] `watermark >= today` still short-circuits, preserving the original protection
+      against venues (Coinbase) that hard-reject a future `start`.
+
+**Why it went unnoticed:** every fast check passed. The bars were present, fresh,
+internally coherent, correctly typed and plausibly ranged — a partial bar is a *valid*
+bar. Only asking the source the same question twice exposed it, which is precisely the
+gap `self_consistency` was built to cover. The tier justified itself on first contact.
 
 ## Deliberately not doing
 

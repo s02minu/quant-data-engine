@@ -308,13 +308,27 @@ def update_ohlcv(
             "run a backfill or save_ohlcv first."
         )
 
-    # Fetch from the day after the watermark: the last stored bar is already
-    # held, and re-fetching it would only be deduplicated away.
-    next_day = watermark + pd.Timedelta(days=1)
+    # Fetch from the watermark ITSELF, not the day after it.
+    #
+    # The previous version started at watermark+1 and, because the nightly runs at
+    # 00:30 UTC, that start landed on *today* — a daily bar roughly thirty minutes
+    # old. It was stored as if complete, the watermark advanced past it, and it was
+    # never re-fetched: a permanently frozen partial bar. Measured on 2026-08-20,
+    # sixteen consecutive days were corrupted on every venue — binance BTCUSDT
+    # 2026-08-19 held volume 150.4 against a true 29,054.3 (0.5%), with `high`
+    # understated by up to 7.5%. It fed the gold marts and the public bucket.
+    #
+    # Re-fetching the watermark day costs one redundant bar and makes the update
+    # self-healing: whatever was stored for that day is overwritten with the
+    # source's current, settled version.
     today = pd.Timestamp.now(tz="UTC").normalize()
-    if next_day > today:
+    if watermark >= today:
+        # Nothing settled is newer than the watermark, so there is nothing to get.
+        # Also keeps the original protection: some venues (Coinbase, observed live)
+        # hard-reject a start in the future rather than returning an empty page.
         print(f"{symbol} already up to date through {watermark.date()}")
         return
+    next_day = watermark
 
     try:
         df_new = load_ohlcv(symbol, start=str(next_day.date()), interval=interval, source=source)
@@ -325,6 +339,15 @@ def update_ohlcv(
         # symbol, API error) raises a plain ValueError and propagates, so the
         # daily update counts it as failed instead of silently going stale.
         print(f"{symbol} already up to date through {watermark.date()}")
+        return
+
+    # Drop any still-forming bar before it can be stored. A daily bar for today is
+    # incomplete by definition until the day closes, and storing it is what created
+    # the frozen-partial-bar corruption above. Dropping it also keeps the watermark
+    # on the last SETTLED day, so the next run re-fetches and completes it.
+    df_new = df_new[df_new.index < today]
+    if df_new.empty:
+        print(f"{symbol} has no settled bars newer than {watermark.date()}")
         return
 
     if violations is not None:
@@ -340,13 +363,9 @@ def update_ohlcv(
                 group="bars",
                 source=source,
                 series_id=symbol,
-                # The WATERMARK, not the day after it, is the range floor. The fetch
-                # asks for watermark+1, but a source returning the boundary row it
-                # already served is normal and harmless — the upsert is idempotent —
-                # while `start=next_day` reads that row as "the range parameters were
-                # ignored". Ten of those fired on the first live run. Anything
-                # genuinely older than the watermark is still caught, which is what
-                # the check is for.
+                # The watermark is both the fetch start and the range floor, so a
+                # re-served boundary row is expected rather than a violation.
+                # Anything genuinely older than the watermark is still caught.
                 start=str(watermark.date()),
                 interval=interval,
             )
