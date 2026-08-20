@@ -1212,3 +1212,28 @@ def test_the_contract_matches_what_storage_accepts(columns):
     # must pass verification, or intake rejects data the lake has always stored.
     frame = _series_frame([1.0, 2.0, 3.0], columns=columns)
     assert verify_frame(frame, "series", "s", "X") == []
+
+
+def test_the_refetch_window_respects_a_source_row_cap(monkeypatch):
+    # Kraken's OHLC endpoint returns ~720 candles counted back from now. Asking it to
+    # reproduce 737 stored days and reading the shortfall as "dropping history"
+    # describes the API's pagination, not the data — it errored every week.
+    asked = {}
+
+    def _loader(symbol, start=None, end=None, interval=None, source=None):
+        asked["start"] = start
+        n = (pd.Timestamp(end) - pd.Timestamp(start)).days + 1
+        idx = pd.date_range(start, periods=n, freq="D", tz="UTC", name="date")
+        return pd.DataFrame(
+            {"open": [1.0] * n, "high": [2.0] * n, "low": [0.5] * n,
+             "close": [1.5] * n, "volume": [10.0] * n},
+            index=idx,
+        )
+
+    long_history = _yesterdays([1.5] * 800)
+    monkeypatch.setattr("qde.verify._max_rows", lambda source: 720)
+
+    violations = self_consistency(long_history, "BTCUSDT", "kraken", loader=_loader)
+    assert not [v for v in violations if v.severity == "error"], (
+        "a documented per-call cap is not the source dropping history"
+    )

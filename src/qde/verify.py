@@ -814,6 +814,20 @@ def verification_status(
     }
 
 
+def _max_rows(source: str) -> int | None:
+    """The source's declared per-call row cap, or None if it has no limit.
+
+    Read from the registry rather than hardcoded, so a venue's documented pagination
+    limit and the verification window can never disagree.
+    """
+    try:
+        from qde.registry import get_spec
+
+        return get_spec(source).max_rows_per_call
+    except Exception:
+        return None
+
+
 def _settled(stored: pd.DataFrame) -> pd.DataFrame | None:
     """Rows old enough to be final, or None if there is nothing to compare.
 
@@ -928,6 +942,16 @@ def self_consistency(
     settled = _settled(stored)
     if settled is None:
         return []
+
+    # Bounded by what the source can actually serve in one call. Kraken's OHLC
+    # endpoint returns at most ~720 candles counted back from now, so asking it to
+    # reproduce 737 stored days and reading the shortfall as "the source is dropping
+    # history" says more about the API's pagination than about the data. Verifying
+    # the window the source CAN answer keeps the check meaningful for capped sources
+    # instead of permanently failing them.
+    cap = _max_rows(source)
+    if cap is not None and len(settled) > cap:
+        settled = settled.tail(cap)
 
     start, end = str(settled.index.min().date()), str(settled.index.max().date())
     try:

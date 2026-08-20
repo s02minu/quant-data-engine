@@ -13,6 +13,13 @@ import yfinance as yf
 from qde.ingest.base import BaseIngestor, RawPage
 
 
+def _inclusive_end(end: str | None) -> str | None:
+    """Shift an inclusive end date to the exclusive bound yfinance expects."""
+    if end is None:
+        return None
+    return str((pd.Timestamp(end) + pd.Timedelta(days=1)).date())
+
+
 class YfinanceIngestor(BaseIngestor):
     def first_cursor(self, symbol: str, start: str, end: str | None, interval: str) -> str:
         # No cursor to page from; return the start so the loop runs exactly once.
@@ -21,10 +28,17 @@ class YfinanceIngestor(BaseIngestor):
     def fetch_page(
         self, symbol: str, cursor: Any, start: str, end: str | None, interval: str
     ) -> RawPage:
+        # yfinance treats `end` as EXCLUSIVE; every other source here, and this
+        # platform's own contract (`qde.backfill` documents the range as
+        # "[start, end]"), treats it as inclusive. Left as-is it silently drops the
+        # final day of every ranged fetch — which showed up as all eight yfinance
+        # symbols reporting "the source is dropping history" in the weekly
+        # verification, each missing exactly the last settled date. Normalised at
+        # the boundary so callers get one range convention regardless of source.
         df = yf.download(
             tickers=symbol,
             start=start,
-            end=end,
+            end=_inclusive_end(end),
             interval=interval,
             auto_adjust=True,
         )
