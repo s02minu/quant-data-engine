@@ -164,12 +164,44 @@ def bars_watermark(
     return _watermark(_bars_path(symbol, source, interval, base_dir))
 
 
+# How long one bar of each interval covers. A bar is settled once its whole period
+# has elapsed, which is the only definition that works across interval sizes: an
+# hourly bar from three hours ago is final, a daily one from this morning is not.
+_BAR_DURATION = {
+    "1d": pd.Timedelta(days=1),
+    "1h": pd.Timedelta(hours=1),
+    "1m": pd.Timedelta(minutes=1),
+}
+
+
+def _drop_forming(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """Remove bars whose period has not finished yet.
+
+    A forming bar is a *valid* bar — present, correctly typed, internally coherent,
+    plausibly ranged — so nothing else in the platform rejects it. That is exactly
+    how sixteen consecutive days of partial daily bars reached the public lake in
+    August 2026: stored at 00:30 UTC with thirty minutes of trading in them, then
+    frozen when the watermark advanced past them. binance BTCUSDT 2026-08-19 held
+    volume 150.4 against a true 29,054.3.
+
+    Enforced here rather than in each caller because the same defect then appeared a
+    second time through `qde.backfill`, which reaches the lake by a different route.
+    Every bar write goes through this function, so this is the one place the rule
+    cannot be forgotten.
+    """
+    duration = _BAR_DURATION.get(interval)
+    if duration is None or df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    return df[df.index + duration <= pd.Timestamp.now(tz="UTC")]
+
+
 def upsert_bars(
     df: pd.DataFrame,
     symbol: str,
     source: str,
     interval: str = "1d",
     base_dir: str = "data",
+    allow_forming: bool = False,
 ) -> int:
     """Merge ``df`` into a bar series idempotently; return the stored row count.
 
@@ -189,10 +221,21 @@ def upsert_bars(
         source (str): the source.
         interval (str, optional): bar size. Default: '1d'.
         base_dir (str, optional): the lake root. Default: 'data'.
+        allow_forming (bool, optional): store bars whose period has not closed yet.
+            Default False, because a forming bar is indistinguishable from a
+            complete one once written and corrupted the public lake for sixteen
+            days. Set True only to deliberately capture a preliminary candle.
 
     Returns:
         int: number of rows in the resulting series file.
     """
+    if not allow_forming:
+        df = _drop_forming(df, interval)
+        if df.empty:
+            # Nothing settled to write. Reported as the current row count so the
+            # caller sees the truth rather than a zero that reads like data loss.
+            path = _bars_path(symbol, source, interval, base_dir)
+            return len(pd.read_parquet(path)) if path.exists() else 0
     return _upsert_frame(df, _bars_path(symbol, source, interval, base_dir))
 
 

@@ -99,7 +99,12 @@ def test_update_skips_fetch_when_watermark_is_already_today(tmp_path, monkeypatc
     # call the loader, since some venues (Coinbase, observed live) hard-reject a
     # future start instead of returning empty like the rest.
     today = pd.Timestamp.now(tz="UTC").normalize()
-    upsert_bars(_sample_bars([str(today.date())]), "BTCUSDT", "coinbase", base_dir=str(tmp_path))
+    # allow_forming: this test deliberately reproduces a venue publishing a same-day
+    # preliminary candle, which upsert_bars now refuses by default.
+    upsert_bars(
+        _sample_bars([str(today.date())]), "BTCUSDT", "coinbase",
+        base_dir=str(tmp_path), allow_forming=True,
+    )
 
     def boom(*args, **kwargs):
         raise AssertionError("loader must not be called when the watermark is already today")
@@ -334,3 +339,51 @@ def test_the_watermark_day_is_refetched_so_a_partial_bar_self_heals(tmp_path, mo
     assert captured["start"] == str(yesterday.date()), "must re-fetch the watermark day"
     stored = load_ohlcv_local("X", "src", "1d", str(tmp_path))
     assert float(stored.loc[yesterday, "volume"]) == 5000.0, "partial bar must be overwritten"
+
+
+def test_backfill_cannot_reintroduce_a_forming_bar(tmp_path):
+    """The same defect reached the lake twice, by two different routes.
+
+    `update_ohlcv` was fixed first; then a repair backfill re-stored today's partial
+    bar, because it reaches the lake through `upsert_bars` directly. The rule lives
+    in the primitive so no future entry point can miss it.
+    """
+    import pandas as pd
+
+    from qde.storage import load_ohlcv_local, upsert_bars
+
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    yesterday = today - pd.Timedelta(days=1)
+    idx = pd.DatetimeIndex([yesterday, today], name="date")
+    frame = pd.DataFrame(
+        {"open": [1.0, 1.0], "high": [2.0, 2.0], "low": [0.5, 0.5],
+         "close": [1.5, 1.5], "volume": [100.0, 0.4]},
+        index=idx,
+    )
+
+    upsert_bars(frame, "X", "src", base_dir=str(tmp_path))
+    stored = load_ohlcv_local("X", "src", "1d", str(tmp_path))
+    assert yesterday in stored.index
+    assert today not in stored.index, "a bar whose day has not closed must not be stored"
+
+
+def test_an_hourly_bar_is_settled_once_its_hour_has_elapsed(tmp_path):
+    # The rule is "the period has elapsed", not "not today" — an hourly bar from
+    # three hours ago is final even though it is dated today.
+    import pandas as pd
+
+    from qde.storage import load_ohlcv_local, upsert_bars
+
+    now = pd.Timestamp.now(tz="UTC").floor("h")
+    old_hour, this_hour = now - pd.Timedelta(hours=3), now
+    idx = pd.DatetimeIndex([old_hour, this_hour], name="date")
+    frame = pd.DataFrame(
+        {"open": [1.0, 1.0], "high": [2.0, 2.0], "low": [0.5, 0.5],
+         "close": [1.5, 1.5], "volume": [10.0, 0.1]},
+        index=idx,
+    )
+
+    upsert_bars(frame, "X", "src", interval="1h", base_dir=str(tmp_path))
+    stored = load_ohlcv_local("X", "src", "1h", str(tmp_path))
+    assert old_hour in stored.index, "a completed hour is settled"
+    assert this_hour not in stored.index, "the current hour is still forming"
