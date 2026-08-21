@@ -3,7 +3,8 @@
 # Daily lake maintenance: compact settled bronze partitions, then sync them to
 # R2 and prune the local copies. Intended to run from cron on the VPS.
 #
-# R2 credentials are read from secrets/r2.env (gitignored, VPS-only) and passed
+# R2 credentials are read from secrets-infra/r2.env (gitignored, VPS-only, and
+# deliberately outside the directory mounted into containers) and passed
 # into the one-off container. No secrets live in this file.
 
 set -euo pipefail
@@ -80,7 +81,7 @@ docker compose run --rm \
 # Public lake (Phase 12): mirror only the redistributable slice + catalogue.json to
 # the PUBLIC bucket, so anyone can query it with their own DuckDB and no credentials.
 # Guarded on QDE_R2_PUBLIC_BUCKET, so it is a no-op until that bucket is provisioned --
-# add QDE_R2_PUBLIC_BUCKET and QDE_PUBLIC_BASE_URL to secrets/r2.env to activate.
+# add QDE_R2_PUBLIC_BUCKET and QDE_PUBLIC_BASE_URL to secrets-infra/r2.env.
 if [ -n "${QDE_R2_PUBLIC_BUCKET:-}" ]; then
   echo "[$(date -u +%FT%TZ)] public publish start"
   docker compose run --rm \

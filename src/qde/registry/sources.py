@@ -245,8 +245,9 @@ _SPECS: list[SourceSpec] = [
             "Tiingo end-of-day US equities/ETFs, licensed feed. Free tier is "
             "non-commercial with an hourly request cap. Redistribution NOT yet "
             "confirmed — review Tiingo's terms before setting redistributable=True. "
-            "Raw (unadjusted) prices are stored; divCash/splitFactor are available "
-            "from the source if an adjusted series is needed."
+            "Split- and dividend-ADJUSTED prices are stored (the adj* fields), matching "
+            "the yfinance convention. Raw prices were tried first and made every split "
+            "read as a ~50% crash: 12 of 27 symbols carried such artifacts."
         ),
     ),
     SourceSpec(

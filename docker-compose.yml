@@ -10,11 +10,17 @@ services:
       QDE_KINDS: trades,depth,book_ticker
     volumes:
       - ./data:/data
-      # Read-only so the batch entrypoints (daily_update, backfill) can load a
-      # source key -- FRED lives in secrets/fred.env -- via qde.env.load_env_file
-      # (WORKDIR is /app). Mounted, not baked into the image or passed with -e, so
-      # the nightly cron refreshes the series group without extra plumbing. The
-      # BOM-robust loader tolerates a PowerShell-written file; missing files no-op.
+      # SOURCE credentials only. Read-only, and deliberately the whole directory so a
+      # newly registered source needs no compose edit -- qde.env.load_source_secrets
+      # loads a file only when it is named after a REGISTERED SOURCE, which is what
+      # keeps this mount safe to widen.
+      #
+      # R2 WRITE credentials are NOT here: they live in secrets-infra/, which nothing
+      # mounts. maintain.sh sources that on the host and passes the values with -e, so
+      # write access to the public bucket never sits on disk inside a job that only
+      # reads APIs and writes local Parquet.
+      #
+      # The BOM-robust loader tolerates a PowerShell-written file; missing files no-op.
       - ./secrets:/app/secrets:ro
     stop_grace_period: 30s
 

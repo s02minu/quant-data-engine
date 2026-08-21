@@ -3,13 +3,26 @@
 Tiingo's end-of-day endpoint returns the whole requested range in one response, so
 there is no pagination: a single page, no next cursor.
 
-**Raw prices, not adjusted.** Every record carries both — `close` beside `adjClose`,
-and so on. The adjusted set is tempting and wrong for a bronze layer twice over:
-mixing an adjusted close with a raw high produces a frame that fails OHLC coherence,
-and adjusted values are *rewritten every time a dividend is paid*, so settled history
-would change under us and trip `self_consistency` forever. Bronze is the replay log;
-it stores what the venue actually traded at. `divCash` and `splitFactor` are kept so
-a consumer can reconstruct the adjusted series themselves.
+**Adjusted prices.** Every record carries both — `close` beside `adjClose`, and so on.
+
+The first version of this stored the RAW set, reasoning that adjusted values are
+rewritten whenever a dividend is paid and that bronze should hold what the venue
+actually traded at. That reasoning optimised the wrong property. Raw prices make every
+**split** look like a crash: XLB reads 88.47 -> 44.09 on 2025-12-05, a clean -50%
+return that never happened. Measured across this source, 12 of 27 symbols carried such
+artifacts — all eleven SPDR sectors from one 2:1 split, ten reverse splits in VIXY, and
+a +745% print in USO. Those numbers flow straight into returns, ATR and realized vol in
+the gold marts, so a "faithful" bronze row produced meaningless silver and gold.
+
+A dividend rewrite is a nuisance the platform already handles correctly: it moves every
+row by the same ratio, and `self_consistency` classifies a uniform restatement as a
+corporate action (a warn that says the stored copy is an old vintage) rather than a
+defect. A fake -50% return is not a nuisance — it is wrong data that nothing downstream
+can detect.
+
+Using the adjusted set also makes the lake internally consistent: the yfinance ingestor
+already fetches with `auto_adjust=True`, so both equity sources now quote the same
+convention.
 """
 
 from typing import Any
@@ -63,13 +76,16 @@ class TiingoIngestor(BaseIngestor):
         # plain UTC date like every other bars source in the lake.
         index = pd.to_datetime(frame["date"], utc=True, errors="coerce").dt.normalize()
 
+        # The adj* set throughout — never mixed with the raw set. Taking an adjusted
+        # close alongside a raw high produces a frame where `high < close`, which is
+        # the exact incoherence `qde.verify` exists to catch.
         out = pd.DataFrame(
             {
-                "open": pd.to_numeric(frame["open"], errors="coerce"),
-                "high": pd.to_numeric(frame["high"], errors="coerce"),
-                "low": pd.to_numeric(frame["low"], errors="coerce"),
-                "close": pd.to_numeric(frame["close"], errors="coerce"),
-                "volume": pd.to_numeric(frame["volume"], errors="coerce"),
+                "open": pd.to_numeric(frame["adjOpen"], errors="coerce"),
+                "high": pd.to_numeric(frame["adjHigh"], errors="coerce"),
+                "low": pd.to_numeric(frame["adjLow"], errors="coerce"),
+                "close": pd.to_numeric(frame["adjClose"], errors="coerce"),
+                "volume": pd.to_numeric(frame["adjVolume"], errors="coerce"),
             }
         )
         out.index = pd.DatetimeIndex(index, name="date")

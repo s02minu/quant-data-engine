@@ -80,11 +80,17 @@ if [ "$WITH_SECRETS" = "1" ]; then
   for f in secrets/r2-read.env secrets/fred.env; do
     [ -f "$f" ] && cp "$f" "$DEST/secrets/" && echo "copied   : $f"
   done
-  # Never the write credentials. secrets/r2.env lives only on the VPS and is what
-  # publishing authenticates with.
-  if [ -f secrets/r2.env ]; then
-    echo "WITHHELD : secrets/r2.env (write credentials) — not copied, by design"
-  fi
+  # Never the write credentials. They live in secrets-infra/ (VPS-only, deliberately
+  # NOT mounted into containers) and are what publishing authenticates with.
+  #
+  # BOTH paths are checked: this used to test only secrets/r2.env, so when the file
+  # moved the reassurance simply stopped printing — a safety message that silently
+  # disappears is worse than none, because its absence reads as "nothing to withhold".
+  for wf in secrets-infra/r2.env secrets/r2.env; do
+    if [ -f "$wf" ]; then
+      echo "WITHHELD : $wf (write credentials) — not copied, by design"
+    fi
+  done
 fi
 
 cat <<NOTES
@@ -97,7 +103,7 @@ cat <<NOTES
   CANNOT publish: the read credentials use QDE_R2_READ_KEY_ID / QDE_R2_READ_SECRET,
         while publish_public reads QDE_R2_ACCESS_KEY_ID / QDE_R2_SECRET_ACCESS_KEY.
         Different names, so the publish path finds no credentials and fails closed.
-  DO NOT hand over VPS SSH or secrets/r2.env. Point at the public URL instead —
+  DO NOT hand over VPS SSH or secrets-infra/r2.env. Point at the public URL —
         a stranger can verify this lake with no credentials, so an auditor needs
         nothing more than a stranger does.
 
