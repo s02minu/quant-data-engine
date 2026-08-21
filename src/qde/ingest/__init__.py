@@ -14,6 +14,7 @@ from qde.ingest.cftc import CftcIngestor
 from qde.ingest.fred import FredIngestor
 from qde.ingest.fred_releases import FredReleasesIngestor
 from qde.ingest.kraken import KrakenIngestor
+from qde.ingest.tiingo import TiingoIngestor
 from qde.ingest.yfinance import YfinanceIngestor
 from qde.registry import get_spec
 
@@ -25,6 +26,7 @@ _INGESTORS: dict[str, type[BaseIngestor]] = {
     "binance": BinanceIngestor,
     "kraken": KrakenIngestor,
     "yfinance": YfinanceIngestor,
+    "tiingo": TiingoIngestor,
     "fred": FredIngestor,
     "fredcal": FredReleasesIngestor,  # events group (bitemporal release calendar)
     "cboe": CboeIngestor,

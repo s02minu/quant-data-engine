@@ -144,3 +144,54 @@ def test_a_client_error_is_not_retried(monkeypatch):
     with pytest.raises(ValueError, match="404"):
         get_with_requests("http://x", {})
     assert calls["n"] == 1, "retrying a bad request just burns the rate limit"
+
+
+# --- the declared rate limit is a control, not a comment --------------------------
+
+
+def test_a_declared_rate_limit_paces_calls(monkeypatch):
+    """`rate_limit_per_min` sat in the registry unenforced for months.
+
+    It became load-bearing with Tiingo, whose free tier caps requests per hour: one
+    nightly over 27 symbols fits, a manual re-run in the same hour does not. Without
+    pacing the only defence is retry/backoff, which turns a predictable wait into
+    four failed attempts and an exception.
+    """
+    import qde.ingest.base as base
+
+    slept: list[float] = []
+    monkeypatch.setattr(base.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(base.time, "monotonic", lambda: 1000.0)  # no time passes
+    base._LAST_CALL.clear()
+
+    base._throttle("slowsource", 60)  # first call: nothing to wait for
+    base._throttle("slowsource", 60)  # second: must wait the full interval
+
+    assert slept and abs(slept[0] - 1.0) < 1e-6, "60/min means one second apart"
+
+
+def test_a_source_without_a_limit_is_never_delayed(monkeypatch):
+    import qde.ingest.base as base
+
+    slept: list[float] = []
+    monkeypatch.setattr(base.time, "sleep", lambda s: slept.append(s))
+    base._LAST_CALL.clear()
+
+    for _ in range(5):
+        base._throttle("fastsource", None)
+    assert slept == [], "an unlimited source must not pay for the mechanism"
+
+
+def test_pacing_is_shared_across_ingestor_instances(monkeypatch):
+    # get_ingestor builds a fresh object per symbol, so per-instance state would pace
+    # nothing across a 27-symbol run — which is exactly the case that matters.
+    import qde.ingest.base as base
+
+    slept: list[float] = []
+    monkeypatch.setattr(base.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(base.time, "monotonic", lambda: 500.0)
+    base._LAST_CALL.clear()
+
+    base._throttle("shared", 30)
+    base._throttle("shared", 30)  # a different "instance" would still be paced
+    assert slept, "the limit must hold across the whole run, not per object"

@@ -195,6 +195,62 @@ _SPECS: list[SourceSpec] = [
     ),
     SourceSpec(
         group="bars",
+        name="tiingo",
+        # US equities and ETFs, end-of-day. Chosen over yfinance for the same ground
+        # because yfinance is an unofficial scrape that cannot be republished, while
+        # Tiingo is a licensed feed with far deeper history (SPY to 1993) — and
+        # because its RAW prices are stable, where an adjusted series is rewritten on
+        # every dividend and would trip self_consistency forever.
+        symbols={
+            # Broad market
+            "SPY": "SPY", "QQQ": "QQQ", "IWM": "IWM", "DIA": "DIA",
+            # Commodities
+            "GLD": "GLD", "SLV": "SLV", "USO": "USO",
+            # Rates and credit
+            "TLT": "TLT", "IEF": "IEF", "SHY": "SHY", "LQD": "LQD", "HYG": "HYG",
+            # Dollar and international. UUP stands in for the dollar index: DX-Y.NYB
+            # is an ICE index rather than a tradeable instrument and Tiingo 404s it.
+            "UUP": "UUP", "EEM": "EEM", "EFA": "EFA",
+            # Volatility
+            "VIXY": "VIXY",
+            # The eleven SPDR sectors. XLC (2018) and XLRE (2015) are younger than the
+            # rest (1998) because their sectors were carved out of the others later —
+            # a short history here is the instrument's age, not a gap.
+            "XLB": "XLB", "XLC": "XLC", "XLE": "XLE", "XLF": "XLF", "XLI": "XLI",
+            "XLK": "XLK", "XLP": "XLP", "XLRE": "XLRE", "XLU": "XLU", "XLV": "XLV",
+            "XLY": "XLY",
+        },
+        intervals=["1d"],
+        # The whole requested range comes back in one response; no pagination.
+        max_rows_per_call=None,
+        # The free tier allows roughly 50 requests an hour, and one nightly pass over
+        # these 27 symbols is 27 requests — so a BURST is fine and only repetition
+        # within the same hour is not. This paces against a runaway loop rather than
+        # trying to express an hourly budget as a per-minute one: at 20/min a full
+        # pass takes about eighty seconds, where the arithmetically "correct" 1/min
+        # would have made the nightly sleep for twenty-seven minutes to solve a
+        # problem that does not occur. Genuine 429s are still absorbed by the
+        # retry/backoff in qde.loaders.http.
+        rate_limit_per_min=20,
+        expected_daily_rows=1,  # equities: a market-closed day legitimately adds zero
+        null_tolerance=_OHLCV_NO_NULLS,
+        # DELIBERATELY FALSE, pending a licensing decision. The free tier is
+        # non-commercial and the underlying data is licensed from exchanges, so
+        # whether it may be republished is a legal judgment the owner has to make
+        # against Tiingo's terms — not something inferable from a response. Flipping
+        # this is a one-line change plus a republish; flipping it wrongly cannot be
+        # undone, which is why it starts here.
+        redistributable=False,
+        license_note=(
+            "Tiingo end-of-day US equities/ETFs, licensed feed. Free tier is "
+            "non-commercial with an hourly request cap. Redistribution NOT yet "
+            "confirmed — review Tiingo's terms before setting redistributable=True. "
+            "Raw (unadjusted) prices are stored; divCash/splitFactor are available "
+            "from the source if an adjusted series is needed."
+        ),
+    ),
+    SourceSpec(
+        group="bars",
         name="yfinance",
         symbols={
             "BTCUSDT": "BTC-USD",

@@ -26,6 +26,13 @@ class FakeS3:
         return {"ContentLength": self.objects[(Bucket, Key)]}
 
 
+def _withheld() -> list[str]:
+    """Sources the registry forbids republishing, as publish_public reports them."""
+    from qde.registry import all_specs
+
+    return sorted({s.name for s in all_specs() if not s.redistributable})
+
+
 def _write_bars(base, source, symbol):
     part = (
         Path(base) / "bronze" / "group=bars" / f"source={source}"
@@ -60,7 +67,10 @@ def test_catalogue_has_sources_datasets_and_flags_excluded(tmp_path):
     _tiny_lake(str(tmp_path))
     cat = build_catalogue(str(tmp_path), public_base_url="https://data.test")
 
-    assert cat["notes"]["excluded_sources"] == ["yfinance"]
+    # Derived from the registry, not hardcoded: this previously spelled out
+    # ["yfinance"] and broke the moment a second non-redistributable source was
+    # added, reporting a registry change as a publishing failure.
+    assert cat["notes"]["excluded_sources"] == _withheld()
     assert cat["serving_model"] == "publish-files-not-queries"
     # every registered source appears; binance carries live rows, and its flag is set.
     binance = next(s for s in cat["sources"] if s["name"] == "binance")
@@ -84,7 +94,7 @@ def test_publish_skips_nonredistributable_bronze(tmp_path):
     assert any("source=binance" in k for k in keys)          # redistributable shipped
     assert not any("source=yfinance" in k for k in keys)     # excluded withheld
     assert summary["bronze_skipped"] >= 1
-    assert summary["excluded"] == ["yfinance"]
+    assert summary["excluded"] == _withheld()
 
 
 def test_publish_filters_nonredistributable_rows_from_gold(tmp_path):

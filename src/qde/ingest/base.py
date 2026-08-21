@@ -22,6 +22,7 @@ A concrete source implements only the parts that genuinely differ between APIs:
 Adding a source is then those three small methods plus a registry row.
 """
 
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Hashable
 from dataclasses import dataclass
@@ -38,6 +39,38 @@ from qde.registry.spec import SourceSpec
 # ambitious. Paired with the repeated-cursor check below: that catches a cursor
 # stuck in place, this catches one that advances but never arrives.
 MAX_PAGES = 10_000
+
+
+# When each source was last called, so the declared rate limit is honoured across a
+# whole run rather than per ingestor instance — `get_ingestor` builds a fresh object
+# per symbol, so per-instance state would pace nothing.
+_LAST_CALL: dict[str, float] = {}
+
+
+def _throttle(source: str, per_minute: int | None) -> None:
+    """Wait, if needed, so ``source`` is not called faster than it permits.
+
+    ``rate_limit_per_min`` sat in the registry as documentation for months while
+    nothing enforced it — a field that reads like a control and behaves like a
+    comment. It became load-bearing with Tiingo, whose free tier caps requests per
+    hour: one nightly pass over 27 symbols fits, and a manual re-run in the same hour
+    does not. Without pacing the only defence is the retry/backoff in
+    ``qde.loaders.http``, which turns a predictable wait into four failed attempts
+    and then an exception.
+
+    A source declaring no limit is not delayed at all, so this costs nothing for the
+    exchanges that page freely.
+    """
+    if not per_minute or per_minute <= 0:
+        return
+    interval = 60.0 / per_minute
+    last = _LAST_CALL.get(source)
+    now = time.monotonic()
+    if last is not None:
+        wait = interval - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+    _LAST_CALL[source] = time.monotonic()
 
 
 @dataclass
@@ -116,6 +149,7 @@ class BaseIngestor(ABC):
                     "the page size or narrow the range."
                 )
 
+            _throttle(self.spec.name, self.spec.rate_limit_per_min)
             page = self.fetch_page(symbol, cursor, start, end, interval)
             rows.extend(page.rows)
             cursor = page.next_cursor

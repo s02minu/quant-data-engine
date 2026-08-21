@@ -328,3 +328,18 @@ def offline_binance_futures(monkeypatch):
         return FakeResponse(payload=rows[: params["limit"]])
 
     monkeypatch.setattr(http_mod.requests, "get", fake_get)
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_limit_sleep(monkeypatch):
+    """Never pace a fake API.
+
+    The pagination loop honours each source's declared `rate_limit_per_min`, which is
+    correct against a real endpoint and pure waste against an offline fixture: Kraken
+    declares 60/min, so paginated tests began sleeping a real second per page and the
+    suite stopped finishing. Production behaviour is untouched — only the sleep is.
+    """
+    import qde.ingest.base as base
+
+    monkeypatch.setattr(base.time, "sleep", lambda _seconds: None)
+    base._LAST_CALL.clear()
