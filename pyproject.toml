@@ -7,18 +7,25 @@ name = "qde"
 version = "0.1.0"
 description = "Quant data engine - market data infrastructure."
 requires-python = ">=3.12"
+# Upper-bounded at the next MAJOR, lower-bounded at the version proven in
+# production. Unbounded, a rebuild of the 24/7 collector could pull `pandas 4` or
+# `ccxt 5` and change runtime behaviour with no code change and no failing test —
+# the image is rebuilt on every deploy, so the drift arrives silently and at the
+# worst moment. Deliberately NOT exact pins: patch and minor releases carry security
+# fixes, and a lockfile across 191 transitive packages is maintenance this project
+# does not have a maintainer for. Bump a ceiling only after the suite passes on it.
 dependencies = [
-    "pandas",
-    "requests",
-    "yfinance",
-    "ccxt",
-    "pyarrow",
-    "duckdb",
-    "pandas-market-calendars",
-    "websockets",
-    "boto3",
-    "structlog",
-    "pydantic-settings",
+    "pandas>=3.0,<4",
+    "requests>=2.32,<3",
+    "yfinance>=1.5,<2",
+    "ccxt>=4.5,<5",
+    "pyarrow>=25.0,<26",
+    "duckdb>=1.5,<2",
+    "pandas-market-calendars>=5.4,<6",
+    "websockets>=17.0,<18",
+    "boto3>=1.40,<2",
+    "structlog>=26.1,<27",
+    "pydantic-settings>=2.15,<3",
 ]
 
 [project.optional-dependencies]
@@ -32,8 +39,8 @@ dev = [
 # (`pip install .[transform]`) so the nightly can rebuild gold. dbt-duckdb reads
 # bronze Parquet and materializes gold Parquet in-place -- zero warehouse cost.
 transform = [
-    "dbt-core",
-    "dbt-duckdb",
+    "dbt-core>=1.12,<2",
+    "dbt-duckdb>=1.11,<2",
 ]
 # Orchestration (Phase 7): registry-driven Dagster assets over the batch pipeline.
 # Local/dev-only by design (ROADMAP 7 + the 3.7 GB VPS): `dagster dev` shows the
