@@ -1237,3 +1237,41 @@ def test_the_refetch_window_respects_a_source_row_cap(monkeypatch):
     assert not [v for v in violations if v.severity == "error"], (
         "a documented per-call cap is not the source dropping history"
     )
+
+
+# --- a level gap is not always a defect --------------------------------------------
+
+
+def test_adjusted_vs_raw_prices_are_not_a_disagreement():
+    """Two correct sources quoting different conventions must not read as broken.
+
+    Measured live: Tiingo's raw SPY sits 11.8% from yfinance's adjusted SPY over ten
+    years (22.3% in 2014, 3.8% in 2023 — the gap shrinking toward the present exactly
+    as dividends accumulate backwards), while their daily returns correlate 0.9987.
+    Reporting that as a conflict would make every raw-vs-adjusted pairing look wrong.
+    """
+    raw = _series(_TRUTH)
+    # An adjustment grows backwards in time: oldest rows discounted most.
+    factors = [1 + 0.02 * (len(_TRUTH) - i) for i in range(len(_TRUTH))]
+    adjusted = _series([v / f for v, f in zip(_TRUTH, factors, strict=True)])
+
+    violations = cross_check(
+        raw, "SPY", "tiingo", peers=["yfinance"], loader=lambda *a, **k: adjusted
+    )
+    assert violations and violations[0].severity == "warn"
+    assert "convention" in violations[0].detail
+
+
+def test_a_constant_scale_factor_is_still_a_units_error():
+    """The trap the drift test exists for: a units error correlates perfectly too.
+
+    Pence for pounds scales every row by the same factor, so returns match exactly.
+    Only the ratio being *constant* separates it from a dividend adjustment.
+    """
+    ours = _series([v * 100 for v in _TRUTH])
+    violations = cross_check(
+        ours, "BTCUSDT", "binance", peers=["bybit"], loader=_peer
+    )
+    assert violations
+    assert violations[0].severity == "error", "a constant scale factor is a defect"
+    assert "convention" not in violations[0].detail

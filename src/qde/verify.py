@@ -69,6 +69,14 @@ _IMPLAUSIBLE_DAILY_RETURN = 5.0  # +400% / -80% in one day
 # return correlation below, which is convention-independent and can be strict.
 _CROSS_SOURCE_TOLERANCE = 0.05  # 5% median relative difference
 
+# Separates a price-convention difference from a units error, both of which show a
+# large level gap AND near-perfect return correlation. An adjusted series and a raw
+# one drift apart as dividends accumulate, so their ratio MOVES: measured on SPY,
+# 1.0302 to 1.2343 over ten years, relative std 0.053. A units error (pence for
+# pounds, a decimal shift) scales every row identically, so its ratio is constant at
+# relative std 0. Five orders of magnitude between them.
+_CONVENTION_DRIFT_MIN = 0.005
+
 # Two feeds on the same asset move together day by day, whatever basis separates
 # their levels. Measured across every venue pair in this lake over 382 days, the
 # WORST observed correlation was 0.9983 — so 0.9 sits an order of magnitude closer
@@ -335,6 +343,38 @@ def cross_check(
 
         median = float(relative.median())
         if median > tolerance:
+            # Before calling a level gap a defect, ask whether the two are even
+            # quoting the same convention. An ADJUSTED series and a RAW one are both
+            # correct and drift apart by cumulative dividends — measured on this lake,
+            # Tiingo's raw SPY sits 11.8% from yfinance's adjusted SPY over ten years
+            # (22.3% in 2014, 3.8% in 2023, shrinking toward the present exactly as
+            # dividends accumulate backwards). Their daily returns still correlate
+            # 0.9987, because a convention changes the level and not the movement.
+            #
+            # So a large level gap WITH near-perfect correlation is two correct
+            # sources, and reporting it as a conflict would make every raw-vs-adjusted
+            # pairing look broken. A large gap WITHOUT it is the real thing.
+            # Correlation alone is NOT enough to excuse a level gap: a units error
+            # (pence for pounds, a decimal shift) scales every row by the SAME factor,
+            # so it correlates perfectly too. What separates them is whether the ratio
+            # drifts. Cumulative dividends grow over time, so an adjusted-vs-raw ratio
+            # moves — measured on SPY, 1.0302 to 1.2343 across ten years, relative
+            # std 0.053. A units error's ratio is dead constant, relative std 0.
+            # Five orders of magnitude apart, so the discriminator is not delicate.
+            agreement = _return_correlation(a, b)
+            ratio = (a / b).replace([float("inf"), float("-inf")], pd.NA).dropna()
+            drifts = (
+                len(ratio) > 2
+                and float(ratio.mean()) != 0
+                and float(ratio.std() / abs(ratio.mean())) > _CONVENTION_DRIFT_MIN
+            )
+            if agreement is not None and agreement >= _MIN_RETURN_CORRELATION and drifts:
+                return [_v("bars", source, symbol, "cross_source", "warn",
+                           f"levels differ from {peer} by {median:.1%} but daily moves "
+                           f"correlate {agreement:.4f} and the ratio drifts — a price "
+                           "convention difference (adjusted vs raw), not a disagreement "
+                           "about the data")]
+
             # Disagreement names two frames and does not say which is wrong. Ours
             # may be fine and this peer broken — reporting on one opinion turns a
             # bad peer into a false accusation against good data. A second peer
@@ -352,17 +392,12 @@ def cross_check(
         # of any basis between them. Correlation is what separates a live feed
         # from a frozen one that happens to be in the right neighbourhood.
         if len(shared) >= _MIN_DATES_FOR_CORRELATION:
-            ours_ret, theirs_ret = a.pct_change().dropna(), b.pct_change().dropna()
-            common = ours_ret.index.intersection(theirs_ret.index)
-            # Zero variance means a flat series, which `_plausibility` owns;
-            # correlation is undefined there rather than suspicious.
-            comparable = (
-                len(common) >= _MIN_DATES_FOR_CORRELATION - 1
-                and ours_ret.loc[common].std() > 0
-                and theirs_ret.loc[common].std() > 0
-            )
-            if comparable:
-                corr = float(ours_ret.loc[common].corr(theirs_ret.loc[common]))
+            corr_value = _return_correlation(a, b)
+            if corr_value is not None:
+                corr = corr_value
+                common = a.pct_change().dropna().index.intersection(
+                    b.pct_change().dropna().index
+                )
                 if corr < _MIN_RETURN_CORRELATION:
                     return [_v("bars", source, symbol, "cross_source", "error",
                                f"levels match {peer} but daily moves do not "
@@ -1020,6 +1055,25 @@ def self_consistency(
                           "settling, but it moves any volume-based signal"))
 
     return out
+
+
+def _return_correlation(a: pd.Series, b: pd.Series) -> float | None:
+    """Correlation of two series' daily returns, or None if it cannot mean anything.
+
+    The one comparison that does not care which price convention a source uses: an
+    adjusted series and a raw one differ in *level* forever, but their day-to-day
+    movement is the same. Returns None when there are too few overlapping points, or
+    when either side is flat — zero variance makes the correlation undefined rather
+    than suspicious, and flatness is `_plausibility`'s to report.
+    """
+    ours, theirs = a.pct_change().dropna(), b.pct_change().dropna()
+    common = ours.index.intersection(theirs.index)
+    if len(common) < _MIN_DATES_FOR_CORRELATION - 1:
+        return None
+    if not (ours.loc[common].std() > 0 and theirs.loc[common].std() > 0):
+        return None
+    value = float(ours.loc[common].corr(theirs.loc[common]))
+    return None if pd.isna(value) else value
 
 
 def _adjudicate(
