@@ -1,0 +1,168 @@
+"""Tests for the drafted-ingestor gauntlet.
+
+Each case is a way a generated ingestor goes wrong *without raising* — the failure
+mode that makes reviewing the code useless. A stage earns its place only by catching
+one of these, so every test here is a defect the gauntlet must not let through.
+
+Offline: the fake ingestors serve frames from memory, so nothing touches a network.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from qde.draft import GauntletReport, load_candidate, run_gauntlet
+from qde.registry.spec import SourceSpec
+
+
+def _spec(**over) -> SourceSpec:
+    base = dict(
+        group="bars",
+        name="draftco",
+        symbols={"XYZ": "xyz"},
+        intervals=["1d"],
+        max_rows_per_call=None,
+        rate_limit_per_min=None,
+        expected_daily_rows=1,
+        null_tolerance={},
+        redistributable=False,
+        license_note="draft",
+    )
+    base.update(over)
+    return SourceSpec(**base)
+
+
+def _write(tmp_path: Path, body: str) -> Path:
+    path = tmp_path / "draft_ingestor.py"
+    path.write_text(HEADER + body, encoding="utf-8")
+    return path
+
+
+HEADER = '''
+import pandas as pd
+from qde.ingest.base import BaseIngestor, RawPage
+
+
+def _frame(dates, high=None):
+    idx = pd.DatetimeIndex(pd.to_datetime(dates, utc=True), name="date")
+    n = len(dates)
+    return pd.DataFrame(
+        {"open": [10.0] * n, "high": high or [11.0] * n, "low": [9.0] * n,
+         "close": [10.5] * n, "volume": [100.0] * n},
+        index=idx,
+    )
+
+
+DATES = ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04",
+         "2024-01-05", "2024-01-06", "2024-01-07", "2024-01-08"]
+'''
+
+
+GOOD = '''
+class DraftIngestor(BaseIngestor):
+    def first_cursor(self, symbol, start, end, interval):
+        return start
+
+    def fetch_page(self, symbol, cursor, start, end, interval):
+        return RawPage(rows=[(start, end)], next_cursor=None)
+
+    def normalize(self, rows):
+        start, end = rows[0]
+        df = _frame(DATES)
+        if start:
+            df = df[df.index >= pd.Timestamp(start, tz="UTC")]
+        if end:
+            df = df[df.index <= pd.Timestamp(end, tz="UTC")]
+        return df
+'''
+
+
+def test_a_correct_draft_passes_every_stage(tmp_path):
+    report = run_gauntlet(_write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+    assert report.passed, report.summary()
+    assert {s.name for s in report.stages} >= {
+        "contract", "fetch", "frame", "determinism", "range", "pagination", "cross_source"
+    }
+
+
+# --- each of these produces a frame a reviewer would nod at ----------------------
+
+
+def test_an_ingestor_that_ignores_its_date_range_is_caught():
+    """The canonical generated bug: the parameters are accepted and never used.
+
+    It returns real data — often *more* of it — so every downstream check passes.
+    Only asking for a narrow window and getting a wide one exposes it.
+    """
+    body = GOOD.replace(
+        '''        if start:
+            df = df[df.index >= pd.Timestamp(start, tz="UTC")]
+        if end:
+            df = df[df.index <= pd.Timestamp(end, tz="UTC")]
+        return df''',
+        "        return df  # start/end quietly ignored",
+    )
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        report = run_gauntlet(_write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+    failed = {s.name for s in report.failures}
+    assert "range" in failed, report.summary()
+    assert "ignored" in next(s for s in report.failures if s.name == "range").detail
+
+
+def test_a_non_deterministic_ingestor_is_caught():
+    """Two identical pulls, two different answers — each individually perfect.
+
+    Pagination keyed to wall-clock time, an unstable sort, a cursor that skips a
+    boundary row. No single frame reveals it; only asking twice does.
+    """
+    body = GOOD.replace(
+        "    def normalize(self, rows):",
+        "    _n = 0\n\n    def normalize(self, rows):",
+    ).replace(
+        "        df = _frame(DATES)",
+        "        type(self)._n += 1\n"
+        "        df = _frame(DATES if type(self)._n % 2 else DATES[:-1])",
+    )
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        report = run_gauntlet(_write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+    assert "determinism" in {s.name for s in report.failures}, report.summary()
+
+
+def test_a_mismapped_price_column_is_caught():
+    """`adjClose` landing on `close`, or high/low swapped: plausible numbers, wrong frame."""
+    body = GOOD.replace("df = _frame(DATES)", "df = _frame(DATES, high=[1.0] * len(DATES))")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        report = run_gauntlet(_write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+    failed = {s.name for s in report.failures}
+    assert "frame" in failed, report.summary()
+
+
+def test_a_module_with_no_ingestor_fails_before_anything_runs(tmp_path):
+    path = tmp_path / "draft_ingestor.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+    report = run_gauntlet(path, _spec(), "XYZ", "2024-01-01")
+    assert not report.passed
+    assert report.stages[0].name == "contract" and report.stages[0].blocking
+    assert len(report.stages) == 1, "a blocking failure must stop the run, not cascade"
+
+
+def test_two_ingestors_in_one_draft_is_ambiguous(tmp_path):
+    path = tmp_path / "draft_ingestor.py"
+    path.write_text(HEADER + GOOD + GOOD.replace("DraftIngestor", "Other"), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one"):
+        load_candidate(path)
+
+
+def test_the_report_is_machine_readable_so_an_agent_can_iterate(tmp_path):
+    # The point of structured stages: a drafting agent reads its own failures and
+    # fixes them without a person reading the code.
+    report = run_gauntlet(_write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+    assert isinstance(report, GauntletReport)
+    assert all(isinstance(s.passed, bool) and s.detail for s in report.stages)
+    assert "PASS" in report.summary()
