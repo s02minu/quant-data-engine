@@ -10,6 +10,35 @@ produces UTF-16LE (or UTF-8) *with a BOM*, which a naive ``open()`` or a bash
 """
 
 import os
+from pathlib import Path
+
+
+def load_secrets(directory: str = "secrets") -> list[str]:
+    """Load every ``*.env`` file in ``directory`` into the environment.
+
+    Each entry point used to name the files it needed — ``fred.env`` here,
+    ``discord.env`` there — which meant adding a source with credentials required
+    remembering to edit three unrelated modules. Tiingo was added and
+    ``qde.backfill`` still loaded only ``fred.env``, so every one of its 27 symbols
+    sent an empty token and came back 403: not a missing-key error anyone could read,
+    just a wall of forbidden responses.
+
+    Loading the whole directory removes the step that can be forgotten. Same
+    ``setdefault`` semantics as :func:`load_env_file`, so an already-exported value
+    or one set on the VPS still wins over a file.
+
+    Returns:
+        The files loaded, sorted — so a caller can log what it picked up rather than
+        assume.
+    """
+    root = Path(directory)
+    if not root.is_dir():
+        return []
+    loaded = []
+    for path in sorted(root.glob("*.env")):
+        load_env_file(str(path))
+        loaded.append(path.name)
+    return loaded
 
 
 def load_env_file(path: str) -> None:

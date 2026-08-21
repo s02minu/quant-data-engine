@@ -57,3 +57,46 @@ def test_skips_comments_and_strips_quotes(tmp_path, clean_environ):
     _write(str(p), '# a comment\nQDE_TEST_K="quoted"\n', "utf-8")
     load_env_file(str(p))
     assert os.environ["QDE_TEST_K"] == "quoted"
+
+
+# --- one definition of "load the credentials" ------------------------------------
+
+
+def test_load_secrets_loads_every_env_file(tmp_path, monkeypatch):
+    """Entry points used to name the files they needed, one by one.
+
+    Adding Tiingo meant `qde.backfill` still loaded only fred.env, so all 27 symbols
+    sent an empty token and came back 403 — a wall of "forbidden" that named nothing.
+    Loading the directory removes the step that can be forgotten.
+    """
+    from qde.env import load_secrets
+
+    (tmp_path / "a.env").write_text("ALPHA_KEY=one\n", encoding="utf-8")
+    (tmp_path / "b.env").write_text("BETA_KEY=two\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("IGNORED_KEY=three\n", encoding="utf-8")
+    monkeypatch.delenv("ALPHA_KEY", raising=False)
+    monkeypatch.delenv("BETA_KEY", raising=False)
+    monkeypatch.delenv("IGNORED_KEY", raising=False)
+
+    loaded = load_secrets(str(tmp_path))
+
+    assert loaded == ["a.env", "b.env"]
+    assert os.environ["ALPHA_KEY"] == "one"
+    assert os.environ["BETA_KEY"] == "two"
+    assert "IGNORED_KEY" not in os.environ, "only *.env files are secrets"
+
+
+def test_an_exported_value_still_wins_over_a_file(tmp_path, monkeypatch):
+    # setdefault semantics: a value set on the VPS must not be overwritten by a file.
+    from qde.env import load_secrets
+
+    (tmp_path / "x.env").write_text("SHARED_KEY=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("SHARED_KEY", "from_environment")
+    load_secrets(str(tmp_path))
+    assert os.environ["SHARED_KEY"] == "from_environment"
+
+
+def test_a_missing_secrets_directory_is_not_an_error(tmp_path):
+    from qde.env import load_secrets
+
+    assert load_secrets(str(tmp_path / "nope")) == []

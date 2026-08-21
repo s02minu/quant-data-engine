@@ -30,7 +30,7 @@ Example:
 
 import os
 
-from qde.env import load_env_file
+from qde.env import load_secrets
 from qde.ingest import get_ingestor
 from qde.loaders import NoNewData, load_ohlcv
 from qde.log import configure, get_logger
@@ -375,7 +375,7 @@ def main() -> None:
     elif args.group == "series":
         # A series source (FRED) needs its API key; load it from the gitignored
         # secrets file if not already exported.
-        load_env_file("secrets/fred.env")
+        load_secrets()
         results = backfill_series_group(
             start=args.start,
             end=args.end,
@@ -387,7 +387,7 @@ def main() -> None:
         )
     else:  # events
         # The events calendar is FRED/ALFRED-backed, so it needs the same key.
-        load_env_file("secrets/fred.env")
+        load_secrets()
         results = backfill_events_group(
             start=args.start,
             end=args.end,

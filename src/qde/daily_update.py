@@ -19,7 +19,7 @@ import os
 
 from qde.checks import run_checks, run_events_checks, run_microstructure_checks
 from qde.dq_history import record_run
-from qde.env import load_env_file
+from qde.env import load_secrets
 from qde.host import check_disk, check_small_files
 from qde.loaders import NoNewData
 from qde.log import configure, get_logger
@@ -238,8 +238,7 @@ def main() -> None:
     # Load any series-source key (FRED) so the series update can run; a value
     # already exported (or set on the VPS) still wins. The optional Discord webhook
     # for health alerts loads the same way (no-op if the file is absent).
-    load_env_file("secrets/fred.env")
-    load_env_file("secrets/discord.env")
+    load_secrets()
 
     base_dir = os.getenv("QDE_BASE_DIR", "data")
     summary = run(base_dir)

@@ -32,7 +32,16 @@ class TiingoIngestor(BaseIngestor):
     ) -> RawPage:
         import os
 
+        # Fail on the missing key rather than on the response it produces. Defaulting
+        # to an empty token sent 27 symbols to the API and got 27 opaque 403s back —
+        # a wall of "forbidden" that says nothing about the actual cause, which was
+        # simply that the entry point had never loaded secrets/tiingo.env.
         token = os.getenv("TIINGO_API_KEY", "")
+        if not token:
+            raise ValueError(
+                "TIINGO_API_KEY is not set; Tiingo rejects an empty token with 403. "
+                "It is loaded from secrets/tiingo.env by qde.env.load_secrets()."
+            )
         params = {"startDate": start, "token": token}
         if end:
             params["endDate"] = end
