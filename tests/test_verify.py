@@ -1293,3 +1293,50 @@ def test_a_constant_scale_factor_is_still_a_units_error():
     assert violations
     assert violations[0].severity == "error", "a constant scale factor is a defect"
     assert "convention" not in violations[0].detail
+
+
+def test_a_pair_at_its_own_historical_floor_is_not_broken():
+    """A single global floor cannot serve every asset class.
+
+    0.30 was measured on crypto venue pairs and SPY/QQQ, whose worst healthy 180-day
+    window was +0.474. Sector ETFs are looser: measured live, XLE against SPY has
+    reached -0.28 and XLV +0.19, and both sit at those floors today with normal
+    volatility and no outlier returns. Judged against the constant they would have
+    been reported broken every week, forever — the alert fatigue `proxy_unavailable`
+    exists to prevent.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(11)
+    n = 1200
+    r1 = rng.normal(0, 0.02, n)
+    # A pair that is related overall but spends long stretches loosely coupled, so
+    # its own rolling floor sits far below the global constant.
+    rho = np.where(np.arange(n) % 400 < 200, 0.95, 0.05)
+    r2 = rho * r1 + np.sqrt(1 - rho**2) * rng.normal(0, 0.02, n)
+
+    idx = pd.date_range(
+        end=pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(days=2),
+        periods=n, freq="D", tz="UTC",
+    )
+
+    def frame(values):
+        px = 100.0 * np.exp(np.cumsum(values))
+        return pd.DataFrame(
+            {"open": px, "high": px, "low": px, "close": px, "volume": np.ones(n)},
+            index=idx,
+        )
+
+    store = {"MINE": frame(r1), "PEER": frame(r2)}
+
+    def loader(symbol, source=None, interval="1d", base_dir="data"):
+        return store[symbol]
+
+    violations = proxy_check("MINE", "s", candidates=[("s", "PEER")], loader=loader)
+    from qde.verify import PROXY
+
+    broken = [v for v in violations if v.check == PROXY]
+    assert not broken, (
+        "a pair inside its own historical range must not be reported as broken: "
+        f"{[v.detail for v in broken]}"
+    )

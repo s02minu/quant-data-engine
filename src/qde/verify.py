@@ -669,7 +669,7 @@ def proxy_check(
                    "the recent period; no proxy verdict is issued for a window the "
                    "data does not cover")]
 
-    related: list[tuple[str, float, float]] = []
+    related: list[tuple[str, float, float, float | None]] = []
     for cand_source, cand_symbol in candidates:
         try:
             theirs = _returns(
@@ -694,7 +694,22 @@ def proxy_check(
             continue  # not related — it can say nothing about this series
 
         current = float(recent.iloc[:, 0].corr(recent.iloc[:, 1]))
-        related.append((f"{cand_source}/{cand_symbol}", baseline, current))
+
+        # What "broken" means for THIS pair, measured from its own history rather
+        # than assumed. A single global floor cannot serve every asset class: 0.30
+        # was calibrated on crypto venue pairs and SPY/QQQ, whose worst healthy
+        # 180-day window was +0.474 — but XLE against SPY has legitimately reached
+        # -0.28 and XLV +0.19, sitting at those floors today with normal volatility
+        # and no outlier returns. Judged against the constant they would have been
+        # reported as broken every week, forever.
+        # Measured over `past`, NOT `joined` — the same trap the baseline split above
+        # exists for. Including the window under test lets a real break set its own
+        # floor and thereby excuse itself: the defect erases the evidence of itself.
+        rolling = past.iloc[:, 0].rolling(_PROXY_RECENT_DAYS).corr(past.iloc[:, 1])
+        observed_floor = float(rolling.dropna().min()) if rolling.notna().any() else None
+        related.append(
+            (f"{cand_source}/{cand_symbol}", baseline, current, observed_floor)
+        )
 
     if not related:
         # The honest majority case for an exotic symbol, and the one worth saying
@@ -707,7 +722,14 @@ def proxy_check(
 
     # Judge on the strongest relationship available. A weaker one breaking too is
     # the same event seen twice, and reporting it twice buries the finding.
-    name, baseline, current = max(related, key=lambda r: r[1])
+    name, baseline, current, observed_floor = max(related, key=lambda r: r[1])
+
+    # Whichever bar is more permissive. Never fire on behaviour the pair has already
+    # shown: a new low that is still within its historical range is a market, not a
+    # feed. A frozen or mislabelled feed lands far below both.
+    threshold = _PROXY_BROKEN_MAX
+    if observed_floor is not None:
+        threshold = min(threshold, observed_floor)
 
     # An undefined correlation means one side had no variance at all — every return
     # identical, which for real prices means none. That is a frozen feed, the exact
@@ -720,12 +742,12 @@ def proxy_check(
                    f"{_PROXY_RECENT_DAYS} days — {symbol} has no price variance at "
                    "all, which means the feed is frozen, not that the market is calm")]
 
-    if current < _PROXY_BROKEN_MAX:
+    if current < threshold:
         return [_v("bars", source, symbol, PROXY, "warn",
                    f"{symbol} has tracked {name} at {baseline:.2f} correlation over its "
                    f"full history but only {current:.2f} across the last "
-                   f"{_PROXY_RECENT_DAYS} days — below anything observed on a healthy "
-                   "pair in this lake; the feed may have stopped following the market")]
+                   f"{_PROXY_RECENT_DAYS} days — below {threshold:.2f}, the lowest this "
+                   "pair has ever run; the feed may have stopped following the market")]
     return []
 
 
