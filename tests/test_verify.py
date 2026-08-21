@@ -576,10 +576,28 @@ def test_an_unreachable_re_fetch_is_reported_as_unverified():
 # --- verification status: what is knowable, published ------------------------------
 
 
-def test_a_symbol_with_peers_is_corroborated():
+def test_a_symbol_with_peers_is_corroborated(tmp_path, monkeypatch):
+    """Corroboration needs peers that HOLD the symbol, not merely declare it.
+
+    This test used to call `verification_status` bare and pass only because the
+    developer's machine happened to have a populated `data/`. Once peers had to hold
+    real rows, a clean checkout — which is exactly what CI does — returned
+    `proxy_only` and turned green local runs into a red pipeline. The lake state is
+    now stated in the test rather than inherited from whatever is on disk.
+    """
     from qde.verify import verification_status
 
-    status = verification_status("BTCUSDT", "binance")
+    monkeypatch.setattr(
+        "qde.storage.list_bars_series",
+        lambda base_dir: pd.DataFrame(
+            [
+                {"source": src, "symbol": "BTCUSDT", "interval": "1d"}
+                for src in ("binance", "bybit", "coinbase", "kraken", "kucoin", "okx")
+            ]
+        ),
+    )
+
+    status = verification_status("BTCUSDT", "binance", base_dir=str(tmp_path))
     assert status["level"] == "corroborated"
     assert len(status["peers"]) >= 5
 
