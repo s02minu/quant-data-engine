@@ -59,44 +59,75 @@ def test_skips_comments_and_strips_quotes(tmp_path, clean_environ):
     assert os.environ["QDE_TEST_K"] == "quoted"
 
 
-# --- one definition of "load the credentials" ------------------------------------
+# --- credentials are scoped to what a job actually needs --------------------------
 
 
-def test_load_secrets_loads_every_env_file(tmp_path, monkeypatch):
-    """Entry points used to name the files they needed, one by one.
+def test_only_registered_sources_have_their_secrets_loaded(tmp_path, monkeypatch):
+    """The regression this exists to prevent.
 
-    Adding Tiingo meant `qde.backfill` still loaded only fred.env, so all 27 symbols
-    sent an empty token and came back 403 — a wall of "forbidden" that named nothing.
-    Loading the directory removes the step that can be forgotten.
+    Loading every `*.env` fixed a real bug (a new source's key never reaching the
+    backfill) and introduced a worse one: on the VPS `secrets/` also holds `r2.env`,
+    so every nightly and backfill was handed R2 WRITE credentials for the public
+    bucket — in jobs that only read APIs and write local Parquet. Publishing is the
+    one irreversible action here, and it became reachable from every batch process.
     """
-    from qde.env import load_secrets
+    from qde.env import load_source_secrets
 
-    (tmp_path / "a.env").write_text("ALPHA_KEY=one\n", encoding="utf-8")
-    (tmp_path / "b.env").write_text("BETA_KEY=two\n", encoding="utf-8")
-    (tmp_path / "notes.txt").write_text("IGNORED_KEY=three\n", encoding="utf-8")
-    monkeypatch.delenv("ALPHA_KEY", raising=False)
-    monkeypatch.delenv("BETA_KEY", raising=False)
-    monkeypatch.delenv("IGNORED_KEY", raising=False)
+    (tmp_path / "fred.env").write_text("FRED_API_KEY=source_key\n", encoding="utf-8")
+    (tmp_path / "r2.env").write_text(
+        "QDE_R2_ACCESS_KEY_ID=write_key\nQDE_R2_SECRET_ACCESS_KEY=write_secret\n",
+        encoding="utf-8",
+    )
+    for var in ("FRED_API_KEY", "QDE_R2_ACCESS_KEY_ID", "QDE_R2_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(var, raising=False)
 
-    loaded = load_secrets(str(tmp_path))
+    loaded = load_source_secrets(str(tmp_path))
 
-    assert loaded == ["a.env", "b.env"]
-    assert os.environ["ALPHA_KEY"] == "one"
-    assert os.environ["BETA_KEY"] == "two"
-    assert "IGNORED_KEY" not in os.environ, "only *.env files are secrets"
+    assert "fred.env" in loaded, "a declared source's key must reach the job"
+    assert "r2.env" not in loaded, "infrastructure credentials must never be loaded"
+    assert os.environ.get("FRED_API_KEY") == "source_key"
+    assert os.environ.get("QDE_R2_ACCESS_KEY_ID") is None, "WRITE credentials leaked"
+    assert os.environ.get("QDE_R2_SECRET_ACCESS_KEY") is None, "WRITE credentials leaked"
+
+
+def test_a_new_source_needs_no_entry_point_edit(tmp_path, monkeypatch):
+    # The bug the wide loader was solving: a source added to the registry whose key
+    # never reached the backfill. Derived from the registry, so it cannot be forgotten.
+    from qde.env import load_source_secrets
+    from qde.registry import all_specs
+
+    names = {spec.name for spec in all_specs()}
+    assert "tiingo" in names, "fixture assumes tiingo is registered"
+    (tmp_path / "tiingo.env").write_text("TIINGO_API_KEY=abc\n", encoding="utf-8")
+    monkeypatch.delenv("TIINGO_API_KEY", raising=False)
+
+    assert "tiingo.env" in load_source_secrets(str(tmp_path))
+    assert os.environ.get("TIINGO_API_KEY") == "abc"
+
+
+def test_a_non_source_grant_must_be_named_explicitly(tmp_path, monkeypatch):
+    # Alerting is not a source, so discord.env is granted at the call site where the
+    # grant is visible — rather than swept up by a directory glob.
+    from qde.env import load_source_secrets
+
+    (tmp_path / "discord.env").write_text("QDE_DISCORD_WEBHOOK=hook\n", encoding="utf-8")
+    monkeypatch.delenv("QDE_DISCORD_WEBHOOK", raising=False)
+
+    assert load_source_secrets(str(tmp_path)) == []
+    assert load_source_secrets(str(tmp_path), extra=("discord.env",)) == ["discord.env"]
 
 
 def test_an_exported_value_still_wins_over_a_file(tmp_path, monkeypatch):
     # setdefault semantics: a value set on the VPS must not be overwritten by a file.
-    from qde.env import load_secrets
+    from qde.env import load_source_secrets
 
-    (tmp_path / "x.env").write_text("SHARED_KEY=from_file\n", encoding="utf-8")
-    monkeypatch.setenv("SHARED_KEY", "from_environment")
-    load_secrets(str(tmp_path))
-    assert os.environ["SHARED_KEY"] == "from_environment"
+    (tmp_path / "fred.env").write_text("FRED_API_KEY=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("FRED_API_KEY", "from_environment")
+    load_source_secrets(str(tmp_path))
+    assert os.environ["FRED_API_KEY"] == "from_environment"
 
 
 def test_a_missing_secrets_directory_is_not_an_error(tmp_path):
-    from qde.env import load_secrets
+    from qde.env import load_source_secrets
 
-    assert load_secrets(str(tmp_path / "nope")) == []
+    assert load_source_secrets(str(tmp_path / "nope")) == []

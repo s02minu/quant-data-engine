@@ -13,31 +13,50 @@ import os
 from pathlib import Path
 
 
-def load_secrets(directory: str = "secrets") -> list[str]:
-    """Load every ``*.env`` file in ``directory`` into the environment.
+def load_source_secrets(directory: str = "secrets", extra: tuple[str, ...] = ()) -> list[str]:
+    """Load credentials for REGISTERED SOURCES only, never infrastructure ones.
 
-    Each entry point used to name the files it needed — ``fred.env`` here,
-    ``discord.env`` there — which meant adding a source with credentials required
-    remembering to edit three unrelated modules. Tiingo was added and
-    ``qde.backfill`` still loaded only ``fred.env``, so every one of its 27 symbols
-    sent an empty token and came back 403: not a missing-key error anyone could read,
-    just a wall of forbidden responses.
+    Two failures this sits between, and it must avoid both.
 
-    Loading the whole directory removes the step that can be forgotten. Same
-    ``setdefault`` semantics as :func:`load_env_file`, so an already-exported value
-    or one set on the VPS still wins over a file.
+    Naming the files each entry point needs — ``fred.env`` here, ``discord.env``
+    there — meant adding a source with credentials required editing three unrelated
+    modules. Tiingo was added, ``qde.backfill`` still loaded only FRED's key, and all
+    27 symbols failed against an empty token.
+
+    Loading the whole directory fixed that and introduced something worse: on the VPS
+    ``secrets/`` also holds ``r2.env``, so every nightly, backfill and verification run
+    was handed ``QDE_R2_ACCESS_KEY_ID``, ``QDE_R2_SECRET_ACCESS_KEY`` and
+    ``QDE_R2_PUBLIC_BUCKET`` — write access to the public bucket, in jobs that only
+    read APIs and write local Parquet. Publishing is the one irreversible action this
+    platform takes, and it was suddenly reachable from every batch process.
+
+    So the set is derived from the **registry**: a file is loaded when it is named
+    after a declared source. Adding a source already requires a registry row, so
+    nothing can be forgotten — and ``r2.env`` can never be loaded, because "r2" is not
+    a source. Infrastructure credentials stay where they were: passed explicitly with
+    ``-e`` to the sync and publish containers by ``scripts/maintain.sh``.
+
+    Args:
+        directory: where the ``*.env`` files live.
+        extra: non-source files a caller genuinely needs, e.g. ``("discord.env",)``
+            for alerting. Named explicitly so each grant is visible at the call site.
 
     Returns:
-        The files loaded, sorted — so a caller can log what it picked up rather than
-        assume.
+        The files loaded, sorted.
     """
+    from qde.registry import all_specs
+
     root = Path(directory)
     if not root.is_dir():
         return []
+
+    wanted = {f"{spec.name}.env" for spec in all_specs()} | set(extra)
     loaded = []
-    for path in sorted(root.glob("*.env")):
-        load_env_file(str(path))
-        loaded.append(path.name)
+    for name in sorted(wanted):
+        path = root / name
+        if path.exists():
+            load_env_file(str(path))
+            loaded.append(name)
     return loaded
 
 

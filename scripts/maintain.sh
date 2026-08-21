@@ -11,8 +11,26 @@ set -euo pipefail
 # Run from the project root regardless of where cron invokes the script.
 cd "$(dirname "$0")/.."
 
+# R2 credentials live in secrets-infra/, NOT secrets/.
+#
+# `secrets/` is bind-mounted read-only into every container (docker-compose.yml), so
+# anything in it is readable by every batch job — including jobs that only read APIs
+# and write local Parquet. Write access to the public bucket has no business being
+# on disk in those. Nothing inside a container ever reads this file: it is sourced
+# here on the HOST and handed to the sync/publish containers with explicit `-e`.
+#
+# The fallback keeps a half-migrated box running rather than failing the nightly, but
+# says plainly that the file is still in the exposed location.
 set -a
-. ./secrets/r2.env
+if [ -f ./secrets-infra/r2.env ]; then
+  . ./secrets-infra/r2.env
+elif [ -f ./secrets/r2.env ]; then
+  . ./secrets/r2.env
+  echo "[$(date -u +%FT%TZ)] WARNING: r2.env is still in secrets/, which is mounted"        "into every container. Move it to secrets-infra/ to keep write credentials"        "off the container filesystem."
+else
+  echo "[$(date -u +%FT%TZ)] ERROR: no r2.env in secrets-infra/ or secrets/" >&2
+  exit 1
+fi
 set +a
 
 # Compaction runs FIRST, before the checks in daily_update look at the lake.

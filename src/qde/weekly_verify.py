@@ -39,7 +39,7 @@ import os
 import sys
 
 from qde.dq_history import WEEKLY, record_run
-from qde.env import load_secrets
+from qde.env import load_source_secrets
 from qde.log import configure, get_logger
 from qde.storage import list_bars_series, list_series, load_ohlcv_local, load_series_local
 from qde.verify import (
@@ -156,7 +156,7 @@ def run(
 
 def main() -> None:
     configure()
-    load_secrets()
+    load_source_secrets(extra=("discord.env",))
 
     base_dir = os.getenv("QDE_BASE_DIR", "data")
     summary = run(base_dir)

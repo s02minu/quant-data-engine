@@ -125,7 +125,9 @@ def test_credentials_are_loaded_for_every_group(monkeypatch, tmp_path):
     import qde.backfill as backfill
 
     called: list[str] = []
-    monkeypatch.setattr(backfill, "load_secrets", lambda *a, **k: called.append("loaded"))
+    monkeypatch.setattr(
+        backfill, "load_source_secrets", lambda *a, **k: called.append("loaded")
+    )
     monkeypatch.setattr(backfill, "backfill_bars", lambda **kw: {"series": 0, "rows": 0})
     monkeypatch.setattr(
         sys, "argv",

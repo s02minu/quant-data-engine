@@ -30,7 +30,7 @@ Example:
 
 import os
 
-from qde.env import load_secrets
+from qde.env import load_source_secrets
 from qde.ingest import get_ingestor
 from qde.loaders import NoNewData, load_ohlcv
 from qde.log import configure, get_logger
@@ -364,7 +364,7 @@ def main() -> None:
     # every one of its 27 symbols failed for want of a token the process had simply
     # never loaded. Which group needs a secret is not something the entry point
     # should be deciding.
-    load_secrets()
+    load_source_secrets()
 
     # Collected across whichever group runs, so the exit code can reflect reality.
     failures: list[str] = []

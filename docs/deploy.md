@@ -41,8 +41,9 @@ meaning: afterwards, a small-files violation is real.
    the bitemporal events check and the microstructure checks) and,
    if there is a fetch failure or a DQ violation, posts a **health alert** to a
    Discord webhook (`qde.alert`). The series half (FRED) needs `FRED_API_KEY`; the
-   entry point loads it — and the optional `QDE_DISCORD_WEBHOOK` — from
-   `secrets/*.env`, which reach the container via the read-only `./secrets` mount
+   entry point loads it — and the optional `QDE_DISCORD_WEBHOOK` — via
+   `load_source_secrets(extra=("discord.env",))`, reaching the container through the
+   read-only `./secrets` mount
    (see below). The job still exits 0 even on a DQ violation, so a stale series
    never blocks the compact/sync that follow — the alert is what surfaces it.
 3. **dbt build (gold)** — rebuilds the gold marts from the freshly-updated bronze
@@ -69,12 +70,36 @@ meaning: afterwards, a small-files violation is real.
    flags, and omitting `QDE_R2_BUCKET` once produced a run that published no
    microstructure at all while reporting `mirrored=0 failed=0` and exiting 0.
 
-R2 credentials are read from `secrets/r2.env` (gitignored, VPS-only) and passed
+**Two secret directories, and the split is a security boundary, not tidiness.**
+
+| Directory | Holds | Mounted into containers? |
+|---|---|---|
+| `secrets/` | source API keys (`fred.env`, `tiingo.env`), `discord.env` | **yes**, read-only |
+| `secrets-infra/` | `r2.env` — R2 **write** credentials | **no** |
+
+`secrets/` is bind-mounted into every container, so anything in it is readable by
+every batch job. Publishing is the one irreversible action this platform takes, and
+write access to the public bucket has no business sitting on disk inside a nightly
+that only reads APIs and writes local Parquet — which is exactly what happened when a
+convenience loader began reading the whole directory. Nothing inside a container ever
+reads `r2.env`: `maintain.sh` sources it on the **host** and hands the values to the
+sync/publish containers with explicit `-e` flags.
+
+Splitting by *directory* rather than by filename means the mount stays simple and
+adding a source with a key still needs no `docker-compose.yml` edit.
+
+`maintain.sh` prefers `secrets-infra/r2.env`, falls back to `secrets/r2.env` with a
+loud warning (so a half-migrated box keeps running), and exits non-zero if neither
+exists. `weekly_verify.sh` loads no R2 credentials at all — it never uploads.
+
+R2 credentials are read from `secrets-infra/r2.env` (gitignored, VPS-only) and passed
 into the sync container with `-e`. Source keys (FRED) live in `secrets/fred.env`
 and reach the batch containers through the **read-only `./secrets:/app/secrets:ro`
 mount** in `docker-compose.yml` — the batch entry points call
-`qde.env.load_env_file("secrets/fred.env")` (WORKDIR is `/app`), which is
-BOM-tolerant and no-ops if the file is absent. No secrets live in the repo, and
+`qde.env.load_source_secrets()` (WORKDIR is `/app`), which loads a file only when it
+is named after a **registered source**. That is what keeps `r2.env` unloadable even
+if it is present: "r2" is not a source. It is BOM-tolerant (a PowerShell-written
+`.env` is UTF-16) and no-ops on a missing file. No secrets live in the repo, and
 none are baked into the image.
 
 ## Weekly verification

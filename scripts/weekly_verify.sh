@@ -16,9 +16,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-set -a
-. ./secrets/r2.env
-set +a
+# Deliberately loads NO R2 credentials. This pass re-fetches from source APIs and
+# writes its findings to the local lake; it never uploads. Sourcing r2.env here — as
+# this script originally did — put write access to the public bucket into a process
+# with no reason to have it. Source API keys reach the container through the
+# read-only secrets/ mount, scoped by qde.env.load_source_secrets.
 
 echo "[$(date -u +%FT%TZ)] weekly verification start"
 

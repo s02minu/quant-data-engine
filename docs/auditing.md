@@ -45,7 +45,7 @@ Tear down with `bash scripts/audit-worktree.sh --remove <path>`.
 
 | Give | Withhold |
 |---|---|
-| `secrets/r2-read.env` (read-only) | `secrets/r2.env` — **write credentials** |
+| `secrets/r2-read.env` (read-only) | `secrets-infra/r2.env` — **write credentials** |
 | `secrets/fred.env` (read-only API key) | VPS SSH key |
 | The public HTTPS base URL | `QDE_R2_PUBLIC_BUCKET` |
 
@@ -55,8 +55,9 @@ with `QDE_R2_ACCESS_KEY_ID` / `QDE_R2_SECRET_ACCESS_KEY`. **Different variable n
 so an auditor holding only the read file cannot publish even by accident — the publish
 path finds no credentials and fails closed rather than silently doing nothing.
 
-`scripts/audit-worktree.sh --with-secrets` copies only the read-only pair and prints a
-line confirming the write file was withheld.
+`scripts/audit-worktree.sh --with-secrets` copies only the read-only pair. Write
+credentials live in `secrets-infra/`, which the script never reads and which is not
+mounted into any container.
 
 ## Auditing the site
 
