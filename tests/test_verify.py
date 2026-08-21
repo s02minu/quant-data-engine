@@ -1340,3 +1340,50 @@ def test_a_pair_at_its_own_historical_floor_is_not_broken():
         "a pair inside its own historical range must not be reported as broken: "
         f"{[v.detail for v in broken]}"
     )
+
+
+def test_one_proxy_decoupling_does_not_convict_the_feed():
+    """A break has to hold against every related instrument, not just the strongest.
+
+    Measured live: XLV fell to 0.19 against SPY — its lowest ever — while keeping
+    normal volatility, no outlier returns, and normal correlation to other defensive
+    sectors. Healthcare rotated; the feed was fine. Judged on SPY alone it would have
+    been reported broken every week until the sector happened to recover. Same
+    reasoning as `cross_check` adjudicating rather than convicting on one peer.
+    """
+    from qde.verify import PROXY
+
+    loader, store = _lake(related=True)
+    # STEADY keeps tracking MINE; PEER is the one that wanders off. MINE itself is
+    # untouched — the feed is healthy and one relationship simply changed.
+    store["STEADY"] = store["PEER"].copy()
+    peer = store["PEER"].copy()
+    column = peer.columns.get_loc("close")
+    anchor = peer["close"].iloc[-_PROXY_RECENT_DAYS - 1]
+    drifted = _walk(_PROXY_RECENT_DAYS, seed=77)
+    peer.iloc[-_PROXY_RECENT_DAYS:, column] = drifted / drifted[0] * anchor
+    store["PEER"] = peer
+
+    violations = proxy_check(
+        "MINE", "s", candidates=[("s", "PEER"), ("s", "STEADY")], loader=loader
+    )
+    assert not [v for v in violations if v.check == PROXY], (
+        "a still-healthy proxy means the market moved, not the feed"
+    )
+
+
+def test_decoupling_from_everything_is_still_caught():
+    # The failure the tier exists for: a feed that stopped following the market
+    # decouples from every related instrument at once.
+    from qde.verify import PROXY
+
+    loader, store = _lake(related=True)
+    store["ALSO"] = store["PEER"].copy()
+    _break_window(store, _walk(_PROXY_RECENT_DAYS, seed=91))
+
+    violations = proxy_check(
+        "MINE", "s", candidates=[("s", "PEER"), ("s", "ALSO")], loader=loader
+    )
+    assert [v for v in violations if v.check == PROXY], (
+        "decoupling from every proxy must still be reported"
+    )

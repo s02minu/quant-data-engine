@@ -722,14 +722,27 @@ def proxy_check(
 
     # Judge on the strongest relationship available. A weaker one breaking too is
     # the same event seen twice, and reporting it twice buries the finding.
-    name, baseline, current, observed_floor = max(related, key=lambda r: r[1])
+    def _threshold(floor: float | None) -> float:
+        # Whichever bar is more permissive. Never fire on behaviour the pair has
+        # already shown: a new low inside its historical range is a market, not a
+        # feed. A frozen or mislabelled feed lands far below both.
+        return _PROXY_BROKEN_MAX if floor is None else min(_PROXY_BROKEN_MAX, floor)
 
-    # Whichever bar is more permissive. Never fire on behaviour the pair has already
-    # shown: a new low that is still within its historical range is a market, not a
-    # feed. A frozen or mislabelled feed lands far below both.
-    threshold = _PROXY_BROKEN_MAX
-    if observed_floor is not None:
-        threshold = min(threshold, observed_floor)
+    # A break has to hold against EVERY related instrument, not just the strongest.
+    # One proxy decoupling is a statement about two instruments and cannot say which
+    # moved — the same reason `cross_check` adjudicates rather than convicting on a
+    # single peer. Measured live: XLV fell to 0.19 against SPY, its lowest ever,
+    # while keeping normal volatility and normal correlation to other defensives.
+    # Healthcare rotated; the feed was fine. Judged on SPY alone it would have been
+    # reported broken every week until the sector happened to recover.
+    #
+    # A feed that has actually stopped tracking the market decouples from all of them.
+    healthy = [r for r in related if r[2] >= _threshold(r[3])]
+    if healthy:
+        return []
+
+    name, baseline, current, observed_floor = max(related, key=lambda r: r[1])
+    threshold = _threshold(observed_floor)
 
     # An undefined correlation means one side had no variance at all — every return
     # identical, which for real prices means none. That is a frozen feed, the exact
