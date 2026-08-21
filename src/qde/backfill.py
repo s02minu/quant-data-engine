@@ -358,6 +358,14 @@ def main() -> None:
     args = parser.parse_args()
 
     configure()
+    # Unconditionally, before any branch. These calls used to sit inside the `series`
+    # and `events` arms, on the reasoning that only FRED needed a key — which held
+    # right up until Tiingo became the first `bars` source with credentials, and then
+    # every one of its 27 symbols failed for want of a token the process had simply
+    # never loaded. Which group needs a secret is not something the entry point
+    # should be deciding.
+    load_secrets()
+
     # Collected across whichever group runs, so the exit code can reflect reality.
     failures: list[str] = []
 
@@ -373,9 +381,6 @@ def main() -> None:
             failures=failures,
         )
     elif args.group == "series":
-        # A series source (FRED) needs its API key; load it from the gitignored
-        # secrets file if not already exported.
-        load_secrets()
         results = backfill_series_group(
             start=args.start,
             end=args.end,
@@ -386,8 +391,6 @@ def main() -> None:
             failures=failures,
         )
     else:  # events
-        # The events calendar is FRED/ALFRED-backed, so it needs the same key.
-        load_secrets()
         results = backfill_events_group(
             start=args.start,
             end=args.end,

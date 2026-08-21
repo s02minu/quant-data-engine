@@ -110,3 +110,28 @@ def test_callers_that_do_not_ask_for_failures_still_work(tmp_path, monkeypatch):
         "2024-01-01", source="binance", symbol="BTCUSDT",
         base_dir=str(tmp_path), use_registry=True,
     ) == {}
+
+
+def test_credentials_are_loaded_for_every_group(monkeypatch, tmp_path):
+    """The load used to sit inside the series/events branches only.
+
+    That held while FRED was the only source needing a key, and broke the moment
+    Tiingo became the first `bars` source with credentials: all 27 symbols failed
+    for want of a token the process had never loaded. Which group needs a secret is
+    not the entry point's judgment to make.
+    """
+    import sys
+
+    import qde.backfill as backfill
+
+    called: list[str] = []
+    monkeypatch.setattr(backfill, "load_secrets", lambda *a, **k: called.append("loaded"))
+    monkeypatch.setattr(backfill, "backfill_bars", lambda **kw: {"series": 0, "rows": 0})
+    monkeypatch.setattr(
+        sys, "argv",
+        ["qde.backfill", "--group", "bars", "--from", "2024-01-01",
+         "--base-dir", str(tmp_path)],
+    )
+
+    backfill.main()
+    assert called == ["loaded"], "a bars backfill must load credentials too"
