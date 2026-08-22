@@ -400,3 +400,38 @@ def test_an_unreachable_peer_is_not_agreement(tmp_path, monkeypatch):
     cross = next(st for st in report.stages if st.name == "cross_source")
     assert cross.skipped, "an unreachable peer is unverified, not agreement"
     assert not report.complete
+
+
+def test_truncated_history_is_caught_by_the_requested_window(tmp_path):
+    """Measuring against the frame's OWN span made truncation invisible.
+
+    A draft asked for six months that returns three weeks reported "covers 22/22"
+    and passed — the same deterministic partial history the stage exists to catch,
+    in a different shape. Verified live: 22 rows returned for a 124-day request.
+    """
+    body = _long_frame_body(drop_every_fifth=False).replace(
+        "        return df",
+        "        return df[df.index < df.index.min() + pd.Timedelta(days=21)]",
+    )
+    report = run_gauntlet(
+        _write(tmp_path, body), _spec(), "XYZ",
+        "2024-01-01", "2024-06-14", isolation="in-process",
+    )
+    assert "completeness" in [st.name for st in report.failures], report.summary()
+
+
+def test_the_peer_threshold_reflects_what_honest_sources_actually_do():
+    """Measured, not chosen.
+
+    Across eight honest pairs in this lake — tiingo vs yfinance on SPY/QQQ/GLD/TLT
+    and binance vs bybit/okx/kucoin/coinbase on BTCUSDT, up to 4,184 dates each —
+    the date sets agree to 0.00%. The first version allowed 5%, which would have
+    passed an ingestor quietly discarding one row in twenty; a live 3% drop was
+    caught only after tightening.
+    """
+    from qde.draft import _MAX_MISSING_VS_CALENDAR, _MAX_MISSING_VS_PEER
+
+    assert _MAX_MISSING_VS_PEER <= 0.01, "a peer knows which days traded; be strict"
+    assert _MAX_MISSING_VS_CALENDAR > _MAX_MISSING_VS_PEER, (
+        "the calendar fallback must be looser — market holidays are legitimately absent"
+    )

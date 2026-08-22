@@ -378,15 +378,24 @@ def _stage_pagination(spec: SourceSpec, frame: pd.DataFrame) -> Stage:
     return Stage("pagination", True, f"walked {len(frame)} rows past a {cap}-row page limit")
 
 
-# A hole is legitimate: exchanges close, instruments halt, holidays exist. What is
-# not legitimate is a SYSTEMATIC shortfall. Measured against a peer these bars are
-# 2-4% short of the trading calendar (US market holidays); an ingestor dropping every
-# fifth row is 20% short. The two do not overlap, so the bar sits between them.
-_MAX_MISSING_VS_PEER = 0.05
+# Against a PEER the bar is tight, because measurement says it can be. Across eight
+# honest pairs in this lake — tiingo vs yfinance on SPY/QQQ/GLD/TLT, and binance vs
+# bybit/okx/kucoin/coinbase on BTCUSDT, up to 4,184 dates each — the date sets agree
+# to **0.00%**. A peer knows which days actually traded, so holidays are not an
+# excuse here; they are already absent from both sides. 1% leaves room for a
+# venue-specific halt without letting a systematic drop through, and the first
+# version's 5% would have passed an ingestor quietly discarding one row in twenty.
+_MAX_MISSING_VS_PEER = 0.01
+
+# The CALENDAR fallback has to be looser: weekdays include market holidays, roughly
+# ten a year, which are legitimately absent — a few percent of any window.
 _MAX_MISSING_VS_CALENDAR = 0.12
 
 
-def _stage_completeness(frame, group: str, source: str, symbol: str, interval: str) -> Stage:
+def _stage_completeness(
+    frame, group: str, source: str, symbol: str, interval: str,
+    start: str, end: str | None,
+) -> Stage:
     """Does the frame contain the rows it should, or only correct ones?
 
     The defect class every other stage is blind to. A deterministic ingestor that
@@ -410,7 +419,12 @@ def _stage_completeness(frame, group: str, source: str, symbol: str, interval: s
         return Stage("completeness", True, "only daily bars have a known calendar",
                      skipped=True)
 
-    lo, hi = frame.index.min(), frame.index.max()
+    # The REQUESTED window, not the frame's own span. Measuring against what came
+    # back makes truncation invisible: a draft asked for six months and returning
+    # three weeks reports "covers 22/22" and passes, which is the same deterministic
+    # partial history this stage exists to catch, just a different shape.
+    lo = pd.Timestamp(start, tz="UTC")
+    hi = pd.Timestamp(end, tz="UTC") if end else frame.index.max()
     ours = set(frame.index.normalize())
 
     from qde.registry import declared_series
@@ -422,6 +436,11 @@ def _stage_completeness(frame, group: str, source: str, symbol: str, interval: s
             if sym == symbol and iv == interval and src != source
         }
     )
+    # The peer with the MOST dates, not the first that answers. A reference is only
+    # as good as its own coverage, and comparing against a peer that is itself short
+    # would quietly license the same gap in the candidate.
+    best_peer: str | None = None
+    best_dates: set = set()
     for peer in peers:
         try:
             from qde.loaders import load_ohlcv
@@ -435,8 +454,11 @@ def _stage_completeness(frame, group: str, source: str, symbol: str, interval: s
         if other.empty or not isinstance(other.index, pd.DatetimeIndex):
             continue
         theirs = {d for d in other.index.normalize() if lo <= d <= hi}
-        if len(theirs) < 20:
-            continue
+        if len(theirs) > len(best_dates):
+            best_peer, best_dates = peer, theirs
+
+    if best_peer is not None and len(best_dates) >= 20:
+        peer, theirs = best_peer, best_dates
         missing = sorted(theirs - ours)
         share = len(missing) / len(theirs)
         if share > _MAX_MISSING_VS_PEER:
@@ -452,7 +474,7 @@ def _stage_completeness(frame, group: str, source: str, symbol: str, interval: s
             "reports",
         )
 
-    # No peer answered: fall back to the weekday calendar.
+    # No peer answered: fall back to the weekday calendar over the REQUESTED window.
     weekdays = {d for d in pd.bdate_range(lo, hi, tz=frame.index.tz)}
     if len(weekdays) < 20:
         return Stage("completeness", True, "window too short to judge coverage",
@@ -460,11 +482,16 @@ def _stage_completeness(frame, group: str, source: str, symbol: str, interval: s
     missing = sorted(weekdays - ours)
     share = len(missing) / len(weekdays)
     if share > _MAX_MISSING_VS_CALENDAR:
+        # Without a peer this cannot distinguish a truncating ingestor from an
+        # instrument that did not exist for the whole window — so it names both
+        # rather than asserting the one it cannot prove. At authoring time a frame
+        # this far short of what was asked for is worth stopping on either way.
         return Stage(
             "completeness", False,
-            f"{len(missing)} of {len(weekdays)} weekdays in the window are absent "
-            f"({share:.0%}, e.g. {missing[0].date()}) — far beyond the ~4% a holiday "
-            "calendar explains",
+            f"{len(missing)} of {len(weekdays)} weekdays in the requested window are "
+            f"absent ({share:.0%}, e.g. {missing[0].date()}) — either rows are being "
+            "dropped, or the instrument did not trade for the whole window. No peer "
+            "was available to tell the two apart",
         )
     return Stage(
         "completeness", True,
@@ -554,7 +581,9 @@ def run_stages_in_process(
         report.stages.append(_stage_range(ingestor, symbol, interval, frame))
         report.stages.append(_stage_pagination(spec, frame))
         report.stages.append(
-            _stage_completeness(frame, spec.group, spec.name, symbol, interval)
+            _stage_completeness(
+                frame, spec.group, spec.name, symbol, interval, start, end
+            )
         )
 
     # Outside the scope: this one compares against an ALREADY-TRUSTED source, so it
