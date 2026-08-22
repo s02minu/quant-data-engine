@@ -7,6 +7,7 @@ one of these, so every test here is a defect the gauntlet must not let through.
 Offline: the fake ingestors serve frames from memory, so nothing touches a network.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -78,7 +79,9 @@ class DraftIngestor(BaseIngestor):
 
 
 def test_a_correct_draft_passes_every_stage(tmp_path):
-    report = run_gauntlet(_write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+    report = run_gauntlet(
+        _write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+    )
     assert report.passed, report.summary()
     assert {s.name for s in report.stages} >= {
         "contract", "fetch", "frame", "determinism", "range", "pagination", "cross_source"
@@ -105,7 +108,9 @@ def test_an_ingestor_that_ignores_its_date_range_is_caught():
     import tempfile
 
     with tempfile.TemporaryDirectory() as d:
-        report = run_gauntlet(_write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+        report = run_gauntlet(
+            _write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+        )
     failed = {s.name for s in report.failures}
     assert "range" in failed, report.summary()
     assert "ignored" in next(s for s in report.failures if s.name == "range").detail
@@ -128,7 +133,9 @@ def test_a_non_deterministic_ingestor_is_caught():
     import tempfile
 
     with tempfile.TemporaryDirectory() as d:
-        report = run_gauntlet(_write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+        report = run_gauntlet(
+            _write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+        )
     assert "determinism" in {s.name for s in report.failures}, report.summary()
 
 
@@ -138,7 +145,9 @@ def test_a_mismapped_price_column_is_caught():
     import tempfile
 
     with tempfile.TemporaryDirectory() as d:
-        report = run_gauntlet(_write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+        report = run_gauntlet(
+            _write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+        )
     failed = {s.name for s in report.failures}
     assert "frame" in failed, report.summary()
 
@@ -146,10 +155,13 @@ def test_a_mismapped_price_column_is_caught():
 def test_a_module_with_no_ingestor_fails_before_anything_runs(tmp_path):
     path = tmp_path / "draft_ingestor.py"
     path.write_text("x = 1\n", encoding="utf-8")
-    report = run_gauntlet(path, _spec(), "XYZ", "2024-01-01")
+    report = run_gauntlet(path, _spec(), "XYZ", "2024-01-01", trusted=True)
     assert not report.passed
-    assert report.stages[0].name == "contract" and report.stages[0].blocking
-    assert len(report.stages) == 1, "a blocking failure must stop the run, not cascade"
+    failed = [st for st in report.stages if not st.passed]
+    assert [st.name for st in failed] == ["contract"], "only the real finding, no cascade"
+    assert failed[0].blocking
+    # The screen runs first and passes; nothing after `contract` should have run.
+    assert [st.name for st in report.stages] == ["screen", "contract"]
 
 
 def test_two_ingestors_in_one_draft_is_ambiguous(tmp_path):
@@ -162,7 +174,71 @@ def test_two_ingestors_in_one_draft_is_ambiguous(tmp_path):
 def test_the_report_is_machine_readable_so_an_agent_can_iterate(tmp_path):
     # The point of structured stages: a drafting agent reads its own failures and
     # fixes them without a person reading the code.
-    report = run_gauntlet(_write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08")
+    report = run_gauntlet(
+        _write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+    )
     assert isinstance(report, GauntletReport)
     assert all(isinstance(s.passed, bool) and s.detail for s in report.stages)
     assert "PASS" in report.summary()
+
+
+# --- executing a draft is a decision, not a default -------------------------------
+
+
+def test_an_unvetted_draft_is_not_executed(tmp_path):
+    """Proving a draft means running it, and importing a module runs its top-level code.
+
+    Quarantine keeps an unproven module out of the *pipeline*; it does nothing to
+    contain a hostile one. A draft generated from documentation fetched off the
+    internet is exactly the shape of thing that carries a prompt injection — and in
+    this repo an unchecked draft could read every secrets/*.env file.
+    """
+    marker = tmp_path / "executed.txt"
+    body = GOOD + f"\n\nopen(r'{marker.as_posix()}', 'w').write('ran')\n"
+    report = run_gauntlet(_write(tmp_path, body), _spec(), "XYZ", "2024-01-01")
+
+    assert not report.passed
+    assert report.stages[0].name == "trust" and report.stages[0].blocking
+    assert not marker.exists(), "the draft's top-level code must not have run"
+
+
+def test_a_draft_reaching_for_sockets_is_refused_before_execution(tmp_path):
+    marker = tmp_path / "ran.txt"
+    body = (
+        "import socket\n"
+        + GOOD
+        + f"\n\nopen(r'{marker.as_posix()}', 'w').write('ran')\n"
+    )
+    report = run_gauntlet(_write(tmp_path, body), _spec(), "XYZ", "2024-01-01", trusted=True)
+
+    assert not report.passed
+    screen = next(st for st in report.stages if st.name == "screen")
+    assert not screen.passed and "socket" in screen.detail
+    assert not marker.exists(), "the screen must refuse BEFORE exec_module"
+
+
+def test_the_screen_passes_the_real_ingestors():
+    # A screen that flagged the project's own sources would be turned off immediately.
+    from qde.draft import screen_source
+
+    for module in ("tiingo", "binance", "fred", "cboe"):
+        assert screen_source(f"src/qde/ingest/{module}.py") == [], module
+
+
+def test_a_draft_sees_only_its_own_credential(tmp_path, monkeypatch):
+    # A tiingo draft has to hold the Tiingo key; it has no reason to see FRED's or
+    # the R2 read keys. Stripping the rest means a hostile draft can steal only the
+    # secret it was already trusted with.
+    from qde.draft import _only_this_sources_credentials
+
+    monkeypatch.setenv("DRAFTCO_API_KEY", "mine")
+    monkeypatch.setenv("FRED_API_KEY", "someone_elses")
+    monkeypatch.setenv("QDE_R2_READ_SECRET", "infrastructure")
+
+    with _only_this_sources_credentials("draftco"):
+        assert os.environ.get("DRAFTCO_API_KEY") == "mine"
+        assert os.environ.get("FRED_API_KEY") is None
+        assert os.environ.get("QDE_R2_READ_SECRET") is None
+
+    # and restored afterwards, or the rest of the process breaks
+    assert os.environ.get("FRED_API_KEY") == "someone_elses"

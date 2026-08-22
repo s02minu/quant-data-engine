@@ -35,10 +35,31 @@ with legal consequences, not a technical property that can be measured from a
 response — it defaults to False and only a person may change it. And a passing
 gauntlet is evidence, not proof: it says the ingestor is right about the window it
 was asked for, on the day it was asked.
+
+**THIS IS NOT A SANDBOX.** Proving a draft means *running* it, and importing a Python
+module executes its top-level code with this process's filesystem, network and
+environment. Quarantine keeps an unproven module out of the *pipeline*; it does
+nothing to contain a hostile one. A draft generated from documentation fetched off
+the internet is exactly the shape of thing that carries a prompt injection, and in
+this repository a draft that ran unchecked could read every ``secrets/*.env`` file
+and post them somewhere.
+
+So executing a draft is treated as a decision rather than a default: ``run_gauntlet``
+refuses unless the caller states the code is trusted, the environment it runs in is
+cut down to the one credential the source actually needs, and an AST screen rejects
+the obvious cases first. **None of that is containment** — a determined draft still
+runs as you. For anything you did not write yourself, run the gauntlet inside the
+project's container, where the blast radius is a throwaway filesystem:
+
+    docker compose run --rm --network none collector \
+        python -m qde.draft verify drafts/<file>.py \
+        --name <source> --symbol <SYM> --from <DATE> --trust-this-draft
 """
 
 import importlib.util
 import inspect
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -89,6 +110,77 @@ class GauntletReport:
         for s in self.stages:
             lines.append(f"  {'ok  ' if s.passed else 'FAIL'}  {s.name:<13} {s.detail}")
         return "\n".join(lines)
+
+
+# Modules a bar/series ingestor has no business importing. Not a security boundary —
+# `__import__("so"+"cket")` walks straight past it — but it turns the careless and the
+# obvious into a refusal instead of an execution, and it costs nothing.
+_FORBIDDEN_IMPORTS = frozenset(
+    {"socket", "subprocess", "shutil", "ctypes", "pickle", "marshal", "smtplib", "ftplib"}
+)
+# Names whose presence means the draft is doing something an ingestor never needs.
+_FORBIDDEN_CALLS = frozenset({"eval", "exec", "compile", "__import__", "breakpoint"})
+
+
+def screen_source(path: str | Path) -> list[str]:
+    """Parse a draft and report constructs an ingestor should never contain.
+
+    Deliberately a *parse*, not an execution: the point is to reject before running.
+    An ingestor needs HTTP, pandas and the registry. Reaching for raw sockets,
+    subprocesses, or `eval` is either a mistake or something worse, and either way is
+    worth stopping at zero cost.
+
+    **This screen is not a security control.** Anything determined defeats it with a
+    string concatenation. It exists so the obvious case fails loudly rather than
+    silently succeeding — see the module docstring for what actual containment needs.
+    """
+    import ast
+
+    findings: list[str] = []
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                if root in _FORBIDDEN_IMPORTS:
+                    findings.append(f"imports {alias.name!r} (line {node.lineno})")
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in _FORBIDDEN_IMPORTS:
+                findings.append(f"imports from {node.module!r} (line {node.lineno})")
+        elif isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None)
+            if name in _FORBIDDEN_CALLS:
+                findings.append(f"calls {name}() (line {node.lineno})")
+        elif isinstance(node, ast.Attribute) and node.attr in {"system", "popen"}:
+            findings.append(f"uses os.{node.attr} (line {node.lineno})")
+    return findings
+
+
+@contextmanager
+def _only_this_sources_credentials(source: str):
+    """Hide every credential except the one this source legitimately needs.
+
+    A tiingo draft has to hold the Tiingo key to fetch anything; it has no reason to
+    see FRED's, or the R2 read keys, or a Discord webhook. Stripping the rest means a
+    hostile draft can steal only the secret it was already trusted with.
+
+    Defence in depth, not containment: the `secrets/` files are still on disk and
+    still readable. What this removes is the effortless path.
+    """
+    keep_exact = {f"{source.upper()}_API_KEY", f"{source.upper()}_TOKEN"}
+    hidden = {
+        key: os.environ[key]
+        for key in list(os.environ)
+        if any(m in key.upper() for m in ("KEY", "SECRET", "TOKEN", "WEBHOOK", "PASSWORD"))
+        and key not in keep_exact
+    }
+    for key in hidden:
+        del os.environ[key]
+    try:
+        yield
+    finally:
+        os.environ.update(hidden)
 
 
 def load_candidate(module_path: str | Path) -> type[BaseIngestor]:
@@ -292,6 +384,7 @@ def run_gauntlet(
     start: str,
     end: str | None = None,
     interval: str = "1d",
+    trusted: bool = False,
 ) -> GauntletReport:
     """Put a drafted ingestor through every check the platform can apply.
 
@@ -308,6 +401,43 @@ def run_gauntlet(
     """
     report = GauntletReport(source=spec.name, symbol=symbol, group=spec.group)
 
+    # Refuse before parsing anything. Proving a draft means running it, and running
+    # it means executing whatever is in the file with this process's filesystem and
+    # network. That is a decision, so it has to be made explicitly rather than
+    # inherited from calling a function named "verify".
+    if not trusted:
+        report.stages.append(
+            Stage(
+                "trust", False,
+                "refusing to execute an unvetted draft: importing it runs its "
+                "top-level code as you. Pass trusted=True (CLI: --trust-this-draft) "
+                "only for code you would run by hand, or run the gauntlet inside the "
+                "container where the blast radius is a throwaway filesystem.",
+                blocking=True,
+            )
+        )
+        return report
+
+    # Cheap refusal for the obvious cases, before exec_module. Not a security
+    # boundary — a string concatenation walks past it — but the careless draft
+    # should fail loudly rather than run.
+    try:
+        smells = screen_source(module_path)
+    except SyntaxError as exc:
+        report.stages.append(Stage("screen", False, f"will not parse: {exc}", blocking=True))
+        return report
+    if smells:
+        report.stages.append(
+            Stage(
+                "screen", False,
+                "an ingestor needs HTTP, pandas and the registry, nothing else — "
+                + "; ".join(smells[:4]),
+                blocking=True,
+            )
+        )
+        return report
+    report.stages.append(Stage("screen", True, "no forbidden imports or calls"))
+
     stage, cls = _stage_contract(module_path)
     report.stages.append(stage)
     if not stage.passed or cls is None:
@@ -315,17 +445,24 @@ def run_gauntlet(
 
     ingestor = cls(spec)
 
-    stage, frame = _stage_fetch(ingestor, symbol, start, end, interval)
-    report.stages.append(stage)
-    if not stage.passed or frame is None:
-        return report
+    # Every stage below calls into candidate code. It runs holding only the one
+    # credential this source legitimately needs — a tiingo draft cannot casually read
+    # FRED's key or the R2 read keys out of the environment.
+    with _only_this_sources_credentials(spec.name):
+        stage, frame = _stage_fetch(ingestor, symbol, start, end, interval)
+        report.stages.append(stage)
+        if not stage.passed or frame is None:
+            return report
 
-    report.stages.append(
-        _stage_frame(frame, spec.group, spec.name, symbol, start, end, interval)
-    )
-    report.stages.append(_stage_determinism(ingestor, symbol, start, end, interval, frame))
-    report.stages.append(_stage_range(ingestor, symbol, interval, frame))
-    report.stages.append(_stage_pagination(spec, frame))
+        report.stages.append(
+            _stage_frame(frame, spec.group, spec.name, symbol, start, end, interval)
+        )
+        report.stages.append(_stage_determinism(ingestor, symbol, start, end, interval, frame))
+        report.stages.append(_stage_range(ingestor, symbol, interval, frame))
+        report.stages.append(_stage_pagination(spec, frame))
+
+    # Outside the scope: this one compares against an ALREADY-TRUSTED source, so it
+    # needs that source's credentials rather than the candidate's.
     report.stages.append(_stage_cross_source(frame, spec.group, spec.name, symbol, interval))
     return report
 
@@ -428,6 +565,11 @@ def main() -> None:
     v.add_argument("--to", dest="end")
     v.add_argument("--interval", default="1d")
     v.add_argument("--max-rows-per-call", type=int)
+    v.add_argument(
+        "--trust-this-draft", action="store_true", dest="trusted",
+        help="execute the draft. Importing it runs its top-level code as you — pass "
+             "this only for code you would run by hand, or run inside the container.",
+    )
 
     args = parser.parse_args()
 
@@ -456,7 +598,8 @@ def main() -> None:
         license_note="DRAFT",
     )
     report = run_gauntlet(
-        args.module, spec, args.symbol, args.start, args.end, args.interval
+        args.module, spec, args.symbol, args.start, args.end, args.interval,
+        trusted=args.trusted,
     )
     print(report.summary())
     # Non-zero on failure so a drafting agent, or CI, can branch on the result

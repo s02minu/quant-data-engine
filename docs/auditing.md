@@ -80,6 +80,37 @@ If a finding requires private access to demonstrate, that is itself worth knowin
 means the public surface cannot be independently checked, which is a product problem
 before it is a security one.
 
+## Running a generated draft safely
+
+`qde.draft` proves a candidate ingestor by **running** it, and importing a Python
+module executes its top-level code with the calling process's filesystem, network and
+environment. Quarantining a draft in `drafts/` keeps it out of the *pipeline*; it does
+nothing to contain a hostile one.
+
+That matters most for the case the tool exists for: a draft written from API
+documentation fetched off the internet is exactly the shape of thing that carries a
+prompt injection. In this repository an unchecked draft could read every
+`secrets/*.env` file and post them somewhere.
+
+Three defences, and it is worth being clear that only the third is containment:
+
+1. **Execution is a decision.** `run_gauntlet` refuses unless the caller passes
+   `trusted=True` (CLI: `--trust-this-draft`). Use it only for code you would run by
+   hand.
+2. **Scoped credentials.** Candidate code runs holding only the one credential its
+   source needs — a Tiingo draft cannot read FRED's key or the R2 read keys.
+3. **The container.** For anything you did not write, run the gauntlet where the
+   blast radius is a throwaway filesystem:
+
+```bash
+docker compose run --rm --network none collector python -m qde.draft verify drafts/x.py --name src --symbol SYM --from 2024-01-01 --trust-this-draft
+```
+
+There is also an AST screen that refuses drafts importing `socket`/`subprocess` or
+calling `eval`/`os.system`. It runs *before* execution and costs nothing, but it is
+**not a security boundary** — a string concatenation walks past it. It exists so the
+careless draft fails loudly instead of running.
+
 ## Reading the report
 
 Verify each finding against live data before acting on it. Of the four findings in the
