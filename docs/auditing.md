@@ -103,11 +103,31 @@ Three defences, and it is worth being clear that only the third is containment:
    in-process at the moment containment is missing is the worst possible time for it.
 2. **Scoped credentials.** Candidate code runs holding only the one credential its
    source needs — a Tiingo draft cannot read FRED's key or the R2 read keys.
-3. **The AST screen**, on the host, before a container is even started.
+3. **The AST screen**, on the host, before a container is even started. Useful, but
+   **not a boundary** — a URL assembled from string fragments walks straight past it.
+4. **A closed network**, when you pass `--allow-host`. This is the one that does not
+   depend on reading the code at all:
 
 ```bash
-python -m qde.draft verify drafts/x.py --name src --symbol SYM --from 2024-01-01
+python -m qde.draft verify drafts/x.py --name src --symbol SYM --from 2024-01-01     --allow-host api.vendor.com
 ```
+
+The candidate runs on a Docker network created `--internal` — no default route, so a
+raw socket has nowhere to go either — and reaches the outside only through
+`qde.egress`, a stdlib proxy (in this project's own image, so no third-party artifact
+is pulled in to guard against untrusted code) that refuses every host but those named
+and logs each attempt. A draft caught reaching elsewhere **fails the run**: the
+credential did not leave, but a candidate that wants to talk to a host nobody named is
+not one to promote because its frame shape looked right.
+
+Verified both ways against real Docker: a draft fetching a non-allowlisted host is
+blocked and reported (`the draft tried to reach 1 host(s) outside the allowlist`),
+while the same draft with that host allowed tunnels through and the stage passes.
+
+Without `--allow-host` the container gets plain `bridge` and the report says
+`unrestricted` rather than leaving it to be assumed. If the proxy cannot be built the
+gauntlet **fails closed** — running on the open network because containment was
+unavailable would drop the guard at the exact moment it was needed.
 
 ## Drafting one with the agent
 
@@ -117,7 +137,8 @@ and feeds the failures back for another attempt. Bounded at three rounds.
 
 ```bash
 pip install -e ".[agent]"
-python -m qde.author --doc https://example.com/api-docs --name acme --group bars     --symbol SPY=SPY --from 2024-01-01
+python -m qde.author --doc https://vendor.com/api-docs --name acme --group bars \
+    --symbol SPY=SPY --from 2024-01-01 --allow-host api.vendor.com
 ```
 
 It needs `ANTHROPIC_API_KEY` (or `secrets/anthropic.env`), and it is local/dev only —

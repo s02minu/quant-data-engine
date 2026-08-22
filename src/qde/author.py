@@ -327,6 +327,7 @@ def author(
     effort: str = "high",
     directory: str | Path = QUARANTINE,
     isolation: str = "container",
+    allow_hosts: tuple[str, ...] = (),
     client=None,
 ) -> AuthorResult:
     """Draft an ingestor for ``spec`` and prove it, retrying on the gauntlet's verdict.
@@ -335,6 +336,10 @@ def author(
         spec: what is being built. ``redistributable`` is whatever the caller set and
             is never touched here.
         doc_location: a URL or a local path to the source's API documentation.
+        allow_hosts: the only hosts the draft may reach. Required on the CLI, because
+            this is the path where the code was written from a page nobody vetted --
+            the container is put on an internal network and everything else is
+            refused and logged.
         attempts: how many generate-and-prove rounds before giving up. Three, because
             the failures worth retrying (a wrong epoch unit, an off-by-one range) are
             fixed on the second pass or not at all; a longer loop mostly spends money
@@ -373,7 +378,8 @@ def author(
             n=n, module_path=path, uncertainties=answer.get("uncertainties", "")
         )
         attempt.report = run_gauntlet(
-            path, spec, symbol, start, end, interval, isolation=isolation
+            path, spec, symbol, start, end, interval,
+            isolation=isolation, allow_hosts=allow_hosts,
         )
         result.attempts.append(attempt)
         if attempt.passed:
@@ -423,6 +429,12 @@ def main() -> None:
                         help="one symbol to prove against, e.g. SPY=SPY")
     parser.add_argument("--from", dest="start", required=True, metavar="YYYY-MM-DD")
     parser.add_argument("--to", dest="end", default=None, metavar="YYYY-MM-DD")
+    parser.add_argument("--allow-host", action="append", default=[], required=True,
+                        metavar="HOST",
+                        help="the API host the draft may reach, subdomains included. "
+                             "Repeatable, and REQUIRED: this code was written from a "
+                             "page nobody vetted, so its network is closed by default "
+                             "and every other destination is refused and logged.")
     parser.add_argument("--interval", default="1d")
     parser.add_argument("--attempts", type=int, default=3)
     parser.add_argument("--model", default=MODEL)
@@ -460,6 +472,7 @@ def main() -> None:
         attempts=args.attempts,
         model=args.model,
         effort=args.effort,
+        allow_hosts=tuple(args.allow_host),
         isolation="in-process" if args.in_process else "container",
     )
     print(_render(result))

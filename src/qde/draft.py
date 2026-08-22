@@ -66,6 +66,7 @@ the container and must not carry a code-generation dependency.
 import importlib.util
 import inspect
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -739,6 +740,10 @@ class {cls}(BaseIngestor):
 '''
 
 
+_PROXY_PORT = 8888
+_PROXY_WAIT_TRIES = 40
+_PROXY_POLL_SECONDS = 0.25
+
 DOCKER_IMAGE = "qde-collector"
 
 
@@ -756,9 +761,83 @@ def _docker_available() -> bool:
         return False
 
 
+@contextmanager
+def _contained_egress(allow_hosts: tuple[str, ...], run):
+    """A network the candidate cannot leave except through an allowlisting proxy.
+
+    Two containers and one network, torn down whatever happens:
+
+    - a Docker network created ``--internal``, which has no default route. This is the
+      part that matters: with nowhere to route, a raw socket is as stuck as a
+      well-behaved HTTP client, so containment does not rest on the AST screen
+      spotting anything;
+    - the proxy (``qde.egress``) attached to BOTH that network and ``bridge``, so it
+      alone can reach the internet, and only for the hosts named here.
+
+    Yields ``(network, proxy_name)``. Everything is removed in ``finally`` — a
+    leaked internal network is harmless, a leaked proxy container is not.
+    """
+    import uuid
+
+    tag = uuid.uuid4().hex[:12]
+    network, proxy = f"qde-draft-{tag}", f"qde-egress-{tag}"
+    allow_argv: list[str] = []
+    for host in allow_hosts:
+        allow_argv += ["--allow", host]
+
+    created = False
+    try:
+        run(["docker", "network", "create", "--internal", network], check=True)
+        created = True
+        run(["docker", "run", "-d", "--name", proxy, "--network", "bridge",
+             "--user", "65534:65534", "--cap-drop", "ALL",
+             "--security-opt", "no-new-privileges", "--read-only",
+             "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m", "-e", "HOME=/tmp",
+             "--pids-limit", "64", "--memory", "256m",
+             DOCKER_IMAGE, "python", "-m", "qde.egress", "--port", str(_PROXY_PORT),
+             *allow_argv], check=True)
+        # The proxy must be listening before the candidate starts, or the first fetch
+        # fails for a reason that has nothing to do with the draft.
+        for _ in range(_PROXY_WAIT_TRIES):
+            logs = run(["docker", "logs", proxy], check=False)
+            if "EGRESS READY" in (logs.stdout or "") + (logs.stderr or ""):
+                break
+            time.sleep(_PROXY_POLL_SECONDS)
+        else:
+            raise RuntimeError("the egress proxy never reported ready")
+        run(["docker", "network", "connect", network, proxy], check=True)
+        yield network, proxy
+    finally:
+        if created:
+            run(["docker", "rm", "-f", proxy], check=False)
+            run(["docker", "network", "rm", network], check=False)
+
+
+def _egress_stage(log: str) -> Stage:
+    """Turn the proxy's record into a verdict.
+
+    A draft that reached only where it was allowed to is unremarkable. A draft that
+    TRIED somewhere else is the single most informative thing this whole sandbox can
+    observe, and it fails the run: the attempt was blocked, but a candidate that wants
+    to talk to a host nobody named is not one to promote on the strength of its frame
+    shape.
+    """
+    allowed = [ln for ln in log.splitlines() if ln.startswith("EGRESS ALLOW")]
+    denied = [ln for ln in log.splitlines() if ln.startswith("EGRESS DENY")]
+    if denied:
+        return Stage(
+            "egress", False,
+            f"the draft tried to reach {len(denied)} host(s) outside the allowlist — "
+            + "; ".join(d.removeprefix("EGRESS DENY ") for d in denied[:3]),
+            blocking=True,
+        )
+    return Stage("egress", True,
+                 f"{len(allowed)} connection(s), all to allowlisted hosts")
+
+
 def _run_in_container(
     module_path: Path, spec: SourceSpec, symbol: str, start: str,
-    end: str | None, interval: str,
+    end: str | None, interval: str, allow_hosts: tuple[str, ...] = (),
 ) -> GauntletReport:
     """Execute the gauntlet inside a disposable container and bring the report back.
 
@@ -770,9 +849,11 @@ def _run_in_container(
       the same filesystem and contain nothing at all.
     - **One credential.** Only the source's own key is passed through, so a compromise
       costs the secret the draft was already trusted with and nothing else.
-    - **Network, deliberately.** The whole point is to fetch from a real API, so the
-      container has to reach the internet. Exfiltration is therefore still possible —
-      what the sandbox removes is access to anything worth exfiltrating.
+    - **Egress, when an allowlist is given.** With ``allow_hosts`` the candidate runs
+      on an ``--internal`` network and reaches the outside only through a proxy that
+      refuses every host but those named, logging each attempt. Without one it gets
+      plain ``bridge`` — the old behaviour, still useful for a draft you wrote
+      yourself, and the report says so rather than leaving it to be assumed.
 
     Isolation is the DEFAULT rather than a flag on purpose. Requiring a human to
     approve each execution would put the reviewer back in the loop that this module
@@ -801,10 +882,6 @@ def _run_in_container(
         # this host also runs the 24/7 collectors.
         "--pids-limit", "256",
         "--memory", "2g",
-        # Network stays ON: the whole point is fetching from a real API, so
-        # exfiltration remains possible. What the sandbox removes is anything worth
-        # exfiltrating — no secrets mount, one credential, no persistence.
-        "--network", "bridge",
         "-v", f"{module_path.resolve().as_posix()}:/draft/candidate.py:ro",
         "-e", key,
         DOCKER_IMAGE,
@@ -820,7 +897,47 @@ def _run_in_container(
 
     env = dict(os.environ)
     env.setdefault(key, os.environ.get(key, ""))
-    done = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=env)
+
+    def _docker(cmd, check):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if check and result.returncode != 0:
+            raise RuntimeError(f"{' '.join(cmd[:4])}: {(result.stderr or '').strip()[:200]}")
+        return result
+
+    egress: Stage | None = None
+    if allow_hosts:
+        try:
+            with _contained_egress(allow_hosts, _docker) as (network, proxy):
+                net_argv = [
+                    "--network", network,
+                    # requests honours these, so the HTTP helper needs no change; and
+                    # on an internal network there is no route around them anyway.
+                    "-e", f"HTTPS_PROXY=http://{proxy}:{_PROXY_PORT}",
+                    "-e", f"HTTP_PROXY=http://{proxy}:{_PROXY_PORT}",
+                ]
+                done = subprocess.run(
+                    argv[:2] + net_argv + argv[2:],
+                    capture_output=True, text=True, timeout=900, env=env,
+                )
+                egress = _egress_stage(_docker(["docker", "logs", proxy], False).stdout or "")
+        except (RuntimeError, subprocess.SubprocessError) as exc:
+            # Fail closed. Running on the open network because containment could not
+            # be built would drop the guard at the exact moment it was unavailable —
+            # the same reasoning as refusing when docker is missing.
+            return GauntletReport(
+                source=spec.name, symbol=symbol, group=spec.group,
+                stages=[Stage("egress", False,
+                              f"could not contain the draft's network access ({exc}); "
+                              "refusing to run it on the open internet instead",
+                              blocking=True)],
+            )
+    else:
+        done = subprocess.run(
+            argv[:2] + ["--network", "bridge"] + argv[2:],
+            capture_output=True, text=True, timeout=900, env=env,
+        )
+        egress = Stage("egress", True, "unrestricted — no --allow-host was given",
+                       skipped=True)
 
     payload = next(
         (ln for ln in reversed(done.stdout.splitlines()) if ln.startswith("{")), None
@@ -834,10 +951,13 @@ def _run_in_container(
         )
 
     data = json.loads(payload)
-    return GauntletReport(
+    report = GauntletReport(
         source=data["source"], symbol=data["symbol"], group=data["group"],
         stages=[Stage(**st) for st in data["stages"]],
     )
+    if egress is not None:
+        report.stages.append(egress)
+    return report
 
 
 def run_gauntlet(
@@ -848,6 +968,7 @@ def run_gauntlet(
     end: str | None = None,
     interval: str = "1d",
     isolation: str = "container",
+    allow_hosts: tuple[str, ...] = (),
 ) -> GauntletReport:
     """Prove a drafted ingestor, running it in a disposable container by default.
 
@@ -891,7 +1012,9 @@ def run_gauntlet(
                   "draft yourself and accept running it as you.", blocking=True))
         return report
 
-    result = _run_in_container(module_path, spec, symbol, start, end, interval)
+    result = _run_in_container(
+        module_path, spec, symbol, start, end, interval, allow_hosts
+    )
     result.stages.insert(0, Stage("screen", True, "no forbidden imports or calls"))
     return result
 
@@ -938,6 +1061,10 @@ def main() -> None:
     v.add_argument("--group", default="bars", choices=["bars", "series", "events"])
     v.add_argument("--symbol", required=True)
     v.add_argument("--native", help="source-native symbol (defaults to --symbol)")
+    v.add_argument("--allow-host", action="append", default=[], metavar="HOST",
+                   help="restrict the draft's network to this host (subdomains "
+                        "included). Repeatable. Without it the container reaches the "
+                        "open internet and the report says so.")
     v.add_argument("--from", dest="start", required=True)
     v.add_argument("--to", dest="end")
     v.add_argument("--interval", default="1d")
@@ -1001,6 +1128,7 @@ def main() -> None:
     report = run_gauntlet(
         args.module, spec, args.symbol, args.start, args.end, args.interval,
         isolation="in-process" if args.in_process else "container",
+        allow_hosts=tuple(args.allow_host),
     )
     print(report.summary())
     # Non-zero on failure so a drafting agent, or CI, can branch on the result
