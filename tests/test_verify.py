@@ -1387,3 +1387,86 @@ def test_decoupling_from_everything_is_still_caught():
     assert [v for v in violations if v.check == PROXY], (
         "decoupling from every proxy must still be reported"
     )
+
+
+# --- the boundary cases a drift-only heuristic could not see -----------------------
+
+
+def test_a_wandering_ratio_is_not_excused_as_a_price_convention():
+    """The blind spot: "the ratio moves" excused far more than adjusted-vs-raw.
+
+    An FX conversion, an ADR ratio change or a botched vendor factor all move the
+    ratio while the returns still correlate — and each was waved through as a benign
+    convention difference. What a dividend adjustment does and these do not is move
+    ONE WAY: measured, real adjustments trend -0.93..-1.00 while a live cross-venue
+    basis wanders at +0.16..+0.33.
+    """
+    import numpy as np
+
+    truth = list(_walk(300, seed=5))
+    rng = np.random.default_rng(6)
+    # A level gap that wanders up and down instead of accumulating.
+    wander = 1.15 + 0.03 * np.sin(np.linspace(0, 6 * np.pi, 300)) + rng.normal(0, 0.002, 300)
+    ours = _series([t * w for t, w in zip(truth, wander, strict=True)])
+    peer = _series(truth)
+
+    violations = cross_check(
+        ours, "SPY", "tiingo", peers=["yfinance"], loader=lambda *a, **k: peer
+    )
+    assert violations
+    assert "convention" not in violations[0].detail, (
+        "a ratio that wanders is not a dividend adjustment and must not be excused"
+    )
+
+
+def test_a_one_way_drift_is_reported_without_asserting_its_cause():
+    """A monotone ratio is consistent with adjusted-vs-raw — and with other things.
+
+    Price data alone cannot separate a dividend adjustment from a trending FX
+    conversion, so the verdict must name what was measured and stop there. Claiming
+    the cause would hand a real defect a benign label.
+    """
+    truth = list(_walk(300, seed=7))
+    factors = [1 + 0.0006 * (300 - i) for i in range(300)]
+    ours = _series([t * f for t, f in zip(truth, factors, strict=True)])
+    peer = _series(truth)
+
+    violations = cross_check(
+        ours, "SPY", "tiingo", peers=["yfinance"], loader=lambda *a, **k: peer
+    )
+    assert violations and violations[0].severity == "warn"
+    detail = violations[0].detail
+    assert "consistent with" in detail and "FX" in detail, detail
+
+
+def test_a_window_too_short_to_judge_says_so_instead_of_accusing():
+    """Measured false positive: SPY's first 60 days of 2015.
+
+    Raw and adjusted sit 21.2% apart there with a trend of only -0.28 — a real
+    convention difference that the drift test rejected, sending two correct feeds to
+    adjudication and a likely error. Over a window this short a convention difference
+    and a scaling defect are genuinely indistinguishable, so the honest verdict is
+    that the window cannot tell.
+    """
+    import numpy as np
+
+    truth = list(_walk(60, seed=8))
+    rng = np.random.default_rng(9)
+    ratio = 1.21 + rng.normal(0, 0.002, 60)  # a big gap, no direction to it
+    ours = _series([t * r for t, r in zip(truth, ratio, strict=True)])
+    peer = _series(truth)
+
+    violations = cross_check(
+        ours, "SPY", "tiingo", peers=["yfinance"], loader=lambda *a, **k: peer
+    )
+    assert violations
+    assert violations[0].severity == "warn", "two possibly-correct feeds are not an error"
+    assert "cannot say" in violations[0].detail, violations[0].detail
+
+
+def test_a_constant_ratio_has_no_direction_and_is_not_excused():
+    """`_ratio_trend` must return None for a scaled copy, not a spurious trend."""
+    from qde.verify import _ratio_trend
+
+    assert _ratio_trend(pd.Series([2.0] * 40)) is None
+    assert _ratio_trend(pd.Series([2.0, 2.0])) is None

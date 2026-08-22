@@ -69,13 +69,40 @@ _IMPLAUSIBLE_DAILY_RETURN = 5.0  # +400% / -80% in one day
 # return correlation below, which is convention-independent and can be strict.
 _CROSS_SOURCE_TOLERANCE = 0.05  # 5% median relative difference
 
-# Separates a price-convention difference from a units error, both of which show a
-# large level gap AND near-perfect return correlation. An adjusted series and a raw
-# one drift apart as dividends accumulate, so their ratio MOVES: measured on SPY,
-# 1.0302 to 1.2343 over ten years, relative std 0.053. A units error (pence for
-# pounds, a decimal shift) scales every row identically, so its ratio is constant at
-# relative std 0. Five orders of magnitude between them.
-_CONVENTION_DRIFT_MIN = 0.005
+# Separates a price-convention difference from the other things that produce a large
+# level gap AND near-perfect return correlation.
+#
+# The first version of this asked only whether the ratio MOVED, on the reasoning that
+# a units error scales every row identically. That is true but far too weak: an FX
+# conversion, an ADR ratio change, a rebased index and a botched vendor adjustment all
+# move too, and each was quietly excused as "adjusted vs raw".
+#
+# What actually distinguishes a dividend adjustment is DIRECTION. Dividends are never
+# negative, so the raw/adjusted ratio walks one way and does not come back. Measured
+# via Spearman rank correlation of the ratio against time (tiingo raw vs its own
+# adjClose, one request, so the pairing is beyond dispute):
+#
+#   real adjustment  SPY/QQQ/XLK/TLT/HYG  full history  -1.000 for all five
+#                                         250 days      -0.933 .. -0.993
+#   cross-venue basis  BTC/ETH/SOL        full history  +0.159 .. +0.326
+#                      (the wandering      250 days      +0.198 .. +0.206
+#                       case this must
+#                       stop excusing)
+#
+# 0.80 sits in the gap: 0.13 clear of the weakest true adjustment, 0.59 clear of the
+# strongest wanderer. Deliberately NOT paired with a drift floor any more -- QQQ's
+# genuine 250-day adjustment drifts only 0.0028, under the old 0.005, so the drift
+# test rejected a real convention difference.
+_MIN_CONVENTION_TREND = 0.80
+
+# Below this many shared dates, NEITHER statistic means anything and the honest answer
+# is that the window cannot tell. Measured over 60 days, real adjustments produce
+# trends from +0.064 (XLK) to -0.921 (TLT) -- straddling the -0.35 of a wandering
+# basis -- because a 60-day window may hold one dividend or none. Over 250 days every
+# real adjustment separated cleanly. The gap is largest exactly where the window is
+# least able to explain it: SPY's first 60 days of 2015 show a 21.2% level gap between
+# two entirely correct series.
+_MIN_DATES_FOR_CONVENTION = 250
 
 # Two feeds on the same asset move together day by day, whatever basis separates
 # their levels. Measured across every venue pair in this lake over 382 days, the
@@ -238,6 +265,28 @@ def verify_frame(
     return violations
 
 
+def _ratio_trend(ratio: pd.Series) -> float | None:
+    """How consistently a price ratio moves in one direction, in [-1, 1].
+
+    Spearman's rank correlation against time, computed as Pearson on ranks because
+    the container has no scipy. Rank-based on purpose: a dividend adjustment is
+    monotone in the LARGE but noisy step to step, so the sign of the daily change is
+    a coin flip (measured on ten years of SPY: 0.509, indistinguishable from random)
+    while the rank trend is -1.000.
+
+    Returns ``None`` when the ratio is constant -- a scaled copy has no direction to
+    measure, and callers must not read that as evidence either way.
+    """
+    if len(ratio) < 3:
+        return None
+    ranks = ratio.rank()
+    if float(ranks.std()) == 0.0:
+        return None
+    order = pd.Series(range(len(ranks)), dtype=float, index=ranks.index)
+    value = float(ranks.corr(order))
+    return None if pd.isna(value) else value
+
+
 def cross_check(
     df: pd.DataFrame,
     symbol: str,
@@ -363,17 +412,43 @@ def cross_check(
             # Five orders of magnitude apart, so the discriminator is not delicate.
             agreement = _return_correlation(a, b)
             ratio = (a / b).replace([float("inf"), float("-inf")], pd.NA).dropna()
-            drifts = (
-                len(ratio) > 2
-                and float(ratio.mean()) != 0
-                and float(ratio.std() / abs(ratio.mean())) > _CONVENTION_DRIFT_MIN
-            )
-            if agreement is not None and agreement >= _MIN_RETURN_CORRELATION and drifts:
+            trend = _ratio_trend(ratio)
+            correlated = agreement is not None and agreement >= _MIN_RETURN_CORRELATION
+
+            # A constant ratio has no direction, so `_ratio_trend` returns None and
+            # neither branch below fires: a units error still falls through to
+            # adjudication, which is where a scaling defect belongs.
+            if correlated and trend is not None and abs(trend) >= _MIN_CONVENTION_TREND:
+                # Say what was measured, and stop short of naming a cause. A one-way
+                # multiplicative drift is what a dividend adjustment looks like, but a
+                # trending FX conversion or a wrong vendor factor is indistinguishable
+                # from it in price data alone -- asserting "adjusted vs raw" here would
+                # hand a real defect a benign label, which is the one outcome this
+                # module exists to prevent.
                 return [_v("bars", source, symbol, "cross_source", "warn",
                            f"levels differ from {peer} by {median:.1%} but daily moves "
-                           f"correlate {agreement:.4f} and the ratio drifts — a price "
-                           "convention difference (adjusted vs raw), not a disagreement "
-                           "about the data")]
+                           f"correlate {agreement:.4f} and the ratio drifts one way "
+                           f"(trend {trend:+.2f}) — consistent with a price convention "
+                           "difference such as adjusted vs raw, though an FX conversion "
+                           "or a vendor adjustment factor would look the same; not a "
+                           "disagreement about the movement")]
+
+            if (
+                correlated
+                and trend is not None
+                and len(shared) < _MIN_DATES_FOR_CONVENTION
+            ):
+                # The window is too short to characterise the ratio, and both readings
+                # remain open. Escalating would risk a false accusation against two
+                # correct feeds -- measured, SPY's first 60 days of 2015 sit 21.2% apart
+                # from their own adjusted counterpart with a trend of only -0.28.
+                return [_v("bars", source, symbol, "cross_source", "warn",
+                           f"levels differ from {peer} by {median:.1%} with daily moves "
+                           f"correlating {agreement:.4f}, but {len(shared)} shared date(s) "
+                           f"cannot say whether the ratio holds a direction (trend "
+                           f"{trend:+.2f}) — a convention difference and a scaling defect "
+                           f"look alike over a window this short; compare at least "
+                           f"{_MIN_DATES_FOR_CONVENTION} dates to tell them apart")]
 
             # Disagreement names two frames and does not say which is wrong. Ours
             # may be fine and this peer broken — reporting on one opinion turns a
