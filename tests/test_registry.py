@@ -122,3 +122,36 @@ def test_dim_sources_has_one_row_per_source():
     assert len(set(zip(df["group"], df["name"], strict=True))) == len(df)
     # The catalogue carries the licensing decision for the publishing gate.
     assert {"redistributable", "license_note", "group"} <= set(df.columns)
+
+
+def test_the_committed_seed_matches_the_registry():
+    """dbt's `dim_sources` seed is generated from the registry and committed.
+
+    CI regenerates it and fails on any diff — which is correct, but only tells you
+    after a push. This has now caught the same mistake twice (adding tiingo, then
+    editing its license_note), each time costing a red pipeline and a follow-up
+    commit. Asserting it here moves the failure to the local gate, where it is a
+    one-line fix before anything is pushed.
+
+    If this fails, regenerate and commit:
+        python -c "from qde.registry import dim_sources; \
+            dim_sources().to_csv('transform/seeds/dim_sources_seed.csv', index=False)"
+    """
+    import io
+    from pathlib import Path
+
+    from qde.registry import dim_sources
+
+    seed = Path("transform/seeds/dim_sources_seed.csv")
+    if not seed.exists():  # a checkout without the transform layer
+        pytest.skip("no dbt seed in this checkout")
+
+    buffer = io.StringIO()
+    dim_sources().to_csv(buffer, index=False)
+
+    expected = buffer.getvalue().replace("\r\n", "\n").strip()
+    committed = seed.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+    assert committed == expected, (
+        "transform/seeds/dim_sources_seed.csv is stale — regenerate it from the "
+        "registry and commit (see this test's docstring)"
+    )
