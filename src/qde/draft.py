@@ -44,16 +44,23 @@ the internet is exactly the shape of thing that carries a prompt injection, and 
 this repository a draft that ran unchecked could read every ``secrets/*.env`` file
 and post them somewhere.
 
-So executing a draft is treated as a decision rather than a default: ``run_gauntlet``
-refuses unless the caller states the code is trusted, the environment it runs in is
-cut down to the one credential the source actually needs, and an AST screen rejects
-the obvious cases first. **None of that is containment** — a determined draft still
-runs as you. For anything you did not write yourself, run the gauntlet inside the
-project's container, where the blast radius is a throwaway filesystem:
+So a candidate is CONTAINED BY DEFAULT: ``run_gauntlet`` runs it in a throwaway
+container -- unprivileged, read-only root, capabilities dropped, holding only the one
+credential its source needs -- unless the caller explicitly asks for
+``isolation="in-process"``. An AST screen rejects the obvious cases on the host first,
+before a container is even started.
 
-    docker compose run --rm --network none collector \
-        python -m qde.draft verify drafts/<file>.py \
-        --name <source> --symbol <SYM> --from <DATE> --trust-this-draft
+An earlier version asked the caller to assert the draft was trusted instead. That was
+the wrong shape: it put a human judgement back into the loop this tool exists to
+remove, and a tired yes is not a security control. If docker is unavailable the
+gauntlet FAILS rather than falling back to in-process -- degrading silently at the one
+moment containment is missing would be the worst possible time for it.
+
+    python -m qde.draft verify drafts/<file>.py --name <source> --symbol <SYM> --from <DATE>
+
+``qde.author`` is the generator that fills these drafts in from a source API
+documentation page; it is deliberately a separate module, because this one runs inside
+the container and must not carry a code-generation dependency.
 """
 
 import importlib.util

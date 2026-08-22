@@ -94,17 +94,47 @@ prompt injection. In this repository an unchecked draft could read every
 
 Three defences, and it is worth being clear that only the third is containment:
 
-1. **Execution is a decision.** `run_gauntlet` refuses unless the caller passes
-   `trusted=True` (CLI: `--trust-this-draft`). Use it only for code you would run by
-   hand.
+1. **Containment is the default, not a flag.** `run_gauntlet` runs the candidate in a
+   throwaway container unless the caller explicitly asks for `isolation="in-process"`.
+   An earlier version gated execution behind a `--trust-this-draft` flag instead; that
+   was the wrong shape, because it put a human judgement call back in the loop the
+   gauntlet exists to remove, and a tired yes is not a security control. If docker is
+   unavailable the gauntlet **fails** rather than quietly falling back — degrading to
+   in-process at the moment containment is missing is the worst possible time for it.
 2. **Scoped credentials.** Candidate code runs holding only the one credential its
    source needs — a Tiingo draft cannot read FRED's key or the R2 read keys.
-3. **The container.** For anything you did not write, run the gauntlet where the
-   blast radius is a throwaway filesystem:
+3. **The AST screen**, on the host, before a container is even started.
 
 ```bash
-docker compose run --rm --network none collector python -m qde.draft verify drafts/x.py --name src --symbol SYM --from 2024-01-01 --trust-this-draft
+python -m qde.draft verify drafts/x.py --name src --symbol SYM --from 2024-01-01
 ```
+
+## Drafting one with the agent
+
+`qde.author` is the other half: it reads a source's API documentation, fills in the
+three methods `scaffold` leaves unimplemented, runs the result through the gauntlet,
+and feeds the failures back for another attempt. Bounded at three rounds.
+
+```bash
+pip install -e ".[agent]"
+python -m qde.author --doc https://example.com/api-docs --name acme --group bars     --symbol SPY=SPY --from 2024-01-01
+```
+
+It needs `ANTHROPIC_API_KEY` (or `secrets/anthropic.env`), and it is local/dev only —
+`anthropic` is an optional dependency and is deliberately absent from the VPS image and
+from the container that executes candidates.
+
+Two things the agent is structurally not allowed to decide. `redistributable` is absent
+from its output schema, so no draft can set it — whether a licence permits republishing
+is a legal judgement, and a confident paragraph in a doc page does not settle it. The
+measured thresholds (`null_tolerance`, `expected_daily_rows`, freshness SLA) are not
+asked for either: documentation states a rate limit, it does not know what healthy looks
+like in this lake.
+
+Nothing is registered and nothing is committed. A passing draft sits in `drafts/` for a
+person to read — the gauntlet has passed ingestors carrying real defects before (raw
+prices where adjusted were needed; a silently dropped row), so "it went green" is a
+reason to review it, not a reason to skip reviewing it.
 
 There is also an AST screen that refuses drafts importing `socket`/`subprocess` or
 calling `eval`/`os.system`. It runs *before* execution and costs nothing, but it is

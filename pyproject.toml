@@ -34,6 +34,12 @@ dev = [
     "ruff",
     "mypy",
 ]
+# The drafting agent (qde.author). Optional because nothing in the pipeline needs it:
+# the nightly, the checks and the container that runs candidate code all run without
+# it, and the container in particular must NOT carry a code-generation dependency.
+agent = [
+    "anthropic>=1.0,<2",
+]
 # The dbt transformation layer (Phase 8). Kept out of the core deps so a client
 # that only queries the lake stays light, but installed into the VPS image
 # (`pip install .[transform]`) so the nightly can rebuild gold. dbt-duckdb reads
