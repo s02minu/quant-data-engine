@@ -102,13 +102,21 @@ export default function Catalogue({ catalogue }) {
   // is live. Say so plainly rather than handing out SQL that can't run.
   const pendingBucket = /REPLACE-ME/.test(catalogue.public_base_url ?? "");
 
+  // The catalogue counts every source; /status can only count the ones that actually
+  // publish files. Left unlabelled, the two pages disagree (15 here, 13 there) with
+  // nothing on either to reconcile them -- and a reader who spots that has no way to
+  // tell a licensing boundary from a broken pipeline.
+  const codeOnly = sources.filter((s) => !s.redistributable).length;
+  const published = sources.length - codeOnly;
+
   return (
     <section className="section" id="catalogue">
       <div className="section-head">
         <h2>Catalogue</h2>
         <span className="rule" />
         <span className="label">
-          {datasets.length} datasets · {sources.length} sources
+          {datasets.length} datasets · {published} published
+          {codeOnly > 0 && ` · ${codeOnly} code-only`}
         </span>
       </div>
       <p className="section-lede">

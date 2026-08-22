@@ -132,14 +132,19 @@ export default function Status({ catalogue }) {
           <span className={`status-pill status-${overall}`}>
             <span className="status-dot" />
             {overall === "ok"
-              ? `All ${rows.length} sources current`
-              : `${degraded} of ${rows.length} sources behind schedule`}
+              ? `All ${rows.length} published sources current`
+              : `${degraded} of ${rows.length} published sources behind schedule`}
           </span>
           <h1>System status</h1>
           <p className="lede">
             Every number here is computed in your browser from the same public Parquet the
             rest of the lake is served from. Nothing is asserted that you cannot re-run
             yourself.
+          </p>
+          <p className="lede">
+            This page counts the sources that <em>publish files</em>. The catalogue lists
+            more, because some sources are code-only — the ingestor is open, the data is
+            not redistributable — so they produce nothing here to measure.
           </p>
         </header>
 
