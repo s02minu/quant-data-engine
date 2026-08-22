@@ -1,10 +1,12 @@
 {
-  "generated_at": "2026-08-11T18:30:55.961613+00:00",
+  "generated_at": "2026-08-22T00:43:26.540180+00:00",
   "serving_model": "publish-files-not-queries",
-  "public_base_url": "https://REPLACE-ME.r2.dev",
+  "public_base_url": "https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev",
   "notes": {
     "how_to_query": "Point your own DuckDB at the sample_query URLs \u2014 no credentials. DuckDB fetches only the columns and row-groups your query touches; your machine does the compute, R2 serves the bytes (zero egress).",
+    "client_support": "Verified working: DuckDB (httpfs), curl/wget, and browsers \u2014 including DuckDB-WASM. NOT working: pandas.read_parquet(url) and anything else using Python's urllib directly, which is rejected with HTTP 403. The bucket is served from an r2.dev development domain, which Cloudflare rate-limits and which blocks Python's default User-Agent. Workarounds: read through DuckDB, or download the file first (curl) and open it locally. A custom domain would remove the restriction and is the documented production setup; it is not in place yet.",
     "excluded_sources": [
+      "tiingo",
       "yfinance"
     ],
     "excluded_reason": "not redistributable (code-only); the ingestor is open, the data is not."
@@ -17,10 +19,18 @@
       "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
       "redistributable": true,
       "license_note": "Binance public REST market data (historical klines); exchange-native and generally redistributable. Verify Binance API terms before public publishing.",
-      "rows": 5190,
+      "rows": 8786,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0,
+      "verification": {
+        "level": "corroborated",
+        "by_level": {
+          "corroborated": 3
+        },
+        "basis": "every series here also exists on at least one independent source, and its prices and daily movement were checked against it"
       }
     },
     {
@@ -30,10 +40,18 @@
       "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
       "redistributable": true,
       "license_note": "bybit public spot OHLCV via ccxt; exchange-native market data, generally redistributable. Verify the venue's API terms before public publishing.",
-      "rows": 5484,
+      "rows": 5514,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0,
+      "verification": {
+        "level": "corroborated",
+        "by_level": {
+          "corroborated": 3
+        },
+        "basis": "every series here also exists on at least one independent source, and its prices and daily movement were checked against it"
       }
     },
     {
@@ -43,10 +61,18 @@
       "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
       "redistributable": true,
       "license_note": "coinbase public spot OHLCV via ccxt; exchange-native market data, generally redistributable. Verify the venue's API terms before public publishing.",
-      "rows": 8902,
+      "rows": 8932,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0,
+      "verification": {
+        "level": "corroborated",
+        "by_level": {
+          "corroborated": 3
+        },
+        "basis": "every series here also exists on at least one independent source, and its prices and daily movement were checked against it"
       }
     },
     {
@@ -56,10 +82,18 @@
       "symbols": "BTCUSDT, ETHUSDT",
       "redistributable": true,
       "license_note": "Kraken public REST OHLC data; exchange-native and generally redistributable. Verify Kraken API terms before public publishing.",
-      "rows": 769,
+      "rows": 1460,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0,
+      "verification": {
+        "level": "corroborated",
+        "by_level": {
+          "corroborated": 2
+        },
+        "basis": "every series here also exists on at least one independent source, and its prices and daily movement were checked against it"
       }
     },
     {
@@ -69,10 +103,18 @@
       "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
       "redistributable": true,
       "license_note": "kucoin public spot OHLCV via ccxt; exchange-native market data, generally redistributable. Verify the venue's API terms before public publishing.",
-      "rows": 8249,
+      "rows": 8279,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0,
+      "verification": {
+        "level": "corroborated",
+        "by_level": {
+          "corroborated": 3
+        },
+        "basis": "every series here also exists on at least one independent source, and its prices and daily movement were checked against it"
       }
     },
     {
@@ -82,10 +124,40 @@
       "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
       "redistributable": true,
       "license_note": "okx public spot OHLCV via ccxt; exchange-native market data, generally redistributable. Verify the venue's API terms before public publishing.",
-      "rows": 8411,
+      "rows": 8441,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0,
+      "verification": {
+        "level": "corroborated",
+        "by_level": {
+          "corroborated": 3
+        },
+        "basis": "every series here also exists on at least one independent source, and its prices and daily movement were checked against it"
+      }
+    },
+    {
+      "name": "tiingo",
+      "group": "bars",
+      "n_symbols": 27,
+      "symbols": "SPY, QQQ, IWM, DIA, GLD, SLV, USO, TLT, IEF, SHY, LQD, HYG, UUP, EEM, EFA, VIXY, XLB, XLC, XLE, XLF, XLI, XLK, XLP, XLRE, XLU, XLV, XLY",
+      "redistributable": false,
+      "license_note": "Tiingo end-of-day US equities/ETFs, licensed feed. Free tier is non-commercial with an hourly request cap. Redistribution NOT yet confirmed \u2014 review Tiingo's terms before setting redistributable=True. Split- and dividend-ADJUSTED prices are stored (the adj* fields), matching the yfinance convention. Raw prices were tried first and made every split read as a ~50% crash: 12 of 27 symbols carried such artifacts.",
+      "rows": 162361,
+      "freshness": {
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 216.0,
+      "verification": {
+        "level": "proxy_only",
+        "by_level": {
+          "corroborated": 4,
+          "proxy_only": 23
+        },
+        "basis": "at least one series here exists on no other source, so its prices are not confirmed by anything external \u2014 only its internal contract and its agreement with itself over time"
       }
     },
     {
@@ -95,10 +167,19 @@
       "symbols": "BTCUSDT, ETHUSDT, SOLUSDT, SPY, QQQ, GLD, TLT, DX-Y.NYB",
       "redistributable": false,
       "license_note": "Scrapes Yahoo Finance; Yahoo's terms prohibit redistribution. Code-only source \u2014 the ingestor is open-sourced, the data is not published to the public lake.",
-      "rows": 11672,
+      "rows": 27541,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 216.0,
+      "verification": {
+        "level": "proxy_only",
+        "by_level": {
+          "corroborated": 7,
+          "proxy_only": 1
+        },
+        "basis": "at least one series here exists on no other source, so its prices are not confirmed by anything external \u2014 only its internal contract and its agreement with itself over time"
       }
     },
     {
@@ -108,11 +189,40 @@
       "symbols": "CPIAUCSL, CPILFESL, PCEPI, PCEPILFE, PAYEMS, UNRATE, ICSA, GDPC1, INDPRO, RSAFS, HOUST",
       "redistributable": true,
       "license_note": "U.S. macro release calendar built from FRED releases + ALFRED vintages (BLS / BEA / Census / Federal Reserve Board) \u2014 public domain and redistributable. The consensus FORECAST column is proprietary and NOT included; it layers on code-only per user (docs/schemas/events.md).",
-      "rows": 33447,
+      "rows": 33467,
       "freshness": {
-        "last": "2026-08-07T00:00:00+00:00",
-        "age_hours": 114.5
-      }
+        "last": "2026-08-20T00:00:00+00:00",
+        "age_hours": 48.7
+      },
+      "expected_within_hours": 158.4
+    },
+    {
+      "name": "binance",
+      "group": "microstructure",
+      "n_symbols": 3,
+      "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
+      "redistributable": true,
+      "license_note": "Binance public websocket market data (trades, diff-depth, book ticker) \u2014 exchange-native and redistributable, same terms as the REST klines. Published in full from 2026-08-16: the platform serves data; the strategy that consumes it lives outside this repo. Withheld before that date by choice, never by licence.",
+      "rows": 8786,
+      "freshness": {
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0
+    },
+    {
+      "name": "coinbase",
+      "group": "microstructure",
+      "n_symbols": 3,
+      "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
+      "redistributable": true,
+      "license_note": "Coinbase Exchange public websocket feed (matches, level2_batch, ticker, heartbeat) \u2014 public and no-auth, redistributable. Canonical symbols map to Coinbase's USD pairs, so BTCUSDT here is BTC-USD; the USD/USDT difference against Binance is the point, not an error.",
+      "rows": 8932,
+      "freshness": {
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 72.0
     },
     {
       "name": "binancefut",
@@ -121,11 +231,12 @@
       "symbols": "BTCUSDT, ETHUSDT, SOLUSDT",
       "redistributable": true,
       "license_note": "Binance USD-M perpetual funding rate + settlement mark price (public fapi REST); exchange-native and generally redistributable. Open interest (~30d REST history) and liquidations (no public REST, streaming only) are deliberately not included here \u2014 see the ingestor. Verify Binance API terms before public publishing.",
-      "rows": 42958,
+      "rows": 43138,
       "freshness": {
-        "last": "2026-08-11T08:00:00.006000+00:00",
-        "age_hours": 10.5
-      }
+        "last": "2026-08-22T00:00:00+00:00",
+        "age_hours": 0.7
+      },
+      "expected_within_hours": 25.0
     },
     {
       "name": "cboe",
@@ -134,11 +245,12 @@
       "symbols": "VIX, VVIX, SKEW",
       "redistributable": true,
       "license_note": "CBOE end-of-day volatility index levels (VIX / VVIX / SKEW), published as free CSVs on the CBOE CDN. EOD index levels are generally redistributable; the real-time feed and the underlying options data are NOT. Re-verify CBOE's terms before public publishing.",
-      "rows": 23528,
+      "rows": 23555,
       "freshness": {
-        "last": "2026-08-10T00:00:00+00:00",
-        "age_hours": 42.5
-      }
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 216.0
     },
     {
       "name": "cftc",
@@ -147,11 +259,12 @@
       "symbols": "ES, NQ, RTY, UST2Y, UST5Y, UST10Y, USTBOND, FF, DXY, EUR, JPY, GBP, CHF, AUD, CAD, VIX, BTC, ETH",
       "redistributable": true,
       "license_note": "CFTC Commitments of Traders \u2014 Traders in Financial Futures (TFF), futures-only \u2014 from the CFTC public reporting Socrata API. U.S.-government public-domain data; redistributable. Stored as multi-metric positioning (trader-category long/short + open interest).",
-      "rows": 187451,
+      "rows": 187847,
       "freshness": {
-        "last": "2026-08-04T00:00:00+00:00",
-        "age_hours": 186.5
-      }
+        "last": "2026-08-18T00:00:00+00:00",
+        "age_hours": 96.7
+      },
+      "expected_within_hours": 504.0
     },
     {
       "name": "fred",
@@ -160,11 +273,12 @@
       "symbols": "GDPC1, INDPRO, HOUST, RSAFS, CPIAUCSL, CPILFESL, PCEPI, PCEPILFE, UNRATE, PAYEMS, ICSA, FEDFUNDS, SOFR, DGS3MO, DGS2, DGS10, DGS30, T10Y2Y, T10Y3M, DFII10, T10YIE, M2SL, WALCL, RRPONTSYD, WTREGEN, DTWEXBGS",
       "redistributable": true,
       "license_note": "FRED delivery of U.S.-government statistical series (BLS / BEA / Census / Federal Reserve Board / Treasury) \u2014 public domain and redistributable. NOTE: FRED also hosts third-party series (ICE, S&P/Case-Shiller) that are NOT redistributable; only government series are curated here. Re-verify per series before public publishing.",
-      "rows": 50339,
+      "rows": 52490,
       "freshness": {
-        "last": "2026-08-10T00:00:00+00:00",
-        "age_hours": 42.5
-      }
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
+      },
+      "expected_within_hours": 216.0
     }
   ],
   "datasets": [
@@ -172,10 +286,10 @@
       "id": "bars",
       "layer": "bronze",
       "group": "bars",
-      "row_count": 48677,
+      "row_count": 41412,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
       },
       "schema": [
         {
@@ -219,16 +333,16 @@
           "type": "VARCHAR"
         }
       ],
-      "sample_query": "SELECT * FROM read_parquet('https://REPLACE-ME.r2.dev/bronze/group=bars/**/*.parquet', hive_partitioning=true)\nLIMIT 100;"
+      "sample_query": "SELECT *\nFROM read_parquet('https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev/bronze/group=bars/all.parquet')\nLIMIT 100;"
     },
     {
       "id": "series",
       "layer": "bronze",
       "group": "series",
-      "row_count": 304276,
+      "row_count": 307030,
       "freshness": {
-        "last": "2026-08-11T08:00:00.006000+00:00",
-        "age_hours": 10.5
+        "last": "2026-08-22T00:00:00+00:00",
+        "age_hours": 0.7
       },
       "schema": [
         {
@@ -256,16 +370,16 @@
           "type": "VARCHAR"
         }
       ],
-      "sample_query": "SELECT * FROM read_parquet('https://REPLACE-ME.r2.dev/bronze/group=series/**/*.parquet', hive_partitioning=true)\nLIMIT 100;"
+      "sample_query": "SELECT *\nFROM read_parquet('https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev/bronze/group=series/all.parquet')\nLIMIT 100;"
     },
     {
       "id": "events",
       "layer": "bronze",
       "group": "events",
-      "row_count": 33447,
+      "row_count": 33467,
       "freshness": {
-        "last": "2026-08-07T00:00:00+00:00",
-        "age_hours": 114.5
+        "last": "2026-08-20T00:00:00+00:00",
+        "age_hours": 48.7
       },
       "schema": [
         {
@@ -313,15 +427,26 @@
           "type": "VARCHAR"
         }
       ],
-      "sample_query": "SELECT * FROM read_parquet('https://REPLACE-ME.r2.dev/bronze/group=events/**/*.parquet', hive_partitioning=true)\nLIMIT 100;"
+      "sample_query": "SELECT *\nFROM read_parquet('https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev/bronze/group=events/all.parquet')\nLIMIT 100;"
+    },
+    {
+      "id": "microstructure",
+      "layer": "bronze",
+      "group": "microstructure",
+      "row_count": null,
+      "freshness": null,
+      "schema": null,
+      "partition_prefix": "https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev/bronze/group=microstructure/",
+      "notes": "Full tick + L2 archive, Hive-partitioned by source/kind/symbol/date. Unlike the other datasets it has no consolidated file \u2014 it is orders of magnitude larger than all of them combined \u2014 and plain HTTP offers no directory listing, so a `*` in the path will NOT expand: DuckDB rejects it outright. Reach it with a client that can list objects (the S3 API against the bucket, or duckdb's httpfs with S3 credentials), or address an exact object key. Kinds: trades, depth, book_ticker, snapshot, gaps, session (coinbase adds heartbeat). Prices and sizes are stored as strings exactly as the venue sent them; cast before comparing.",
+      "sample_query": null
     },
     {
       "id": "fct_bars_daily",
       "layer": "gold",
-      "row_count": 48677,
+      "row_count": 41412,
       "freshness": {
-        "last": "2026-08-11T00:00:00+00:00",
-        "age_hours": 18.5
+        "last": "2026-08-21T00:00:00+00:00",
+        "age_hours": 24.7
       },
       "schema": [
         {
@@ -397,15 +522,15 @@
           "type": "VARCHAR"
         }
       ],
-      "sample_query": "SELECT * FROM read_parquet('https://REPLACE-ME.r2.dev/gold/group=bars/mart=fct_bars_daily/data.parquet')\nLIMIT 100;"
+      "sample_query": "SELECT *\nFROM read_parquet('https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev/gold/group=bars/mart=fct_bars_daily/data.parquet')\nLIMIT 100;"
     },
     {
       "id": "fct_series_features",
       "layer": "gold",
-      "row_count": 304276,
+      "row_count": 307030,
       "freshness": {
-        "last": "2026-08-11T08:00:00.006000+00:00",
-        "age_hours": 10.5
+        "last": "2026-08-22T00:00:00+00:00",
+        "age_hours": 0.7
       },
       "schema": [
         {
@@ -453,15 +578,15 @@
           "type": "VARCHAR"
         }
       ],
-      "sample_query": "SELECT * FROM read_parquet('https://REPLACE-ME.r2.dev/gold/group=series/mart=fct_series_features/data.parquet')\nLIMIT 100;"
+      "sample_query": "SELECT *\nFROM read_parquet('https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev/gold/group=series/mart=fct_series_features/data.parquet')\nLIMIT 100;"
     },
     {
       "id": "fct_events_revisions",
       "layer": "gold",
-      "row_count": 4358,
+      "row_count": 4365,
       "freshness": {
-        "last": "2026-08-01T00:00:00+00:00",
-        "age_hours": 258.5
+        "last": "2026-08-15T00:00:00+00:00",
+        "age_hours": 168.7
       },
       "schema": [
         {
@@ -529,7 +654,7 @@
           "type": "VARCHAR"
         }
       ],
-      "sample_query": "SELECT * FROM read_parquet('https://REPLACE-ME.r2.dev/gold/group=events/mart=fct_events_revisions/data.parquet')\nLIMIT 100;"
+      "sample_query": "SELECT *\nFROM read_parquet('https://pub-4eb5f43e1359436fb0ce32dc47ce5cc6.r2.dev/gold/group=events/mart=fct_events_revisions/data.parquet')\nLIMIT 100;"
     }
   ]
 }
