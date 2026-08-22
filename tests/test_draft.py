@@ -300,3 +300,103 @@ def test_a_draft_sees_only_its_own_credential(tmp_path, monkeypatch):
 
     # and restored afterwards, or the rest of the process breaks
     assert os.environ.get("FRED_API_KEY") == "someone_elses"
+
+
+# --- the defect class the first six stages were blind to --------------------------
+
+
+HOLEY = GOOD.replace(
+    "        return df",
+    "        return df[[i % 5 != 0 for i in range(len(df))]]  # drops every fifth row",
+)
+
+
+def _long_frame_body(drop_every_fifth: bool) -> str:
+    """A draft covering a long window, optionally punching holes in it."""
+    keep = "[[i % 5 != 0 for i in range(len(df))]]" if drop_every_fifth else ""
+    return f'''
+class DraftIngestor(BaseIngestor):
+    def first_cursor(self, symbol, start, end, interval):
+        return start
+
+    def fetch_page(self, symbol, cursor, start, end, interval):
+        return RawPage(rows=[(start, end)], next_cursor=None)
+
+    def normalize(self, rows):
+        start, end = rows[0]
+        idx = pd.bdate_range("2024-01-01", periods=120, freq="C", tz="UTC")
+        n = len(idx)
+        df = pd.DataFrame(
+            {{"open": [10.0] * n, "high": [11.0] * n, "low": [9.0] * n,
+              "close": [10.5] * n, "volume": [100.0] * n}},
+            index=pd.DatetimeIndex(idx, name="date"),
+        )
+        if start:
+            df = df[df.index >= pd.Timestamp(start, tz="UTC")]
+        if end:
+            df = df[df.index <= pd.Timestamp(end, tz="UTC")]
+        return df{keep}
+'''
+
+
+def test_an_ingestor_that_silently_drops_rows_is_caught(tmp_path):
+    """The defect every other stage is blind to.
+
+    Values are all real, the range is honoured, two pulls agree exactly, and a peer
+    comparison only ever sees the dates BOTH sides have. Six stages inspected what was
+    returned; none asked what was missing — so this passed with a fifth of the history
+    gone. Verified against the live API before the fix: 99 rows where 124 existed.
+    """
+    report = run_gauntlet(
+        _write(tmp_path, _long_frame_body(drop_every_fifth=True)),
+        _spec(), "XYZ", "2024-01-01", "2024-06-14", isolation="in-process",
+    )
+    failed = [st.name for st in report.failures]
+    assert "completeness" in failed, report.summary()
+
+
+def test_a_complete_ingestor_passes_completeness(tmp_path):
+    report = run_gauntlet(
+        _write(tmp_path, _long_frame_body(drop_every_fifth=False)),
+        _spec(), "XYZ", "2024-01-01", "2024-06-14", isolation="in-process",
+    )
+    completeness = next(st for st in report.stages if st.name == "completeness")
+    assert completeness.passed and not completeness.skipped, completeness.detail
+
+
+def test_a_stage_that_did_not_run_is_not_reported_as_passing(tmp_path):
+    """`pagination` reported "passed" when it had never been exercised.
+
+    Same conflation the rest of the platform refuses: absence of evidence and
+    evidence of absence must not look identical.
+    """
+    report = run_gauntlet(
+        _write(tmp_path, GOOD), _spec(), "XYZ",
+        "2024-01-01", "2024-01-08", isolation="in-process",
+    )
+    pagination = next(st for st in report.stages if st.name == "pagination")
+    assert pagination.skipped, "a source with nothing to page did not exercise the walk"
+    assert not report.complete, "a run with an unexercised stage is not complete"
+    assert "not exercised" in report.summary()
+    assert "SKIP" in report.summary()
+
+
+def test_an_unreachable_peer_is_not_agreement(tmp_path, monkeypatch):
+    # cross_source returned passed=True when it could not compare at all, so a frame
+    # nothing had checked read as corroborated.
+    import qde.draft as draft
+
+    def _boom(*a, **k):
+        raise RuntimeError("peer down")
+
+    monkeypatch.setattr(draft, "_stage_completeness",
+                        lambda *a, **k: draft.Stage("completeness", True, "n/a", skipped=True))
+    monkeypatch.setattr("qde.verify.cross_check", _boom)
+
+    report = run_gauntlet(
+        _write(tmp_path, GOOD), _spec(), "XYZ",
+        "2024-01-01", "2024-01-08", isolation="in-process",
+    )
+    cross = next(st for st in report.stages if st.name == "cross_source")
+    assert cross.skipped, "an unreachable peer is unverified, not agreement"
+    assert not report.complete

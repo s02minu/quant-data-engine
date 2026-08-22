@@ -85,6 +85,11 @@ class Stage:
     # A failed blocking stage stops the run: there is no sense asking whether the
     # frame is plausible when the module did not import.
     blocking: bool = False
+    # True when the stage did not actually run. `passed` stays True so it does not
+    # read as a defect, but the report refuses to call the run complete. A stage
+    # that could not run is NOT a stage that passed — conflating them is how this
+    # harness reported PASS on an ingestor silently missing a fifth of its history.
+    skipped: bool = False
 
 
 @dataclass
@@ -102,13 +107,32 @@ class GauntletReport:
     def failures(self) -> list[Stage]:
         return [s for s in self.stages if not s.passed]
 
+    @property
+    def unexercised(self) -> list[Stage]:
+        """Stages that did not run.
+
+        A caller deciding whether to trust a draft has to see these: a green report
+        resting on five checks and two shrugs is not the same evidence as one
+        resting on seven.
+        """
+        return [s for s in self.stages if s.skipped]
+
+    @property
+    def complete(self) -> bool:
+        """Every stage ran and none found a defect."""
+        return self.passed and not self.unexercised
+
     def summary(self) -> str:
-        lines = [
-            f"{'PASS' if self.passed else 'FAIL'}  {self.source}/{self.symbol} "
-            f"[{self.group}]"
-        ]
+        if not self.passed:
+            headline = "FAIL"
+        elif self.unexercised:
+            headline = f"PASS ({len(self.unexercised)} stage(s) not exercised)"
+        else:
+            headline = "PASS"
+        lines = [f"{headline}  {self.source}/{self.symbol} [{self.group}]"]
         for s in self.stages:
-            lines.append(f"  {'ok  ' if s.passed else 'FAIL'}  {s.name:<13} {s.detail}")
+            mark = "SKIP" if s.skipped else ("ok  " if s.passed else "FAIL")
+            lines.append(f"  {mark}  {s.name:<13} {s.detail}")
         return "\n".join(lines)
 
 
@@ -311,7 +335,7 @@ def _stage_range(ingestor, symbol: str, interval: str, frame: pd.DataFrame) -> S
     already known to exist, a correct one answers narrowly.
     """
     if len(frame) < 6 or not isinstance(frame.index, pd.DatetimeIndex):
-        return Stage("range", True, "skipped: too few rows to carve a sub-window")
+        return Stage("range", True, "too few rows to carve a sub-window", skipped=True)
 
     ordered = frame.index.sort_values()
     lo, hi = ordered[1], ordered[min(3, len(ordered) - 1)]
@@ -341,14 +365,112 @@ def _stage_pagination(spec: SourceSpec, frame: pd.DataFrame) -> Stage:
     """
     cap = spec.max_rows_per_call
     if cap is None:
-        return Stage("pagination", True, "skipped: source returns its whole range in one call")
+        return Stage("pagination", True,
+                     "source returns its whole range in one call; nothing to page",
+                     skipped=True)
     if len(frame) <= cap:
         return Stage(
             "pagination", True,
-            f"not exercised: {len(frame)} row(s) fits one {cap}-row page — widen the "
-            "window to prove the walk",
+            f"{len(frame)} row(s) fits one {cap}-row page, so the walk was never "
+            "exercised — widen the window to prove it",
+            skipped=True,
         )
     return Stage("pagination", True, f"walked {len(frame)} rows past a {cap}-row page limit")
+
+
+# A hole is legitimate: exchanges close, instruments halt, holidays exist. What is
+# not legitimate is a SYSTEMATIC shortfall. Measured against a peer these bars are
+# 2-4% short of the trading calendar (US market holidays); an ingestor dropping every
+# fifth row is 20% short. The two do not overlap, so the bar sits between them.
+_MAX_MISSING_VS_PEER = 0.05
+_MAX_MISSING_VS_CALENDAR = 0.12
+
+
+def _stage_completeness(frame, group: str, source: str, symbol: str, interval: str) -> Stage:
+    """Does the frame contain the rows it should, or only correct ones?
+
+    The defect class every other stage is blind to. A deterministic ingestor that
+    silently drops every fifth bar returns nothing but real values, honours its date
+    range, agrees with itself on a second pull, and matches a peer perfectly — because
+    a peer comparison only ever sees the dates BOTH sides have. Six stages inspected
+    what was returned; none asked what was missing.
+
+    Two ways to see a hole, strongest first:
+
+    1. **Against a peer's calendar.** Another source covering the same window knows
+       which days traded. Dates the peer has and the candidate does not are holes,
+       and this catches them even when every returned value is impeccable.
+    2. **Against the business calendar.** With no peer, weekdays are the fallback.
+       Looser, because market holidays are legitimately absent — roughly ten a year,
+       so a few percent of any window.
+    """
+    if group != "bars" or frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
+        return Stage("completeness", True, "not a dated bars frame", skipped=True)
+    if interval != "1d":
+        return Stage("completeness", True, "only daily bars have a known calendar",
+                     skipped=True)
+
+    lo, hi = frame.index.min(), frame.index.max()
+    ours = set(frame.index.normalize())
+
+    from qde.registry import declared_series
+
+    peers = sorted(
+        {
+            src
+            for src, sym, iv in declared_series(group="bars")
+            if sym == symbol and iv == interval and src != source
+        }
+    )
+    for peer in peers:
+        try:
+            from qde.loaders import load_ohlcv
+
+            other = load_ohlcv(
+                symbol, start=str(lo.date()), end=str(hi.date()),
+                interval=interval, source=peer,
+            )
+        except Exception:
+            continue
+        if other.empty or not isinstance(other.index, pd.DatetimeIndex):
+            continue
+        theirs = {d for d in other.index.normalize() if lo <= d <= hi}
+        if len(theirs) < 20:
+            continue
+        missing = sorted(theirs - ours)
+        share = len(missing) / len(theirs)
+        if share > _MAX_MISSING_VS_PEER:
+            return Stage(
+                "completeness", False,
+                f"{len(missing)} of {len(theirs)} dates that {peer} reports for this "
+                f"window are absent ({share:.0%}, e.g. {missing[0].date()}) — the "
+                "values returned are fine; it is the rows that are not there",
+            )
+        return Stage(
+            "completeness", True,
+            f"covers {len(theirs) - len(missing)}/{len(theirs)} of the dates {peer} "
+            "reports",
+        )
+
+    # No peer answered: fall back to the weekday calendar.
+    weekdays = {d for d in pd.bdate_range(lo, hi, tz=frame.index.tz)}
+    if len(weekdays) < 20:
+        return Stage("completeness", True, "window too short to judge coverage",
+                     skipped=True)
+    missing = sorted(weekdays - ours)
+    share = len(missing) / len(weekdays)
+    if share > _MAX_MISSING_VS_CALENDAR:
+        return Stage(
+            "completeness", False,
+            f"{len(missing)} of {len(weekdays)} weekdays in the window are absent "
+            f"({share:.0%}, e.g. {missing[0].date()}) — far beyond the ~4% a holiday "
+            "calendar explains",
+        )
+    return Stage(
+        "completeness", True,
+        f"{len(weekdays) - len(missing)}/{len(weekdays)} weekdays present "
+        "(no peer available; judged against the business calendar)",
+    )
 
 
 def _stage_cross_source(frame: pd.DataFrame, group: str, source: str, symbol: str,
@@ -359,21 +481,24 @@ def _stage_cross_source(frame: pd.DataFrame, group: str, source: str, symbol: st
     wrong — the wrong ticker, the wrong units, an index instead of the ETF.
     """
     if group != "bars":
-        return Stage("cross_source", True, "skipped: only bars have cross-source peers")
+        return Stage("cross_source", True, "only bars have cross-source peers", skipped=True)
 
     from qde.verify import cross_check
 
     try:
         violations = cross_check(frame, symbol, source, interval)
     except Exception as exc:
-        return Stage("cross_source", True, f"skipped: {type(exc).__name__}: {exc}")
+        return Stage("cross_source", True,
+                     f"could not compare against a peer ({type(exc).__name__}: {exc})",
+                     skipped=True)
 
     errors = [v for v in violations if v.severity == "error"]
     if errors:
         return Stage("cross_source", False, errors[0].detail)
     if violations:
-        # "No peer carries this symbol" is a warn by design — unverifiable, not wrong.
-        return Stage("cross_source", True, violations[0].detail)
+        # "No peer carries this symbol" is unverifiable, not agreement. Reported as a
+        # pass, it let a frame missing a fifth of its history read as corroborated.
+        return Stage("cross_source", True, violations[0].detail, skipped=True)
     return Stage("cross_source", True, "agreed with an independent source")
 
 
@@ -428,6 +553,9 @@ def run_stages_in_process(
         report.stages.append(_stage_determinism(ingestor, symbol, start, end, interval, frame))
         report.stages.append(_stage_range(ingestor, symbol, interval, frame))
         report.stages.append(_stage_pagination(spec, frame))
+        report.stages.append(
+            _stage_completeness(frame, spec.group, spec.name, symbol, interval)
+        )
 
     # Outside the scope: this one compares against an ALREADY-TRUSTED source, so it
     # needs that source's credentials rather than the candidate's.
