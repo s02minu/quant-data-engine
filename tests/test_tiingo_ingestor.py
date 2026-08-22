@@ -67,3 +67,35 @@ def test_the_index_is_utc_normalised():
 
 def test_an_empty_response_returns_an_empty_frame():
     assert _normalize([]).empty
+
+
+def test_an_unparseable_date_is_raised_not_quietly_dropped():
+    """A malformed record must not become missing history.
+
+    The first version coerced the date and filtered the failures out. The frame that
+    came back was shorter, entirely coherent, and carried no trace of what had gone --
+    and a day that is absent because the record was broken looks exactly like a day the
+    market was shut. Nothing downstream can tell those apart after the fact.
+    """
+    import pytest
+
+    with pytest.raises(ValueError) as excinfo:
+        _normalize([
+            _record(),
+            _record(date="not-a-date"),
+            _record(date="2025-12-08T00:00:00.000Z"),
+        ])
+
+    detail = str(excinfo.value)
+    assert "1 of 3" in detail, detail
+    assert "not-a-date" in detail, "the message must show which value failed"
+
+
+def test_a_well_formed_batch_is_unaffected_by_the_new_guard():
+    frame = _normalize([
+        _record(date="2025-12-05T00:00:00.000Z"),
+        _record(date="2025-12-08T00:00:00.000Z"),
+    ])
+    assert len(frame) == 2
+    assert str(frame.index.tz) == "UTC"
+    assert frame.index.is_monotonic_increasing

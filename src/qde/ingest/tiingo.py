@@ -74,7 +74,27 @@ class TiingoIngestor(BaseIngestor):
 
         # Tiingo stamps midnight UTC with an explicit Z; normalise so the index is a
         # plain UTC date like every other bars source in the lake.
-        index = pd.to_datetime(frame["date"], utc=True, errors="coerce").dt.normalize()
+        #
+        # An unparseable date is raised, never dropped. `errors="coerce"` followed by a
+        # `notna()` filter -- what this did first -- turns a malformed record into a day
+        # that simply is not there, and a missing day is indistinguishable from a day the
+        # market was shut. That is the one confusion this platform refuses to ship: the
+        # row count still looks plausible, every remaining row is coherent, and no check
+        # downstream can see what was removed.
+        #
+        # Prices are treated differently on purpose. A price that will not parse becomes
+        # NaN and STAYS in the frame, where `null_tolerance` sees it -- a visible null is
+        # evidence, a vanished row is not.
+        parsed = pd.to_datetime(frame["date"], utc=True, errors="coerce")
+        if bool(parsed.isna().any()):
+            bad = frame.loc[parsed.isna(), "date"]
+            raise ValueError(
+                f"{len(bad)} of {len(frame)} tiingo row(s) carry an unparseable date "
+                f"(e.g. {bad.head(3).tolist()!r}) — refusing to drop them, because "
+                "silently removed rows and days the market was shut look identical "
+                "once they are gone"
+            )
+        index = parsed.dt.normalize()
 
         # The adj* set throughout — never mixed with the raw set. Taking an adjusted
         # close alongside a raw high produces a frame where `high < close`, which is
@@ -89,4 +109,4 @@ class TiingoIngestor(BaseIngestor):
             }
         )
         out.index = pd.DatetimeIndex(index, name="date")
-        return out[out.index.notna()].sort_index()
+        return out.sort_index()
