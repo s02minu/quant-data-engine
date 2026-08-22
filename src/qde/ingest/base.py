@@ -30,6 +30,7 @@ from typing import Any
 
 import pandas as pd
 
+from qde.loaders import budget
 from qde.loaders.exceptions import NoNewData
 from qde.registry.spec import SourceSpec
 
@@ -150,7 +151,12 @@ class BaseIngestor(ABC):
                 )
 
             _throttle(self.spec.name, self.spec.rate_limit_per_min)
-            page = self.fetch_page(symbol, cursor, start, end, interval)
+            # The hourly budget is charged inside get_with_requests rather than here,
+            # so retries are counted too; this only says whose budget it is. Set at
+            # the base rather than in each fetch_page so a source added tomorrow is
+            # metered without anyone remembering to wire it.
+            with budget.fetching(self.spec.name):
+                page = self.fetch_page(symbol, cursor, start, end, interval)
             rows.extend(page.rows)
             cursor = page.next_cursor
 

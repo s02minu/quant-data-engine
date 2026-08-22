@@ -92,7 +92,8 @@ class SourceSpec(BaseModel):
     symbols: list[str]
     granularity: str
     max_rows_per_call: int
-    rate_limit_per_min: int
+    rate_limit_per_min: int  # paces one run
+    rate_limit_per_hour: int  # the provider's own quota; enforced across processes
     expected_daily_rows: int  # DQ: row-count anomaly threshold
     null_tolerance: dict[str, float]
     freshness_sla_minutes: int

@@ -223,15 +223,21 @@ _SPECS: list[SourceSpec] = [
         intervals=["1d"],
         # The whole requested range comes back in one response; no pagination.
         max_rows_per_call=None,
-        # The free tier allows roughly 50 requests an hour, and one nightly pass over
-        # these 27 symbols is 27 requests — so a BURST is fine and only repetition
-        # within the same hour is not. This paces against a runaway loop rather than
-        # trying to express an hourly budget as a per-minute one: at 20/min a full
-        # pass takes about eighty seconds, where the arithmetically "correct" 1/min
-        # would have made the nightly sleep for twenty-seven minutes to solve a
-        # problem that does not occur. Genuine 429s are still absorbed by the
-        # retry/backoff in qde.loaders.http.
+        # Two different jobs, so two different fields.
+        #
+        # Per-minute paces a BURST: at 20/min a full 27-symbol pass takes about eighty
+        # seconds, where the arithmetically "correct" 1/min would make the nightly
+        # sleep twenty-seven minutes to solve a problem that does not occur.
+        #
+        # Per-hour is the quota Tiingo actually counts — 50/hour on the free tier,
+        # from their pricing page. One nightly pass is 27 requests and fits; a second
+        # pass in the same hour does not. Expressing that as a per-minute number is
+        # not possible, and for a while this comment claimed the burst limit covered
+        # it, which it never did: the spacing state was a dict in one process, so a
+        # second container simply started spending again from zero. qde.loaders.budget
+        # holds the hourly count on disk, where the next process can see it.
         rate_limit_per_min=20,
+        rate_limit_per_hour=50,
         expected_daily_rows=1,  # equities: a market-closed day legitimately adds zero
         null_tolerance=_OHLCV_NO_NULLS,
         # DELIBERATELY FALSE, pending a licensing decision. The free tier is
@@ -553,6 +559,7 @@ def dim_sources() -> pd.DataFrame:
             "intervals": ", ".join(spec.intervals),
             "max_rows_per_call": spec.max_rows_per_call,
             "rate_limit_per_min": spec.rate_limit_per_min,
+            "rate_limit_per_hour": spec.rate_limit_per_hour,
             "expected_daily_rows": spec.expected_daily_rows,
             "freshness_sla_minutes": spec.freshness_sla_minutes,
             "redistributable": spec.redistributable,

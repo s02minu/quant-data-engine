@@ -343,3 +343,17 @@ def _no_rate_limit_sleep(monkeypatch):
 
     monkeypatch.setattr(base.time, "sleep", lambda _seconds: None)
     base._LAST_CALL.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_rate_budget(tmp_path, monkeypatch):
+    """Keep every test's request accounting inside its own tmp dir.
+
+    Autouse and unconditional. The budget ledger defaults to ``data/.state`` beside
+    the lake, so without this a test that fetches from a metered source would write
+    into the developer's real ``data/`` -- and worse, read a previous run's spend back
+    and fail for reasons that have nothing to do with the test. The suite has already
+    been bitten once by a test reading the developer's ``data/``; this closes the same
+    door before it opens.
+    """
+    monkeypatch.setenv("QDE_STATE_DIR", str(tmp_path / "state"))

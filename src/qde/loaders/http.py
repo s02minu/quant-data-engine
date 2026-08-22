@@ -4,6 +4,8 @@ import time
 
 import requests
 
+from qde.loaders import budget
+
 # (connect, read) in seconds. A request without a timeout waits *forever* on a
 # connection that opens and then goes silent — the socket stays half-open, requests
 # blocks, and the nightly simply never finishes. Nothing raises, nothing alerts, and
@@ -12,8 +14,15 @@ import requests
 _TIMEOUT = (10, 60)
 
 
-def get_with_requests(url, params, max_retries=4, timeout=_TIMEOUT):
+def get_with_requests(url, params, max_retries=4, timeout=_TIMEOUT, source=None):
     """Make a GET request, retrying on temporary failure.
+
+    Every attempt is charged to the source's hourly budget before it is made --
+    retries included. A 429 means the allowance is already gone, so the old
+    behaviour of retrying four times *outside* any accounting spent four more
+    requests proving a limit that had already been proven. ``source`` is normally
+    left unset and taken from the fetch context ``BaseIngestor`` establishes; a
+    source declaring no hourly limit is charged nothing.
 
     Retries rate limits (429), server errors (5xx), and transport failures
     (timeout, connection reset, DNS blip) with exponential backoff. A client error
@@ -33,8 +42,13 @@ def get_with_requests(url, params, max_retries=4, timeout=_TIMEOUT):
         ValueError: retries exhausted, or a permanent client error.
     """
     last_error = None
+    metered = source or budget.current_source()
 
     for attempt in range(max_retries):
+        # Charged before the socket opens, so a request that is made is a request
+        # that was counted. Charging on success instead would let a run of 429s --
+        # the very thing the quota produces -- pass through unmetered.
+        budget.consume(metered)
         try:
             response = requests.get(url, params=params, timeout=timeout)
         except requests.exceptions.RequestException as exc:

@@ -36,6 +36,10 @@ class SourceSpec(BaseModel):
         intervals: Bar sizes the source is configured to serve, e.g. ``["1d"]``.
         max_rows_per_call: Page size for a paginated pull, or ``None`` for a
             source that returns a whole range in one request (yfinance).
+        rate_limit_per_hour: Requests allowed per clock hour, or ``None``. Unlike
+            ``rate_limit_per_min`` -- which paces one run and forgets -- this is
+            enforced across processes and containers by ``qde.loaders.budget``,
+            because the quota it represents is one the source counts too.
         rate_limit_per_min: Requests allowed per minute, or ``None`` if the
             source is not meaningfully rate-limited for this usage.
         expected_daily_rows: Rows a healthy series gains per active day, per
@@ -66,6 +70,7 @@ class SourceSpec(BaseModel):
     intervals: list[str] = Field(default_factory=lambda: ["1d"])
     max_rows_per_call: int | None = None
     rate_limit_per_min: int | None = None
+    rate_limit_per_hour: int | None = None
     expected_daily_rows: int = 1
     null_tolerance: dict[str, float] = Field(default_factory=dict)
     freshness_sla_minutes: int = 24 * 60 + 60  # a daily bar, plus an hour of slack
