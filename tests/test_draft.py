@@ -10,6 +10,7 @@ Offline: the fake ingestors serve frames from memory, so nothing touches a netwo
 import os
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from qde.draft import GauntletReport, load_candidate, run_gauntlet
@@ -435,3 +436,68 @@ def test_the_peer_threshold_reflects_what_honest_sources_actually_do():
     assert _MAX_MISSING_VS_CALENDAR > _MAX_MISSING_VS_PEER, (
         "the calendar fallback must be looser — market holidays are legitimately absent"
     )
+
+
+# --- scalar series have no trading calendar, so they are judged on their own rhythm --
+
+
+def _series_frame(periods: int, freq: str, drop_every: int | None = None):
+    idx = pd.date_range("2010-01-04", periods=periods, freq=freq, tz="UTC", name="date")
+    frame = pd.DataFrame({"value": range(periods)}, index=idx)
+    if drop_every:
+        frame = frame[[i % drop_every != 0 for i in range(len(frame))]]
+    return frame
+
+
+@pytest.mark.parametrize("freq", ["D", "W-TUE", "MS", "QS"])
+def test_an_honest_series_of_any_cadence_passes(freq):
+    """Daily, weekly, monthly and quarterly all have to pass without being told which.
+
+    The registry does not record a series' cadence, so the check reads it from the
+    series itself. Validated against all 50 stored series: 49 clean, and the single
+    flag was a real nine-year hole in CFTC's Russell 2000 history.
+    """
+    from qde.draft import _stage_series_completeness
+
+    stage = _stage_series_completeness(_series_frame(120, freq), "fred", "X")
+    assert stage.passed, stage.detail
+
+
+def test_weekends_are_not_mistaken_for_missing_observations():
+    # A business-daily series skips Saturday and Sunday legitimately. Without the
+    # weekday correction that reads as two holes a week — about 28% of the series,
+    # dwarfing any real defect.
+    from qde.draft import _stage_series_completeness
+
+    stage = _stage_series_completeness(_series_frame(250, "B"), "cboe", "VIX")
+    assert stage.passed, stage.detail
+
+
+@pytest.mark.parametrize("freq", ["D", "W-TUE", "MS"])
+def test_a_series_dropping_every_fifth_observation_is_caught(freq):
+    from qde.draft import _stage_series_completeness
+
+    stage = _stage_series_completeness(_series_frame(150, freq, drop_every=5), "fred", "X")
+    assert not stage.passed, stage.detail
+    assert "missing" in stage.detail
+
+
+def test_a_long_hole_in_a_weekly_series_is_caught():
+    # The shape of the real find: CFTC's RTY carries 464 consecutive missing weeks
+    # (2008-09-16 to 2017-08-15) while ES and NQ are complete over the same window.
+    from qde.draft import _stage_series_completeness
+
+    early = _series_frame(60, "W-TUE")
+    late = pd.DataFrame(
+        {"value": range(60)},
+        index=pd.date_range("2020-01-07", periods=60, freq="W-TUE", tz="UTC", name="date"),
+    )
+    stage = _stage_series_completeness(pd.concat([early, late]), "cftc", "RTY")
+    assert not stage.passed, stage.detail
+
+
+def test_too_short_a_series_is_skipped_not_guessed_at():
+    from qde.draft import _stage_series_completeness
+
+    stage = _stage_series_completeness(_series_frame(6, "MS"), "fred", "X")
+    assert stage.skipped and stage.passed

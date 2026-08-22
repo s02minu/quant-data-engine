@@ -392,6 +392,92 @@ _MAX_MISSING_VS_PEER = 0.01
 _MAX_MISSING_VS_CALENDAR = 0.12
 
 
+# A scalar series has no business calendar to check against — cadences run daily,
+# weekly, monthly and quarterly, and the registry does not record which. So the
+# reference is the series' OWN modal spacing: whatever gap it usually shows is what a
+# complete series looks like, and a gap that is a clean multiple of it means
+# observations are missing. Measured across all 50 stored series, an honest one shows
+# under 5% unexplained; the threshold sits above that and well below a systematic drop.
+_MAX_MISSING_SERIES = 0.10
+
+
+def _implied_missing(index: pd.DatetimeIndex) -> tuple[int, int, pd.Timestamp | None]:
+    """Observations a series appears to be missing, judged by its own rhythm.
+
+    Returns ``(implied_missing, total_expected, first_hole)``.
+
+    Weekends are subtracted for daily-cadence series only. A daily series skips
+    Saturday and Sunday legitimately, which without this correction reads as two
+    missing observations every week — roughly 28% of the series, dwarfing any real
+    defect. A weekly or monthly series needs no such correction: its modal gap
+    already spans whole weekends.
+    """
+    if len(index) < 12:
+        return 0, len(index), None
+
+    ordered = index.sort_values()
+    gaps = pd.Series(ordered).diff().dropna()
+    if gaps.empty:
+        return 0, len(index), None
+
+    modal = gaps.mode()
+    if modal.empty or modal.iloc[0] <= pd.Timedelta(0):
+        return 0, len(index), None
+    typical = modal.iloc[0]
+    daily = typical <= pd.Timedelta(days=1)
+
+    implied, first_hole = 0, None
+    for start_ts, gap in zip(ordered[:-1], gaps, strict=True):
+        if gap <= typical * 1.5:
+            continue
+        # Rounded, not truncated. A month is 28-31 days while `typical` is one fixed
+        # Timedelta, so a single dropped monthly observation lands anywhere in
+        # 1.9-2.2 times the mode -- truncation floors all of it to 1 and reports the
+        # hole as zero. The 1.5x guard above already absorbs honest calendar
+        # variation, so rounding here cannot turn a short February into a defect.
+        skipped = pd.date_range(
+            start_ts + typical, periods=max(round(gap / typical) - 1, 0), freq=typical
+        )
+        if daily:
+            skipped = skipped[skipped.dayofweek < 5]
+        if len(skipped):
+            implied += len(skipped)
+            first_hole = first_hole or skipped[0]
+    return implied, len(index) + implied, first_hole
+
+
+def _stage_series_completeness(frame, source: str, series_id: str) -> Stage:
+    """Does a scalar series contain the observations it should?
+
+    The bars completeness check leans on a trading calendar and a peer carrying the
+    same symbol. A scalar series has neither — each `series_id` usually exists at
+    exactly one source — so this reads the series' own cadence instead. An ingestor
+    dropping every fifth observation turns a run of equal gaps into a run of doubled
+    ones, which is visible without knowing anything about what the series measures.
+    """
+    if frame is None or frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
+        return Stage("completeness", True, "not a dated series frame", skipped=True)
+
+    missing, expected, first_hole = _implied_missing(frame.index)
+    if expected < 12:
+        return Stage("completeness", True, "too few observations to infer a cadence",
+                     skipped=True)
+    share = missing / expected if expected else 0.0
+    where = first_hole.date() if first_hole is not None else "?"
+    if share > _MAX_MISSING_SERIES:
+        return Stage(
+            "completeness", False,
+            f"{missing} observation(s) appear to be missing out of an expected "
+            f"{expected} ({share:.0%}, first around {where}) "
+            "— the values present are fine; the series has holes in its own cadence",
+        )
+    return Stage(
+        "completeness", True,
+        f"{len(frame.index)} observations follow the series' own cadence "
+        f"({share:.0%} unexplained)",
+    )
+
+
 def _stage_completeness(
     frame, group: str, source: str, symbol: str, interval: str,
     start: str, end: str | None,
@@ -413,6 +499,8 @@ def _stage_completeness(
        Looser, because market holidays are legitimately absent — roughly ten a year,
        so a few percent of any window.
     """
+    if group == "series":
+        return _stage_series_completeness(frame, source, symbol)
     if group != "bars" or frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
         return Stage("completeness", True, "not a dated bars frame", skipped=True)
     if interval != "1d":
