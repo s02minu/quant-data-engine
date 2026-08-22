@@ -532,7 +532,27 @@ def _run_in_container(
 
     key = f"{spec.name.upper()}_API_KEY"
     argv = [
-        "docker", "run", "--rm", "--network", "bridge",
+        "docker", "run", "--rm",
+        # Unprivileged. The image has no USER directive, so without this the
+        # candidate would run as root inside the container — and root plus default
+        # capabilities is the starting position for most container escapes.
+        "--user", "65534:65534",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        # Nothing on disk survives, and nothing can be written except scratch space.
+        # pandas and pyarrow need a writable temp dir, so /tmp is a tmpfs rather than
+        # the image filesystem, and HOME points at it for libraries that cache there.
+        "--read-only",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
+        "-e", "HOME=/tmp",
+        # A hostile or merely buggy draft must not be able to take the box down —
+        # this host also runs the 24/7 collectors.
+        "--pids-limit", "256",
+        "--memory", "2g",
+        # Network stays ON: the whole point is fetching from a real API, so
+        # exfiltration remains possible. What the sandbox removes is anything worth
+        # exfiltrating — no secrets mount, one credential, no persistence.
+        "--network", "bridge",
         "-v", f"{module_path.resolve().as_posix()}:/draft/candidate.py:ro",
         "-e", key,
         DOCKER_IMAGE,

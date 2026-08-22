@@ -232,12 +232,30 @@ def test_the_sandbox_command_is_built_without_a_secrets_mount(tmp_path, monkeypa
     run_gauntlet(_write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01")
 
     argv = captured["argv"]
+
+    # The only thing from the host filesystem is the draft itself, read-only.
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
     assert len(mounts) == 1 and mounts[0].endswith("candidate.py:ro"), mounts
     assert not any("secrets" in m for m in mounts), "secrets must never be mounted"
+
+    # Exactly one credential crosses in; HOME is scratch space, not a secret.
     envs = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
-    assert envs == ["DRAFTCO_API_KEY"], f"only the source's own credential: {envs}"
+    assert "DRAFTCO_API_KEY" in envs
+    assert not [e for e in envs if "KEY" in e and e != "DRAFTCO_API_KEY"], envs
+    assert not [e for e in envs if "SECRET" in e or "TOKEN" in e], envs
+
+    # Hardening: the image has no USER directive, so without --user the candidate
+    # would run as root with full capabilities — the starting position for most
+    # container escapes. The limits exist because this host runs the collectors.
     assert "--rm" in argv, "the container filesystem must be disposable"
+    assert argv[argv.index("--user") + 1] == "65534:65534", "must not run as root"
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+    assert "--read-only" in argv
+    assert argv[argv.index("--pids-limit") + 1] == "256", "no fork bomb"
+    assert argv[argv.index("--memory") + 1] == "2g"
+    assert "-v" not in [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert "/var/run/docker.sock" not in " ".join(argv), "never mount the docker socket"
 
 
 def test_a_draft_reaching_for_sockets_is_refused_before_execution(tmp_path):
