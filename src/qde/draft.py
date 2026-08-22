@@ -377,16 +377,19 @@ def _stage_cross_source(frame: pd.DataFrame, group: str, source: str, symbol: st
     return Stage("cross_source", True, "agreed with an independent source")
 
 
-def run_gauntlet(
+def run_stages_in_process(
     module_path: str | Path,
     spec: SourceSpec,
     symbol: str,
     start: str,
     end: str | None = None,
     interval: str = "1d",
-    trusted: bool = False,
 ) -> GauntletReport:
-    """Put a drafted ingestor through every check the platform can apply.
+    """Run every stage IN THIS PROCESS. Prefer :func:`run_gauntlet`.
+
+    Public because it is what executes inside the sandbox container, and because the
+    project's own already-trusted ingestors are verified with it directly. Calling it
+    on a draft you did not write executes that draft as you.
 
     Args:
         module_path: the drafted module, normally under :data:`QUARANTINE`.
@@ -401,43 +404,8 @@ def run_gauntlet(
     """
     report = GauntletReport(source=spec.name, symbol=symbol, group=spec.group)
 
-    # Refuse before parsing anything. Proving a draft means running it, and running
-    # it means executing whatever is in the file with this process's filesystem and
-    # network. That is a decision, so it has to be made explicitly rather than
-    # inherited from calling a function named "verify".
-    if not trusted:
-        report.stages.append(
-            Stage(
-                "trust", False,
-                "refusing to execute an unvetted draft: importing it runs its "
-                "top-level code as you. Pass trusted=True (CLI: --trust-this-draft) "
-                "only for code you would run by hand, or run the gauntlet inside the "
-                "container where the blast radius is a throwaway filesystem.",
-                blocking=True,
-            )
-        )
-        return report
-
-    # Cheap refusal for the obvious cases, before exec_module. Not a security
-    # boundary — a string concatenation walks past it — but the careless draft
-    # should fail loudly rather than run.
-    try:
-        smells = screen_source(module_path)
-    except SyntaxError as exc:
-        report.stages.append(Stage("screen", False, f"will not parse: {exc}", blocking=True))
-        return report
-    if smells:
-        report.stages.append(
-            Stage(
-                "screen", False,
-                "an ingestor needs HTTP, pandas and the registry, nothing else — "
-                + "; ".join(smells[:4]),
-                blocking=True,
-            )
-        )
-        return report
-    report.stages.append(Stage("screen", True, "no forbidden imports or calls"))
-
+    # No screen here: `run_gauntlet` screens on the host before a container is even
+    # started, and the in-container path is reached only after it passed.
     stage, cls = _stage_contract(module_path)
     report.stages.append(stage)
     if not stage.passed or cls is None:
@@ -519,6 +487,143 @@ class {cls}(BaseIngestor):
 '''
 
 
+DOCKER_IMAGE = "qde-collector"
+
+
+def _docker_available() -> bool:
+    import subprocess  # noqa: S404 - invoking the local docker client, not user input
+
+    try:
+        return (
+            subprocess.run(
+                ["docker", "info"], capture_output=True, timeout=20, check=False
+            ).returncode
+            == 0
+        )
+    except Exception:
+        return False
+
+
+def _run_in_container(
+    module_path: Path, spec: SourceSpec, symbol: str, start: str,
+    end: str | None, interval: str,
+) -> GauntletReport:
+    """Execute the gauntlet inside a disposable container and bring the report back.
+
+    What this actually contains, and why each part is there:
+
+    - **A throwaway filesystem.** ``--rm`` and no bind mount except the draft itself,
+      read-only. A hostile draft cannot reach ``secrets/``, because the directory is
+      simply not there — unlike a subprocess, which would run as the same user with
+      the same filesystem and contain nothing at all.
+    - **One credential.** Only the source's own key is passed through, so a compromise
+      costs the secret the draft was already trusted with and nothing else.
+    - **Network, deliberately.** The whole point is to fetch from a real API, so the
+      container has to reach the internet. Exfiltration is therefore still possible —
+      what the sandbox removes is access to anything worth exfiltrating.
+
+    Isolation is the DEFAULT rather than a flag on purpose. Requiring a human to
+    approve each execution would put the reviewer back in the loop that this module
+    exists to remove: an agent iterating against the gauntlet would either need a
+    person for every attempt, or would pass the flag itself, which is theatre.
+    """
+    import json
+    import subprocess  # noqa: S404 - fixed argv, no shell
+
+    key = f"{spec.name.upper()}_API_KEY"
+    argv = [
+        "docker", "run", "--rm", "--network", "bridge",
+        "-v", f"{module_path.resolve().as_posix()}:/draft/candidate.py:ro",
+        "-e", key,
+        DOCKER_IMAGE,
+        "python", "-m", "qde.draft", "_stages",
+        "/draft/candidate.py", "--name", spec.name, "--group", spec.group,
+        "--symbol", symbol, "--native", spec.symbols.get(symbol, symbol),
+        "--from", start, "--interval", interval,
+    ]
+    if end:
+        argv += ["--to", end]
+    if spec.max_rows_per_call:
+        argv += ["--max-rows-per-call", str(spec.max_rows_per_call)]
+
+    env = dict(os.environ)
+    env.setdefault(key, os.environ.get(key, ""))
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=env)
+
+    payload = next(
+        (ln for ln in reversed(done.stdout.splitlines()) if ln.startswith("{")), None
+    )
+    if payload is None:
+        return GauntletReport(
+            source=spec.name, symbol=symbol, group=spec.group,
+            stages=[Stage("sandbox", False,
+                          f"the sandboxed run produced no report (exit {done.returncode}): "
+                          f"{(done.stderr or done.stdout)[-300:]}", blocking=True)],
+        )
+
+    data = json.loads(payload)
+    return GauntletReport(
+        source=data["source"], symbol=data["symbol"], group=data["group"],
+        stages=[Stage(**st) for st in data["stages"]],
+    )
+
+
+def run_gauntlet(
+    module_path: str | Path,
+    spec: SourceSpec,
+    symbol: str,
+    start: str,
+    end: str | None = None,
+    interval: str = "1d",
+    isolation: str = "container",
+) -> GauntletReport:
+    """Prove a drafted ingestor, running it in a disposable container by default.
+
+    Args:
+        isolation: ``"container"`` (default) executes the candidate in a throwaway
+            container with no ``secrets/`` mount and only its own credential.
+            ``"in-process"`` runs it here — correct for this project's own ingestors
+            and for tests, and unsafe for anything you did not write.
+
+    The AST screen runs on the host first, so an obviously hostile draft is refused
+    before a container is even started.
+    """
+    module_path = Path(module_path)
+    report = GauntletReport(source=spec.name, symbol=symbol, group=spec.group)
+
+    try:
+        smells = screen_source(module_path)
+    except SyntaxError as exc:
+        report.stages.append(Stage("screen", False, f"will not parse: {exc}", blocking=True))
+        return report
+    if smells:
+        report.stages.append(
+            Stage("screen", False,
+                  "an ingestor needs HTTP, pandas and the registry, nothing else — "
+                  + "; ".join(smells[:4]), blocking=True))
+        return report
+
+    if isolation == "in-process":
+        result = run_stages_in_process(module_path, spec, symbol, start, end, interval)
+        result.stages.insert(0, Stage("screen", True, "no forbidden imports or calls"))
+        return result
+
+    if not _docker_available():
+        # Failing is the honest outcome. Quietly falling back to in-process would
+        # execute an unvetted draft as you at the exact moment the safety mechanism
+        # was unavailable — the worst possible time to degrade silently.
+        report.stages.append(
+            Stage("sandbox", False,
+                  "docker is not available, so the candidate cannot be contained. "
+                  "Start docker, or pass isolation='in-process' if you wrote this "
+                  "draft yourself and accept running it as you.", blocking=True))
+        return report
+
+    result = _run_in_container(module_path, spec, symbol, start, end, interval)
+    result.stages.insert(0, Stage("screen", True, "no forbidden imports or calls"))
+    return result
+
+
 def scaffold(spec: SourceSpec, directory: str | Path = QUARANTINE) -> Path:
     """Write a skeleton ingestor for ``spec`` into quarantine and return its path.
 
@@ -565,10 +670,24 @@ def main() -> None:
     v.add_argument("--to", dest="end")
     v.add_argument("--interval", default="1d")
     v.add_argument("--max-rows-per-call", type=int)
+
+    # Hidden: what runs INSIDE the sandbox container. Emits the report as JSON on
+    # stdout so the host can reconstruct it without trusting anything else the
+    # container printed.
+    st = sub.add_parser("_stages")
+    st.add_argument("module")
+    st.add_argument("--name", required=True)
+    st.add_argument("--group", default="bars")
+    st.add_argument("--symbol", required=True)
+    st.add_argument("--native")
+    st.add_argument("--from", dest="start", required=True)
+    st.add_argument("--to", dest="end")
+    st.add_argument("--interval", default="1d")
+    st.add_argument("--max-rows-per-call", type=int)
     v.add_argument(
-        "--trust-this-draft", action="store_true", dest="trusted",
-        help="execute the draft. Importing it runs its top-level code as you — pass "
-             "this only for code you would run by hand, or run inside the container.",
+        "--in-process", action="store_true",
+        help="run the candidate in THIS process instead of a disposable container. "
+             "Correct for ingestors you wrote; unsafe for anything you did not.",
     )
 
     args = parser.parse_args()
@@ -597,9 +716,19 @@ def main() -> None:
         expected_daily_rows=1, null_tolerance={}, redistributable=False,
         license_note="DRAFT",
     )
+    if args.command == "_stages":
+        import dataclasses
+        import json
+
+        report = run_stages_in_process(
+            args.module, spec, args.symbol, args.start, args.end, args.interval
+        )
+        print(json.dumps(dataclasses.asdict(report)))
+        sys.exit(0 if report.passed else 1)
+
     report = run_gauntlet(
         args.module, spec, args.symbol, args.start, args.end, args.interval,
-        trusted=args.trusted,
+        isolation="in-process" if args.in_process else "container",
     )
     print(report.summary())
     # Non-zero on failure so a drafting agent, or CI, can branch on the result

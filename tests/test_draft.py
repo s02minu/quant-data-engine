@@ -80,7 +80,7 @@ class DraftIngestor(BaseIngestor):
 
 def test_a_correct_draft_passes_every_stage(tmp_path):
     report = run_gauntlet(
-        _write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+        _write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08", isolation="in-process"
     )
     assert report.passed, report.summary()
     assert {s.name for s in report.stages} >= {
@@ -109,7 +109,8 @@ def test_an_ingestor_that_ignores_its_date_range_is_caught():
 
     with tempfile.TemporaryDirectory() as d:
         report = run_gauntlet(
-            _write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+            _write(Path(d), body), _spec(), "XYZ",
+            "2024-01-01", "2024-01-08", isolation="in-process",
         )
     failed = {s.name for s in report.failures}
     assert "range" in failed, report.summary()
@@ -134,7 +135,8 @@ def test_a_non_deterministic_ingestor_is_caught():
 
     with tempfile.TemporaryDirectory() as d:
         report = run_gauntlet(
-            _write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+            _write(Path(d), body), _spec(), "XYZ",
+            "2024-01-01", "2024-01-08", isolation="in-process",
         )
     assert "determinism" in {s.name for s in report.failures}, report.summary()
 
@@ -146,7 +148,8 @@ def test_a_mismapped_price_column_is_caught():
 
     with tempfile.TemporaryDirectory() as d:
         report = run_gauntlet(
-            _write(Path(d), body), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+            _write(Path(d), body), _spec(), "XYZ",
+            "2024-01-01", "2024-01-08", isolation="in-process",
         )
     failed = {s.name for s in report.failures}
     assert "frame" in failed, report.summary()
@@ -155,7 +158,7 @@ def test_a_mismapped_price_column_is_caught():
 def test_a_module_with_no_ingestor_fails_before_anything_runs(tmp_path):
     path = tmp_path / "draft_ingestor.py"
     path.write_text("x = 1\n", encoding="utf-8")
-    report = run_gauntlet(path, _spec(), "XYZ", "2024-01-01", trusted=True)
+    report = run_gauntlet(path, _spec(), "XYZ", "2024-01-01", isolation="in-process")
     assert not report.passed
     failed = [st for st in report.stages if not st.passed]
     assert [st.name for st in failed] == ["contract"], "only the real finding, no cascade"
@@ -175,7 +178,7 @@ def test_the_report_is_machine_readable_so_an_agent_can_iterate(tmp_path):
     # The point of structured stages: a drafting agent reads its own failures and
     # fixes them without a person reading the code.
     report = run_gauntlet(
-        _write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08", trusted=True
+        _write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01", "2024-01-08", isolation="in-process"
     )
     assert isinstance(report, GauntletReport)
     assert all(isinstance(s.passed, bool) and s.detail for s in report.stages)
@@ -185,21 +188,56 @@ def test_the_report_is_machine_readable_so_an_agent_can_iterate(tmp_path):
 # --- executing a draft is a decision, not a default -------------------------------
 
 
-def test_an_unvetted_draft_is_not_executed(tmp_path):
-    """Proving a draft means running it, and importing a module runs its top-level code.
+def test_an_unvetted_draft_is_contained_by_default(tmp_path, monkeypatch):
+    """Isolation is the default path, not a flag someone has to remember.
 
-    Quarantine keeps an unproven module out of the *pipeline*; it does nothing to
-    contain a hostile one. A draft generated from documentation fetched off the
-    internet is exactly the shape of thing that carries a prompt injection — and in
-    this repo an unchecked draft could read every secrets/*.env file.
+    An earlier version refused to run unless a human passed --trust-this-draft. That
+    put the reviewer back in the loop this module exists to remove: an agent
+    iterating against the gauntlet would need approval for every attempt, or would
+    pass the flag itself, which is theatre. The candidate is contained instead.
     """
+    import qde.draft as draft
+
     marker = tmp_path / "executed.txt"
     body = GOOD + f"\n\nopen(r'{marker.as_posix()}', 'w').write('ran')\n"
+
+    # No docker here, so the safe path is unavailable — and the honest response is to
+    # fail rather than quietly fall back to executing it in this process.
+    monkeypatch.setattr(draft, "_docker_available", lambda: False)
     report = run_gauntlet(_write(tmp_path, body), _spec(), "XYZ", "2024-01-01")
 
     assert not report.passed
-    assert report.stages[0].name == "trust" and report.stages[0].blocking
+    assert any(st.name == "sandbox" and st.blocking for st in report.stages)
     assert not marker.exists(), "the draft's top-level code must not have run"
+
+
+def test_the_sandbox_command_is_built_without_a_secrets_mount(tmp_path, monkeypatch):
+    # What actually contains a hostile draft: no bind mount except the draft itself,
+    # and only its own credential in the environment.
+    import qde.draft as draft
+
+    captured = {}
+
+    class _Done:
+        returncode = 0
+        stdout = '{"source":"draftco","symbol":"XYZ","group":"bars","stages":[]}'
+        stderr = ""
+
+    def _fake_run(argv, **kw):
+        captured["argv"] = argv
+        return _Done()
+
+    monkeypatch.setattr(draft, "_docker_available", lambda: True)
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    run_gauntlet(_write(tmp_path, GOOD), _spec(), "XYZ", "2024-01-01")
+
+    argv = captured["argv"]
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert len(mounts) == 1 and mounts[0].endswith("candidate.py:ro"), mounts
+    assert not any("secrets" in m for m in mounts), "secrets must never be mounted"
+    envs = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+    assert envs == ["DRAFTCO_API_KEY"], f"only the source's own credential: {envs}"
+    assert "--rm" in argv, "the container filesystem must be disposable"
 
 
 def test_a_draft_reaching_for_sockets_is_refused_before_execution(tmp_path):
@@ -209,7 +247,9 @@ def test_a_draft_reaching_for_sockets_is_refused_before_execution(tmp_path):
         + GOOD
         + f"\n\nopen(r'{marker.as_posix()}', 'w').write('ran')\n"
     )
-    report = run_gauntlet(_write(tmp_path, body), _spec(), "XYZ", "2024-01-01", trusted=True)
+    report = run_gauntlet(_write(tmp_path, body), _spec(), "XYZ", "2024-01-01",
+                isolation="in-process",
+            )
 
     assert not report.passed
     screen = next(st for st in report.stages if st.name == "screen")
