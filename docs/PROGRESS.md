@@ -17,7 +17,7 @@ roadmap holds the *reasoning*; this file holds the *state*.
 | 2 | Licensing audit | Done (per-source fields + `docs/licensing.md` + README two-halves) |
 | 3 | Group schemas | Done (docs/schemas/) |
 | 4 | Registry + `BaseIngestor` | Done |
-| 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; events calendar done — 4th group live. Equities/Tiingo deferred) |
+| 5 | Source expansion | In progress (Wave 1 done; ccxt bars done; events calendar done — 4th group live; **equities via Tiingo live — 27 symbols, adjusted prices, `redistributable=False` pending a licensing decision**) |
 | 6 | Streaming and backfills | Done |
 | 7 | Orchestration with Dagster | In progress (registry-driven asset graph done, local/dev-only; date-partitioning deferred) |
 | 8 | Transformations with dbt | Done — all four groups have marts (**incl. the private cross-venue basis mart**); dbt docs + CI build landed |

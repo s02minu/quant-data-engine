@@ -235,6 +235,13 @@ export default function Status({ catalogue }) {
               <h2>Recent violations</h2>
               <span className="rule" />
             </div>
+            <p className="status-note">
+              A violation is what a check <em>recorded</em>, which is not the same as a
+              defect in the data. Some entries here were faults in the check itself,
+              found by running it against live sources and since fixed. They stay on the
+              record rather than being quietly removed: a quality history that shows
+              only the flattering nights is not a quality history.
+            </p>
             <div className="table-wrap">
               <table className="result">
                 <thead>
