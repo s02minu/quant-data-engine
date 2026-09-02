@@ -90,7 +90,17 @@ def freshness_threshold(
     """
     if len(dates) < 3:
         return None
-    ordered = dates.sort_values()
+    # DISTINCT observation times, not rows. A group that writes several rows against
+    # one timestamp -- nine calendar events released the same morning, one row per
+    # metric on the same date -- produces row-to-row gaps that are mostly ZERO, and a
+    # p90 taken over those measures how tightly rows are packed rather than how often
+    # the source speaks. Measured on fredcal: 33,478 rows give a p90 gap of 1 day and
+    # a 79.2h threshold, while its 2,549 distinct observations give 7 days and 21
+    # days. The source was six days old -- healthy on its real cadence, and publicly
+    # labelled overdue on the other.
+    ordered = pd.DatetimeIndex(dates.unique()).sort_values()
+    if len(ordered) < 3:
+        return None
     gaps = ordered.to_series().diff().dropna().tail(_CADENCE_WINDOW)
     typical = pd.Timedelta(gaps.quantile(0.9))  # the largest *ordinary* gap
     return max(typical * _STALE_FACTOR, sla_floor)

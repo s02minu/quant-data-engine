@@ -66,3 +66,57 @@ def test_multi_metric_freshness_flagged_once(tmp_path):
     v = run_checks(str(tmp_path), now=NOW)
     fresh = [x for x in v if x.check == "freshness"]
     assert len(fresh) == 1 and fresh[0].label() == "cftc/ES"
+
+
+def test_cadence_is_measured_between_observations_not_between_rows():
+    """A group writing several rows against one timestamp must not look hyperactive.
+
+    Nine economic releases land on the same morning; one row per metric shares a date.
+    Row-to-row gaps are then mostly ZERO, and a percentile taken over those measures
+    how tightly rows are packed rather than how often the source speaks.
+
+    Measured on the live lake before this was fixed: fredcal's 33,478 rows gave a p90
+    gap of 1 day and a 79.2h threshold, while its 2,549 distinct observations gave 7
+    days and 21 days. The source was six days old — healthy on its real cadence, and
+    publicly labelled overdue on the other, on a night the pipeline recorded zero
+    violations.
+    """
+    import pandas as pd
+
+    from qde.checks import freshness_threshold
+
+    # A weekly source that writes nine rows each time it speaks.
+    weekly = pd.date_range("2026-01-06", periods=40, freq="7D", tz="UTC")
+    clustered = pd.DatetimeIndex(sorted(weekly.repeat(9)))
+    floor = pd.Timedelta(minutes=1500)
+
+    threshold = freshness_threshold(clustered, floor)
+    assert threshold is not None
+    assert threshold >= pd.Timedelta(days=14), (
+        f"a weekly source must tolerate about a fortnight, got {threshold}"
+    )
+
+
+def test_duplicate_timestamps_do_not_change_the_verdict():
+    """The deduplicated estimate must equal the one from distinct observations."""
+    import pandas as pd
+
+    from qde.checks import freshness_threshold
+
+    distinct = pd.date_range("2026-01-06", periods=40, freq="7D", tz="UTC")
+    floor = pd.Timedelta(minutes=1500)
+
+    assert freshness_threshold(
+        pd.DatetimeIndex(sorted(distinct.repeat(9))), floor
+    ) == freshness_threshold(distinct, floor)
+
+
+def test_too_few_distinct_observations_infers_nothing():
+    # Many rows on two dates is not a cadence. Guessing one would be worse than
+    # declining to.
+    import pandas as pd
+
+    from qde.checks import freshness_threshold
+
+    two_days = pd.DatetimeIndex(["2026-01-06"] * 50 + ["2026-01-13"] * 50, tz="UTC")
+    assert freshness_threshold(two_days, pd.Timedelta(minutes=1500)) is None
