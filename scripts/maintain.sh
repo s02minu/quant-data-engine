@@ -12,6 +12,28 @@ set -euo pipefail
 # Run from the project root regardless of where cron invokes the script.
 cd "$(dirname "$0")/.."
 
+# --l2-only: keep the microstructure pipeline alive and nothing else.
+#
+# Live order-book capture is the one thing here that cannot be refilled -- no exchange
+# serves historical L2 -- while bars, series and events can all be re-fetched later from
+# source. So when the project is parked, this mode keeps the irreplaceable half running
+# and stops the rest.
+#
+# It is NOT just "stop the cron". The collectors write continuously, and it is THIS
+# script that compacts what they wrote, ships it to the private bucket and prunes the
+# local copy. Collectors running with no maintenance fills a 38GB box.
+#
+# Skipped in this mode: the batch ingest (and with it the nightly DQ record), the dbt
+# marts built over batch data, and the public publish -- the public bucket then keeps
+# serving its last good copy and goes stale, which is the honest signal for a paused
+# project. Compaction and sync still run, because those are what make the capture
+# durable.
+L2_ONLY=0
+if [ "${1:-}" = "--l2-only" ]; then
+  L2_ONLY=1
+  echo "[$(date -u +%FT%TZ)] L2-ONLY mode: microstructure capture + sync only"
+fi
+
 # R2 credentials live in secrets-infra/, NOT secrets/.
 #
 # `secrets/` is bind-mounted read-only into every container (docker-compose.yml), so
@@ -51,6 +73,8 @@ echo "[$(date -u +%FT%TZ)] compaction start"
 docker compose run --rm collector python -m qde.compact \
   || echo "[$(date -u +%FT%TZ)] compaction failed; continuing to sync"
 
+if [ "$L2_ONLY" = "0" ]; then
+
 echo "[$(date -u +%FT%TZ)] bars update start"
 docker compose run --rm collector python -m qde.daily_update
 
@@ -70,6 +94,10 @@ docker compose run --rm collector sh -c '
   cd transform && DBT_PROFILES_DIR=. dbt build --vars "lake_root: /data"
 ' || echo "[$(date -u +%FT%TZ)] dbt build failed; continuing to sync"
 
+else
+  echo "[$(date -u +%FT%TZ)] L2-ONLY: skipping batch ingest and dbt build"
+fi
+
 echo "[$(date -u +%FT%TZ)] sync start"
 docker compose run --rm \
   -e "QDE_R2_ENDPOINT=$QDE_R2_ENDPOINT" \
@@ -82,7 +110,9 @@ docker compose run --rm \
 # the PUBLIC bucket, so anyone can query it with their own DuckDB and no credentials.
 # Guarded on QDE_R2_PUBLIC_BUCKET, so it is a no-op until that bucket is provisioned --
 # add QDE_R2_PUBLIC_BUCKET and QDE_PUBLIC_BASE_URL to secrets-infra/r2.env.
-if [ -n "${QDE_R2_PUBLIC_BUCKET:-}" ]; then
+if [ "$L2_ONLY" = "1" ]; then
+  echo "[$(date -u +%FT%TZ)] L2-ONLY: skipping public publish (bucket keeps its last copy)"
+elif [ -n "${QDE_R2_PUBLIC_BUCKET:-}" ]; then
   echo "[$(date -u +%FT%TZ)] public publish start"
   docker compose run --rm \
     -e "QDE_R2_ENDPOINT=$QDE_R2_ENDPOINT" \

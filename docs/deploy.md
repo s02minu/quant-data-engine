@@ -102,6 +102,35 @@ if it is present: "r2" is not a source. It is BOM-tolerant (a PowerShell-written
 `.env` is UTF-16) and no-ops on a missing file. No secrets live in the repo, and
 none are baked into the image.
 
+## Parking the project: L2-only mode
+
+Live order-book capture is the one thing in this platform that **cannot be refilled** —
+no exchange serves historical L2 — while bars, series and events can all be re-fetched
+from source later. So when the project is parked, keep the irreplaceable half running
+and stop the rest:
+
+```bash
+30 0 * * * /usr/bin/bash /home/deploy/quant-data-engine/scripts/maintain.sh --l2-only >> /home/deploy/quant-data-engine/logs/maintain.log 2>&1
+```
+
+`--l2-only` runs **compaction and sync** and skips the batch ingest, the dbt marts and
+the public publish.
+
+**Turning off the cron entirely is the wrong way to park it.** The collectors write
+continuously, and it is `maintain.sh` that compacts what they wrote, ships it to the
+private bucket and *prunes the local copy*. Collectors running with no maintenance fill
+a 38 GB box; the disk sits at ~21% **because** the nightly prunes.
+
+What you give up in this mode, deliberately:
+
+- **no nightly DQ record** — it is produced by `daily_update`, which does not run;
+- **no gold marts** over batch data;
+- **the public bucket keeps serving its last copy and goes stale.** That is the honest
+  signal for a paused project, but if the site is shared while parked it will look
+  neglected rather than deliberately paused. A one-line banner fixes that.
+
+To resume everything, drop the flag from the cron line and run the full nightly once.
+
 ## Weekly verification
 
 `scripts/weekly_verify.sh` → `python -m qde.weekly_verify`. Three checks the nightly

@@ -387,3 +387,97 @@ def test_an_hourly_bar_is_settled_once_its_hour_has_elapsed(tmp_path):
     stored = load_ohlcv_local("X", "src", "1h", str(tmp_path))
     assert old_hour in stored.index, "a completed hour is settled"
     assert this_hour not in stored.index, "the current hour is still forming"
+
+
+# --- a row with no prices is not a bar ---------------------------------------------
+
+
+def _bar_frame(rows):
+    """rows: list of (date, open, high, low, close, volume)."""
+    import pandas as pd
+
+    idx = pd.DatetimeIndex([r[0] for r in rows], tz="UTC", name="date")
+    return pd.DataFrame(
+        {
+            "open": [r[1] for r in rows],
+            "high": [r[2] for r in rows],
+            "low": [r[3] for r in rows],
+            "close": [r[4] for r in rows],
+            "volume": [r[5] for r in rows],
+        },
+        index=idx,
+    )
+
+
+def test_a_row_with_no_prices_is_not_stored(tmp_path):
+    """The defect that reddened the public status page for twenty-four days.
+
+    yfinance intermittently returns a row whose OHLC are all NaN — a placeholder for a
+    session it has no data for. Stored, it heals on the next fetch, but the nightly
+    null check runs on the lake in between and correctly reports it. Measured: 32
+    errors every weekday from 2026-09-03, on GLD/QQQ/SPY/TLT, while the lake read clean
+    by the time anyone looked.
+    """
+    from qde.storage import load_ohlcv_local, upsert_bars
+
+    frame = _bar_frame(
+        [
+            ("2026-01-05", 100.0, 101.0, 99.0, 100.5, 1000),
+            ("2026-01-06", float("nan"), float("nan"), float("nan"), float("nan"), 0),
+            ("2026-01-07", 102.0, 103.0, 101.0, 102.5, 1200),
+        ]
+    )
+    upsert_bars(frame, "SPY", "yfinance", "1d", base_dir=str(tmp_path), allow_forming=True)
+
+    stored = load_ohlcv_local("SPY", "yfinance", "1d", base_dir=str(tmp_path))
+    assert len(stored) == 2, "the priceless row must not reach the lake"
+    assert str(stored.index.min().date()) == "2026-01-05"
+    assert str(stored.index.max().date()) == "2026-01-07"
+
+
+def test_a_partially_null_row_is_kept_so_the_check_can_report_it(tmp_path):
+    """Dropping this would hide the anomaly the null check exists to surface.
+
+    No prices at all is a placeholder. *Some* prices missing is a real defect, and
+    swallowing it at the write boundary would make it undetectable.
+    """
+    from qde.storage import load_ohlcv_local, upsert_bars
+
+    frame = _bar_frame(
+        [
+            ("2026-01-05", 100.0, 101.0, 99.0, 100.5, 1000),
+            ("2026-01-06", float("nan"), 101.0, 99.0, 100.0, 900),
+        ]
+    )
+    upsert_bars(frame, "SPY", "yfinance", "1d", base_dir=str(tmp_path), allow_forming=True)
+
+    stored = load_ohlcv_local("SPY", "yfinance", "1d", base_dir=str(tmp_path))
+    assert len(stored) == 2, "a partially-priced row is an anomaly to report, not to hide"
+
+
+def test_a_null_volume_beside_real_prices_is_a_thin_bar_not_a_missing_one(tmp_path):
+    # DX-Y.NYB reports zero volume legitimately; volume must not gate the guard.
+    from qde.storage import load_ohlcv_local, upsert_bars
+
+    frame = _bar_frame([("2026-01-05", 100.0, 101.0, 99.0, 100.5, float("nan"))])
+    upsert_bars(frame, "DX-Y.NYB", "yfinance", "1d", base_dir=str(tmp_path), allow_forming=True)
+
+    assert len(load_ohlcv_local("DX-Y.NYB", "yfinance", "1d", base_dir=str(tmp_path))) == 1
+
+
+def test_the_guard_applies_even_when_forming_bars_are_allowed(tmp_path):
+    """`allow_forming` is about a period that has not closed, not about empty rows.
+
+    No caller ever has a reason to write a row with no prices, so the guard is
+    unconditional — if it sat inside the `allow_forming` branch, backfill would still
+    let placeholders through.
+    """
+    import pandas as pd
+
+    from qde.storage import _drop_priceless
+
+    frame = _bar_frame(
+        [("2026-01-05", float("nan"), float("nan"), float("nan"), float("nan"), 0)]
+    )
+    assert _drop_priceless(frame, "SPY", "yfinance").empty
+    assert isinstance(_drop_priceless(pd.DataFrame(), "SPY", "yfinance"), pd.DataFrame)

@@ -195,6 +195,54 @@ def _drop_forming(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     return df[df.index + duration <= pd.Timestamp.now(tz="UTC")]
 
 
+_PRICE_COLUMNS = ("open", "high", "low", "close")
+
+
+def _drop_priceless(df: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame:
+    """Remove rows that carry no price, which are not bars at all.
+
+    yfinance intermittently returns a row whose OHLC are all NaN -- a placeholder for
+    a session it has no data for yet. Stored, it heals itself: the next night's fetch
+    overwrites the same date with real values. In between, the nightly null check runs
+    on the lake and correctly reports it, so the public status page went red on every
+    weekday for twenty-four days over data that was never wrong for longer than a day.
+
+    Dropped rather than raised, unlike an unparseable date in `qde.ingest.tiingo`. The
+    difference is what the absence means: a malformed timestamp destroys a record that
+    existed, while a priceless row carries nothing to lose. Discarding it leaves the
+    lake in exactly the state the source would have produced by not sending it, and a
+    day that really is missing is still caught by the freshness and completeness
+    checks. It is logged so the drop is visible rather than silent.
+
+    ALL four prices must be missing, not any of them. A row with no prices is a
+    placeholder the source should not have sent; a row with *some* prices missing is a
+    genuine anomaly, and swallowing it here would hide the thing the null check exists
+    to report. So this drops the empty case and deliberately leaves the partial one to
+    be flagged.
+
+    Volume is deliberately not tested: DX-Y.NYB legitimately reports zero, and a null
+    volume beside real prices is a thin bar, not a missing one.
+
+    Unconditional -- NOT gated on ``allow_forming`` -- because no caller ever has a
+    reason to write a row with no prices in it.
+    """
+    present = [c for c in _PRICE_COLUMNS if c in df.columns]
+    if df.empty or not present:
+        return df
+    priceless = df[present].isna().all(axis=1)
+    if bool(priceless.any()):
+        dropped = df.index[priceless]
+        log.warning(
+            "priceless_rows_dropped",
+            source=source,
+            symbol=symbol,
+            rows=int(priceless.sum()),
+            dates=[str(d) for d in dropped[:5]],
+        )
+        return df[~priceless]
+    return df
+
+
 def upsert_bars(
     df: pd.DataFrame,
     symbol: str,
@@ -229,6 +277,7 @@ def upsert_bars(
     Returns:
         int: number of rows in the resulting series file.
     """
+    df = _drop_priceless(df, symbol, source)
     if not allow_forming:
         df = _drop_forming(df, interval)
         if df.empty:
