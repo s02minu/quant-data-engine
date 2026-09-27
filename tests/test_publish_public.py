@@ -629,3 +629,102 @@ def test_permission_in_one_group_does_not_leak_into_another():
     assert "acme" in _group_in_list(pairs, "microstructure")
     assert "acme" not in _group_in_list(pairs, "bars"), "cleared for microstructure only"
     assert _group_in_list(pairs, "events") == "''", "no cleared source matches nothing"
+
+
+# --- not re-sending history that has not changed -----------------------------------
+
+
+class _HeadOnly:
+    """A client that answers head_object from a dict of {key: (size, last_modified)}."""
+
+    def __init__(self, objects):
+        self.objects = objects
+        self.raises = False
+
+    def head_object(self, Bucket, Key):
+        if self.raises:
+            raise RuntimeError("network")
+        size, modified = self.objects[Key]
+        return {"ContentLength": size, "LastModified": modified}
+
+
+def _local(tmp_path, content=b"abc", ago_seconds=60):
+    import os
+    import time
+
+    path = tmp_path / "part.parquet"
+    path.write_bytes(content)
+    stamp = time.time() - ago_seconds
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def _utc(seconds_ago):
+    from datetime import UTC, datetime, timedelta
+
+    return datetime.now(tz=UTC) - timedelta(seconds=seconds_ago)
+
+
+def test_an_unchanged_bronze_file_is_recognised_as_already_published(tmp_path):
+    """The defect that made the nightly publish take 85 minutes.
+
+    The bronze loop called `_upload` unconditionally, re-sending all 254
+    redistributable files every night — the whole history, none of it changed — while
+    `_mirror` a few lines away had been skipping 617 of 649 objects all along.
+    """
+    from qde.publish_public import _already_current
+
+    path = _local(tmp_path, b"abc", ago_seconds=600)
+    client = _HeadOnly({"k": (3, _utc(30))})  # remote newer than local, same size
+    assert _already_current(client, "bucket", "k", path) is True
+
+
+def test_a_revision_that_keeps_the_same_byte_size_is_still_published(tmp_path):
+    """Why size alone is not enough, and the reason this check also reads mtime.
+
+    A FRED restatement rewrites a series file with the same row count, so it can land
+    on an identical byte size. Skipping on size alone would silently withhold a
+    revision — the one thing this platform is built not to do.
+    """
+    from qde.publish_public import _already_current
+
+    path = _local(tmp_path, b"abc", ago_seconds=5)  # rewritten just now
+    client = _HeadOnly({"k": (3, _utc(600))})       # remote is older
+    assert _already_current(client, "bucket", "k", path) is False
+
+
+def test_a_different_size_is_always_published(tmp_path):
+    from qde.publish_public import _already_current
+
+    path = _local(tmp_path, b"abcdef", ago_seconds=600)
+    client = _HeadOnly({"k": (3, _utc(30))})
+    assert _already_current(client, "bucket", "k", path) is False
+
+
+def test_an_absent_object_is_published(tmp_path):
+    from qde.publish_public import _already_current
+
+    path = _local(tmp_path)
+    assert _already_current(_HeadOnly({}), "bucket", "missing", path) is False
+
+
+def test_a_failed_check_uploads_rather_than_skips(tmp_path):
+    """Degrade toward doing the work, never toward silently skipping it."""
+    from qde.publish_public import _already_current
+
+    path = _local(tmp_path)
+    client = _HeadOnly({"k": (3, _utc(30))})
+    client.raises = True
+    assert _already_current(client, "bucket", "k", path) is False
+
+
+def test_a_head_response_without_last_modified_is_not_trusted(tmp_path):
+    # Some fakes (and any client that omits it) return only ContentLength. Treating
+    # that as "current" would skip on size alone, which is the case above.
+    from qde.publish_public import _already_current
+
+    class _NoModified:
+        def head_object(self, Bucket, Key):
+            return {"ContentLength": 3}
+
+    assert _already_current(_NoModified(), "bucket", "k", _local(tmp_path)) is False

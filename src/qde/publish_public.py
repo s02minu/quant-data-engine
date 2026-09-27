@@ -29,6 +29,7 @@ buckets never get crossed:
 
 import contextlib
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
@@ -233,6 +234,42 @@ def mirror_private_prefix(
     return {"copied": copied, "skipped": skipped, "failed": failed, "withheld": withheld}
 
 
+def _already_current(client, bucket: str, key: str, path: Path) -> bool:
+    """Whether the public bucket already holds this exact file.
+
+    The bronze loop used to call ``_upload`` unconditionally, so every night it
+    re-sent all 254 redistributable bronze files -- the entire history, none of which
+    had changed. Measured: the publish step took **85 minutes a night** for weeks
+    (five hours on 2026-09-13), while the ``_mirror`` path a few lines below had done
+    the right thing all along and skipped 617 of 649 objects.
+
+    The check is size AND mtime, not size alone. Size alone is what ``_mirror``
+    settles for, and for a server-side copy of immutable microstructure that is fine
+    -- but bronze here includes FRED and the events calendar, where a **revision
+    rewrites a file to the same row count and can land on the same byte size**.
+    Skipping that would silently withhold a restatement, which is the one thing this
+    platform is built not to do. Compaction and revision both rewrite the file, so
+    mtime catches what size misses.
+
+    Any error answers "not current", so a failure to check degrades into an upload
+    rather than into a silent skip.
+    """
+    try:
+        head = client.head_object(Bucket=bucket, Key=key)
+    except Exception:
+        return False
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if head.get("ContentLength") != stat.st_size:
+        return False
+    remote = head.get("LastModified")
+    if remote is None:
+        return False
+    return datetime.fromtimestamp(stat.st_mtime, tz=UTC) <= remote
+
+
 def _upload(client, path: Path, bucket: str, key: str) -> bool:
     """Upload one file, verifying the remote size matches. Returns success."""
     local_size = path.stat().st_size
@@ -283,7 +320,7 @@ def publish_public(
         | frozenset((g, n) for g in _PUBLIC_GROUPS for n in publishable)
     )
     excluded = _excluded_sources()
-    bronze_ok = bronze_skipped = gold_ok = quality_ok = 0
+    bronze_ok = bronze_skipped = bronze_current = gold_ok = quality_ok = 0
     bronze_failed = gold_failed = quality_failed = 0
 
     con = duckdb.connect()
@@ -301,6 +338,11 @@ def publish_public(
             if source is None or (group, source) not in pairs:
                 bronze_skipped += 1
                 log.info("public_withheld", key=rel.as_posix(), source=source)
+                continue
+            # Unchanged history is not worth re-sending. Counted separately from the
+            # licensing skips above, which mean something entirely different.
+            if _already_current(client, public_bucket, rel.as_posix(), file):
+                bronze_current += 1
                 continue
             if _upload(client, file, public_bucket, rel.as_posix()):
                 bronze_ok += 1
@@ -409,6 +451,7 @@ def publish_public(
     return {
         "bronze_published": bronze_ok,
         "bronze_skipped": bronze_skipped,
+        "bronze_current": bronze_current,
         "gold_published": gold_ok,
         "catalogue": catalogue_ok,
         "excluded": excluded,
@@ -467,6 +510,7 @@ if __name__ == "__main__":
         "publish_public_complete",
         bronze=summary["bronze_published"],
         bronze_skipped=summary["bronze_skipped"],
+        bronze_current=summary["bronze_current"],
         gold=summary["gold_published"],
         quality=summary["quality_published"],
         catalogue=summary["catalogue"],
